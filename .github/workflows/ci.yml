@@ -1,0 +1,223 @@
+name: CI
+
+# Runs on every pull request and on pushes to the default branch.
+# No production secret is required: the test suite stubs the OpenAI endpoint
+# and the MongoDB persistence adapter in-process, so CI never calls a paid API
+# and never needs a live database.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # TypeScript: install, build, typecheck, automated tests
+  # ───────────────────────────────────────────────────────────────────
+  typescript:
+    name: TypeScript (build, typecheck, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Automated tests
+        run: npm test
+
+      - name: Verify compiled entrypoints exist
+        run: |
+          test -f apps/api/dist/index.js
+          test -f packages/mcp-mongodb/dist/http-adapter.js
+          test -f packages/mcp-mongodb/dist/server.js
+
+  # ───────────────────────────────────────────────────────────────────
+  # Flutter console: analyze and test
+  # ───────────────────────────────────────────────────────────────────
+  console:
+    name: Flutter console (analyze, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/console
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+  # ───────────────────────────────────────────────────────────────────
+  # Docker: the documented container build must succeed
+  # ───────────────────────────────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: cerberus:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image starts and serves /health
+        run: |
+          docker run -d --name cerberus-ci \
+            -e CERBERUS_DEV_MODE=true \
+            -e OPENAI_API_KEY=ci-placeholder-not-a-real-key \
+            -e MONGODB_URI=mongodb://127.0.0.1:27017 \
+            -p 8080:8080 cerberus:ci
+
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health > /dev/null; then
+              echo "health endpoint responded"
+              curl -s http://localhost:8080/health
+              docker rm -f cerberus-ci
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::the API did not answer /health within 60s"
+          docker logs cerberus-ci
+          docker rm -f cerberus-ci
+          exit 1
+
+      - name: Assert startup fails closed without a credential
+        run: |
+          set +e
+          docker run --rm \
+            -e NODE_ENV=production \
+            -e OPENAI_API_KEY=ci-placeholder-not-a-real-key \
+            -e MONGODB_URI=mongodb://127.0.0.1:27017 \
+            cerberus:ci > /tmp/closed.log 2>&1
+          code=$?
+          set -e
+          cat /tmp/closed.log
+          if [ "$code" -eq 0 ]; then
+            echo "::error::the API started without CERBERUS_API_KEY in production mode"
+            exit 1
+          fi
+          grep -q "CERBERUS_API_KEY" /tmp/closed.log \
+            || { echo "::error::expected a CERBERUS_API_KEY startup error"; exit 1; }
+
+  # ───────────────────────────────────────────────────────────────────
+  # Repository hygiene: no secrets, no stray credential files
+  # ───────────────────────────────────────────────────────────────────
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Verified-secrets only: this mode has a very low false-positive rate,
+      # which is what makes it safe to run as a required check.
+      - name: Scan for verified secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+      - name: Reject committed credential files
+        run: |
+          set -e
+          fail=0
+          for pattern in '.env' 'application_default_credentials.json' '*.pem' '*.key'; do
+            found=$(git ls-files -- "$pattern" | grep -v '\.env\.example' || true)
+            if [ -n "$found" ]; then
+              echo "::error::credential-shaped file is tracked: $found"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: Reject unrelated deployment identity
+        run: |
+          if git grep -n -I -E 'webscraping-464710|gorilla_agents|gorilla-mcp-mongodb' -- . ; then
+            echo "::error::a retired deployment or product identifier is still present"
+            exit 1
+          fi
+
+  # ───────────────────────────────────────────────────────────────────
+  # Dependency advisories (advisory, non-blocking)
+  # ───────────────────────────────────────────────────────────────────
+  dependencies:
+    name: Dependency audit (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Advisory only: a transitive advisory should be visible, not block a
+    # documentation or test-only pull request. Triage happens on a schedule.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit (runtime dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Report full audit
+        run: npm audit || true
