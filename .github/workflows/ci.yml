@@ -111,7 +111,13 @@ jobs:
 
       - name: Smoke-test the image starts and serves /health
         run: |
+          # The image bakes ENV NODE_ENV=production, and dev mode is refused
+          # outright under production, so the positive smoke path has to select
+          # development explicitly. This does NOT weaken the production
+          # fail-closed control: the negative test below still starts the image
+          # with NODE_ENV=production and no credential and asserts it exits.
           docker run -d --name cerberus-ci \
+            -e NODE_ENV=development \
             -e CERBERUS_DEV_MODE=true \
             -e OPENAI_API_KEY=ci-placeholder-not-a-real-key \
             -e MONGODB_URI=mongodb://127.0.0.1:27017 \
@@ -163,15 +169,80 @@ jobs:
         with:
           fetch-depth: 0
 
+      # TruffleHog needs a non-degenerate commit range. Comparing the default
+      # branch against HEAD is degenerate on a push to that same branch — both
+      # resolve to the pushed commit — which previously failed the job with
+      # "BASE and HEAD commits are the same".
+      #
+      #   pull_request     -> PR base sha .. PR head sha
+      #   push to main     -> previous tip (event.before) .. pushed tip
+      #   initial push     -> no usable base, so scan the full history
+      #   manual dispatch  -> full history
+      #
+      # The trufflehog GitHub Action is deliberately not used: it always emits
+      # `--since-commit`, and an empty value makes the CLI abort with
+      # "expected argument for flag '--since-commit'". That is exactly the
+      # first-push case, which must be scanned rather than skipped.
+      - name: Resolve secret-scan range
+        id: scan_range
+        run: |
+          set -euo pipefail
+          zero="0000000000000000000000000000000000000000"
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+              ;;
+            push)
+              base="${{ github.event.before }}"
+              head="${{ github.event.after }}"
+              ;;
+            *)
+              base=""
+              head=""
+              ;;
+          esac
+
+          [ -n "$head" ] || head="$(git rev-parse HEAD)"
+
+          # A usable base must exist, differ from head, and actually be an
+          # ancestor of head. An all-zero "before" means a new branch, and a
+          # force-push can leave the previous tip unreachable or divergent —
+          # trufflehog then finds no merge base, exits 0 and scans ZERO chunks,
+          # which would be a silent skip. Every such case falls back to a full
+          # history scan instead.
+          if [ -z "$base" ] || [ "$base" = "$zero" ] || [ "$base" = "$head" ] \
+             || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
+             || ! git merge-base --is-ancestor "$base" "$head" 2>/dev/null; then
+            base=""
+            echo "Secret-scan range: full history (no usable base commit)"
+          else
+            echo "Secret-scan range: ${base}..${head}"
+          fi
+
+          {
+            echo "base=$base"
+            echo "head=$head"
+          } >> "$GITHUB_OUTPUT"
+
       # Verified-secrets only: this mode has a very low false-positive rate,
       # which is what makes it safe to run as a required check.
+      # Pinned to the version verified locally; bump deliberately.
       - name: Scan for verified secrets
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --only-verified
+        run: |
+          set -euo pipefail
+          base="${{ steps.scan_range.outputs.base }}"
+          head="${{ steps.scan_range.outputs.head }}"
+
+          args=(--branch "$head" --fail --no-update --only-verified)
+          if [ -n "$base" ]; then
+            args=(--since-commit "$base" "${args[@]}")
+          fi
+
+          docker run --rm -v "${{ github.workspace }}:/tmp" -w /tmp \
+            ghcr.io/trufflesecurity/trufflehog:3.97.5 \
+            git file:///tmp/ "${args[@]}"
 
       - name: Reject committed credential files
         run: |
@@ -186,12 +257,41 @@ jobs:
           done
           exit $fail
 
+      # Retired deployment/product identifiers must not reappear in shippable
+      # source or configuration.
+      #
+      # The historical names are referenced on purpose in the migration
+      # documentation, in negative tests that assert those names are gone, and
+      # in this workflow (which necessarily contains the pattern itself). Those
+      # locations are excluded here rather than deleted: the migration history
+      # is legitimate documentation, not leakage.
       - name: Reject unrelated deployment identity
         run: |
-          if git grep -n -I -E 'webscraping-464710|gorilla_agents|gorilla-mcp-mongodb' -- . ; then
-            echo "::error::a retired deployment or product identifier is still present"
+          set -euo pipefail
+          pattern='webscraping-464710|gorilla_agents|gorilla-mcp-mongodb'
+
+          excludes=(
+            ':(exclude).github/**'
+            ':(exclude)docs/**'
+            ':(exclude)**/test/**'
+            ':(exclude)**/tests/**'
+          )
+
+          # Sanity-check the scan set so a wrong pathspec cannot silently
+          # turn this guard into a no-op.
+          files=$(git ls-files -- . "${excludes[@]}" | wc -l)
+          if [ "$files" -eq 0 ]; then
+            echo "::error::retired-identity guard matched no files to scan"
             exit 1
           fi
+          echo "Scanning $files files for retired deployment identifiers."
+
+          if git grep -n -I -E "$pattern" -- . "${excludes[@]}"; then
+            echo "::error::a retired deployment or product identifier is still present in source or configuration"
+            exit 1
+          fi
+
+          echo "OK: no retired deployment identifier outside documentation and tests."
 
   # ───────────────────────────────────────────────────────────────────
   # Dependency advisories (advisory, non-blocking)
