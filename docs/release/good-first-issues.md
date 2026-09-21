@@ -5,6 +5,10 @@ was verified against the repository at the time of writing: the file paths and
 line numbers below are citations, not estimates. Nothing here is a roadmap
 feature — every item is a gap that exists in the code or the documentation today.
 
+**Seven of the nine are open and ready to file.** Candidates 5 and 7 were fixed
+during the extraction itself and are kept only as a record; their sections are
+marked with a status note. Do not file those two.
+
 Before opening one of these as a GitHub issue:
 
 1. Re-check it against the current commit. Line numbers move.
@@ -224,16 +228,19 @@ modification when this was written.
 
 ## 5. Align the `LICENSE` and `NOTICE` copyright lines
 
-The repository ships two copyright lines that name different owners, which makes
-the attribution ambiguous for anyone redistributing Cerberus. `LICENSE` names an
-individual plus "Cerberus AI Contributors"; `NOTICE` names "The Cerberus
-Authors". Pick one wording and apply it to both files.
+> **Status: already fixed during extraction.** `NOTICE:2` now carries the same
+> line as `LICENSE:189`. Kept here as a record; do not re-file it as an issue.
+
+The repository shipped two copyright lines naming different owners, which made
+attribution ambiguous for anyone redistributing Cerberus. `LICENSE` names an
+individual plus "Cerberus AI Contributors"; `NOTICE` named "The Cerberus
+Authors".
 
 **Files involved**
 
 - `LICENSE:189` — `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI
   Contributors)`.
-- `NOTICE:2` — `Copyright 2026 The Cerberus Authors`.
+- `NOTICE:2` — now identical to the line above.
 
 **Acceptance criterion**
 
@@ -284,18 +291,22 @@ the list and is a good way to learn how the documentation set fits together.
 
 ## 7. Fix two documentation claims that are no longer true
 
-Two documents describe files as absent when those files exist. `README.md` tells
-readers that `SECURITY.md` is not in the tree and to report issues privately
-instead, and `docs/architecture.md` says the API test directory is not present in
-this release. Both statements mislead a contributor about what is actually
-shipped, and both need correcting rather than deleting the files they describe.
+> **Status: already fixed during extraction.** The `README.md` note was removed
+> and `docs/architecture.md` now describes the test suite as present. Kept here
+> as a record; do not re-file it as an issue.
+
+Two documents described files as absent when those files exist. `README.md` told
+readers that `SECURITY.md` was not in the tree and to report issues privately
+instead, and `docs/architecture.md` said the API test directory was not present
+in this release. Both statements misled a contributor about what is actually
+shipped, and both needed correcting rather than deleting the files they
+describe.
 
 **Files involved**
 
-- `README.md:275-277` — the note claiming `SECURITY.md` "is not yet present in the
-  tree".
+- `README.md` — the note claiming `SECURITY.md` "is not yet present in the tree".
 - `SECURITY.md` — exists, and describes private vulnerability reporting.
-- `docs/architecture.md:64-66` — the claim that the test directory "is not present
+- `docs/architecture.md` — the claim that the test directory "is not present
   in this release".
 - `apps/api/test/` — exists and holds eight test files: `auth.test.ts`,
   `dedup.test.ts`, `helpers.ts`, `mcp-tool-mapping.test.ts`, `parsers.test.ts`,

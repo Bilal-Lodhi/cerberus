@@ -65,11 +65,10 @@ first two overstate what the software is, and the last two are false.
   experimental research system, so "Set as a pre-release" is the consistent
   choice; ticking it also stops GitHub labelling it "Latest".
 
-The version `0.1.0` already appears in `package.json`,
-`apps/api/package.json`, `packages/mcp-mongodb/package.json` and
-`MCP_SERVER_VERSION` in `packages/mcp-mongodb/src/tool-names.ts`.
-`apps/console/pubspec.yaml` still says `1.0.0+1` and must be brought into line
-before tagging — see `release-checklist.md`.
+The version `0.1.0` appears in `package.json`, `apps/api/package.json`,
+`packages/mcp-mongodb/package.json`, `apps/console/pubspec.yaml` and
+`MCP_SERVER_VERSION` in `packages/mcp-mongodb/src/tool-names.ts`. Confirm all
+five still agree before tagging.
 
 ---
 
