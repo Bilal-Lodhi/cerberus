@@ -1,0 +1,38 @@
+# ─── Dependencies ──────────────────────────────────────────
+node_modules/
+
+# ─── Build output ──────────────────────────────────────────
+dist/
+build/
+.dart_tool/
+.packages
+*.tsbuildinfo
+
+# ─── Environment secrets (NEVER commit .env files) ────────
+.env
+**/.env
+*.env
+!*.env.example
+!*.env.template
+!*.env.sample
+application_default_credentials.json
+
+# ─── Generated documentation (authored by build tools / AI) ─
+*.md
+!README.md
+!LICENSE.md
+!CONTRIBUTING.md
+!CHANGELOG.md
+!CODE_OF_CONDUCT.md
+!SECURITY.md
+
+# ─── Hackathon audit reports (local only) ─────────────────
+HACKATHON-COMPLIANCE-AUDIT.md
+_verify.txt
+
+# ─── OS & editor artifacts ────────────────────────────────
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

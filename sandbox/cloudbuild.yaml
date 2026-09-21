@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Cerberus AI — Cloud Build Configuration
+# Google Cloud Rapid Agent Hackathon 2026
+# Builds the multi-stage Docker image → pushes → ready for Cloud Run deploy
+# ─────────────────────────────────────────────────────────────────────────────
+
+steps:
+  # Build the Docker image from the sandbox/ directory
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/cerberus-api:$BUILD_ID"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/cerberus-api:latest"
+      - "-f"
+      - "Dockerfile"
+      - "."
+
+  # Push both tags to Google Container Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/cerberus-api:$BUILD_ID"
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/cerberus-api:latest"
+
+# Output image for Cloud Run deployment
+images:
+  - "gcr.io/$PROJECT_ID/cerberus-api:$BUILD_ID"
+  - "gcr.io/$PROJECT_ID/cerberus-api:latest"
+
+# Timeout: 10 minutes (TypeScript compilation can take a bit)
+timeout: "600s"
+
+# Build logs go to Cloud Logging
+options:
+  logging: CLOUD_LOGGING_ONLY

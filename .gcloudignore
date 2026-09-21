@@ -1,0 +1,41 @@
+# ────────────────────────────────────────────────────────
+# Cerberus AI — .gcloudignore
+# Prevents uploading unnecessary files to Cloud Build
+# ────────────────────────────────────────────────────────
+.git
+.gitignore
+node_modules/
+**/node_modules/
+
+# Environment files (secrets injected via Cloud Run, not baked in)
+**/.env
+!.env.example
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TypeScript build output (will be rebuilt)
+**/dist/
+**/*.tsbuildinfo
+
+# Test artifacts
+*.log
+coverage/
+
+# Frontend (Flutter — not part of container)
+sandbox/frontend/
+
+# Git
+.git/
+.gitattributes
+
+# Test scripts
+**/test-*.ps1
+**/run-all-tests.ps1

@@ -1,0 +1,32 @@
+$f = 'e:\CODE\Cerberus-AI\Google-Cloud-Hackathon\sandbox\hono-api\src\routes\generate.ts'
+$c = [IO.File]::ReadAllText($f)
+
+# Comment/doc block updates
+$c = $c -replace 'backed by Gemini 3 Flash Preview\.', 'backed by GPT-5.6 (OpenAI).'
+$c = $c -replace 'Gemini is the SOLE gatekeeper', 'AI is the SOLE gatekeeper'
+$c = $c -replace "flows directly to Gemini''s classifyAssessmentIntent\.", 'flows directly to classifyAssessmentIntent.'
+$c = $c -replace 'Gemini determines', 'The AI determines'
+$c = $c -replace 'BEFORE sending to Gemini\.', 'BEFORE sending to the AI model.'
+$c = $c -replace 'let Gemini have final say', 'let AI have final say'
+$c = $c -replace 'see exactly what Gemini decided', 'see exactly what the AI decided'
+$c = $c -replace 'Gemini Classifier', 'AI Classifier'
+$c = $c -replace 'now Gemini applies genuine semantic', 'now AI applies genuine semantic'
+$c = $c -replace 'Running Gemini classifyAssessmentIntent', 'Running AI classifyAssessmentIntent'
+$c = $c -replace 'Gemini classifier returned in', 'AI classifier returned in'
+$c = $c -replace 'geminiReason', 'aiReason'
+$c = $c -replace 'Gemini classifier REJECTED', 'AI classifier REJECTED'
+$c = $c -replace 'Gemini classifier ACCEPTED', 'AI classifier ACCEPTED'
+$c = $c -replace 'Gemini classifier FAILED', 'AI classifier FAILED'
+$c = $c -replace 'when Gemini was down', 'when the AI was down'
+$c = $c -replace 'isGeminiOverloaded', 'isAIServiceOverloaded'
+$c = $c -replace 'Gemini request failed after', 'request failed after'
+$c = $c -replace 'Gemini API error 503', 'API error 503'
+$c = $c -replace 'Gemini API error 504', 'API error 504'
+$c = $c -replace 'Gemini API error 429', 'API error 429'
+$c = $c -replace 'Gemini is currently busy', 'AI service is currently busy'
+$c = $c -replace 'server-side Gemini call', 'server-side AI model call'
+$c = $c -replace 'GeminiClient returned matrix', 'GeminiClient (GPT-5.6) returned matrix'
+$c = $c -replace 'Delegating to GeminiClient\.generateComplianceMatrix', 'Delegating to GeminiClient (GPT-5.6).generateComplianceMatrix'
+
+[IO.File]::WriteAllText($f, $c)
+Write-Output 'generate.ts updated successfully'

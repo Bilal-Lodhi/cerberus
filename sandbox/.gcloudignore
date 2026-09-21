@@ -1,0 +1,36 @@
+# ────────────────────────────────────────────────────────
+# Cerberus AI — sandbox/.gcloudignore
+# Prevents uploading unnecessary files to Cloud Build
+# ────────────────────────────────────────────────────────
+
+# Node modules (reinstalled during Docker build)
+node_modules/
+**/node_modules/
+
+# Environment files with credentials (injected at deploy time)
+.env
+**/.env
+
+# TypeScript build output (built fresh in Docker)
+dist/
+**/dist/
+*.tsbuildinfo
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Frontend (Flutter — not part of Docker container)
+frontend/
+
+# Test scripts
+*.ps1
+
+# Logs and temp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

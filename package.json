@@ -1,0 +1,26 @@
+{
+  "name": "google-cloud-rapid-agent-hackathon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cerberus FinSec — Insider threat & data exfiltration guardian for financial services compliance",
+  "license": "Apache-2.0",
+  "workspaces": [
+    "sandbox/hono-api",
+    "sandbox/mcp-server"
+  ],
+  "scripts": {
+    "build": "npm run build -w sandbox/hono-api && npm run build -w sandbox/mcp-server",
+    "build:api": "npm run build -w sandbox/hono-api",
+    "build:mcp": "npm run build -w sandbox/mcp-server",
+    "dev:api": "npm run dev -w sandbox/hono-api",
+    "dev:mcp": "npm run dev -w sandbox/mcp-server",
+    "dev": "cd sandbox && npm run dev",
+    "dev:backend": "npm run build && node sandbox/start-services.js",
+    "start": "node sandbox/start-services.js",
+    "deploy": "npm run deploy --workspace=sandbox/hono-api"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {}
+}

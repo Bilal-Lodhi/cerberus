@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Dev Terminal</title>
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: #0D1117;
+            color: #E6EDF3;
+            font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 780px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding: 0 8px;
+        }
+
+        .shield-icon {
+            width: 40px;
+            height: 40px;
+            background: #00BFA5;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }
+
+        .title {
+            font-size: 22px;
+            font-weight: 700;
+            color: #E6EDF3;
+            letter-spacing: -0.3px;
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: #8B949E;
+            margin-top: 2px;
+        }
+
+        .terminal {
+            background: #161B22;
+            border: 1px solid #21262D;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .terminal-bar {
+            background: #1C2333;
+            padding: 10px 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #21262D;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot-red {
+            background: #EF5350;
+        }
+
+        .dot-amber {
+            background: #FFAB00;
+        }
+
+        .dot-green {
+            background: #66BB6A;
+        }
+
+        .terminal-title {
+            margin-left: 8px;
+            font-size: 12px;
+            color: #8B949E;
+            font-weight: 600;
+        }
+
+        .terminal-body {
+            padding: 20px;
+            min-height: 200px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.7;
+        }
+
+        .terminal-body::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .terminal-body::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .terminal-body::-webkit-scrollbar-thumb {
+            background: #30363D;
+            border-radius: 3px;
+        }
+
+        .prompt-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .prompt {
+            color: #00BFA5;
+            font-weight: 700;
+            white-space: nowrap;
+            font-size: 14px;
+        }
+
+        .paste-area {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .paste-input {
+            flex: 1;
+            background: #0D1117;
+            border: 1px solid #30363D;
+            border-radius: 8px;
+            padding: 12px 14px;
+            color: #E6EDF3;
+            font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .paste-input:focus {
+            border-color: #00BFA5;
+            box-shadow: 0 0 0 3px rgba(0, 191, 165, 0.15);
+        }
+
+        .paste-input::placeholder {
+            color: #484F58;
+        }
+
+        .btn {
+            background: #00BFA5;
+            color: #0D1117;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            font-family: 'Courier New', 'Consolas', 'Monaco', monospace;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            background: #00E5C0;
+        }
+
+        .btn:active {
+            transform: scale(0.97);
+        }
+
+        .btn.clear {
+            background: transparent;
+            color: #8B949E;
+            border: 1px solid #30363D;
+        }
+
+        .btn.clear:hover {
+            background: #1C2333;
+            color: #E6EDF3;
+        }
+
+        .output-line {
+            padding: 4px 0;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .output-line.system {
+            color: #8B949E;
+            font-size: 13px;
+        }
+
+        .output-line.data {
+            color: #E6EDF3;
+        }
+
+        .output-line.success {
+            color: #66BB6A;
+        }
+
+        .output-line.error {
+            color: #EF5350;
+        }
+
+        .output-line.warning {
+            color: #FFAB00;
+        }
+
+        .no-flag {
+            margin-top: 20px;
+            padding: 16px;
+            background: rgba(255, 171, 0, 0.08);
+            border: 1px solid rgba(255, 171, 0, 0.25);
+            border-radius: 10px;
+            display: none;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .no-flag .icon {
+            font-size: 20px;
+            flex-shrink: 0;
+        }
+
+        .no-flag .msg {
+            font-size: 13px;
+            color: #FFB74D;
+            line-height: 1.6;
+        }
+
+        .no-flag .code {
+            color: #FFAB00;
+            font-weight: 700;
+        }
+
+        .status-row {
+            display: flex;
+            gap: 16px;
+            margin-top: 20px;
+            font-size: 11px;
+            color: #8B949E;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #161B22;
+            border: 1px solid #21262D;
+            border-radius: 20px;
+        }
+
+        .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+        }
+
+        .status-dot.green {
+            background: #66BB6A;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="shield-icon">💻</div>
+            <div>
+                <div class="title">Local Dev Terminal</div>
+                <div class="subtitle">Standard Employee Workspace — Session: local-dev-01</div>
+            </div>
+        </div>
+
+        <!-- Terminal Window -->
+        <div class="terminal">
+            <div class="terminal-bar">
+                <div class="dot dot-red"></div>
+                <div class="dot dot-amber"></div>
+                <div class="dot dot-green"></div>
+                <span class="terminal-title">bash — ~/employee-workspace</span>
+            </div>
+            <div class="terminal-body" id="terminalBody">
+                <div class="output-line system">[system] Terminal ready. Paste data below to simulate employee input.
+                </div>
+                <div class="output-line system">[system] No security policies loaded.</div>
+                <div class="output-line system">[system] Awaiting input...</div>
+            </div>
+        </div>
+
+        <!-- Paste Input -->
+        <div class="paste-area">
+            <input type="text" class="paste-input" id="pasteInput" placeholder="Paste your data here and press Enter..."
+                autofocus />
+            <button class="btn" id="submitBtn">Submit</button>
+            <button class="btn clear" id="clearBtn">Clear</button>
+        </div>
+
+        <!-- No-Flag Indicator -->
+        <div class="no-flag" id="noFlag">
+            <span class="icon">⚠️</span>
+            <div class="msg">
+                <strong>No sensitive data detected.</strong><br>
+                A regular terminal has no built-in security scanning. This same input, when pasted into <span
+                    class="code">Cerberus FinSec</span>, would be analyzed against AI compliance matrices and <span
+                    class="code">flagged instantly</span> if it contains high-risk patterns.
+            </div>
+        </div>
+
+        <!-- Status Row -->
+        <div class="status-row">
+            <div class="status-pill">
+                <span class="status-dot green"></span>
+                <span>Security: None</span>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot green"></span>
+                <span>AI Scanner: Off</span>
+            </div>
+            <div class="status-pill">
+                <span class="status-dot green"></span>
+                <span>Session: local-dev-01</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const terminalBody = document.getElementById('terminalBody');
+        const pasteInput = document.getElementById('pasteInput');
+        const submitBtn = document.getElementById('submitBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const noFlag = document.getElementById('noFlag');
+
+        function addLine(text, type) {
+            const div = document.createElement('div');
+            div.className = 'output-line ' + type;
+            div.textContent = text;
+            terminalBody.appendChild(div);
+            terminalBody.scrollTop = terminalBody.scrollHeight;
+        }
+
+        function submitData() {
+            const data = pasteInput.value.trim();
+            if (!data) return;
+
+            const timestamp = new Date().toLocaleTimeString();
+            addLine(`[${timestamp}] $ ${data}`, 'data');
+
+            // Simulate a quick "scan" — always shows no flag for this demo page
+            setTimeout(() => {
+                addLine('[scan] Local scan complete — no security engine available.', 'system');
+                noFlag.style.display = 'flex';
+            }, 300);
+
+            pasteInput.value = '';
+            pasteInput.focus();
+        }
+
+        submitBtn.addEventListener('click', submitData);
+        pasteInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitData();
+        });
+
+        clearBtn.addEventListener('click', () => {
+            terminalBody.innerHTML = '';
+            addLine('[system] Terminal cleared.', 'system');
+            addLine('[system] Awaiting input...', 'system');
+            noFlag.style.display = 'none';
+            pasteInput.focus();
+        });
+    </script>
+
+</body>
+
+</html>

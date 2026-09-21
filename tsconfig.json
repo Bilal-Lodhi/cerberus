@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": [],
+  "references": [
+    { "path": "./sandbox/hono-api" },
+    { "path": "./sandbox/mcp-server" }
+  ],
+  "exclude": ["node_modules", "dist"]
+}

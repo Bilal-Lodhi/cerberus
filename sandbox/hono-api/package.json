@@ -1,0 +1,26 @@
+{
+  "name": "gorilla-agent-hono-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless Hono API with Gemini agent orchestration and MCP connectivity for the MongoDB track",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "deploy": "tsc && gcloud run deploy gorilla-agent-api --source . --region us-central1 --allow-unauthenticated",
+    "test:smoke": "node -e \"const test = async () => { const base = 'http://localhost:8080'; console.log('=== Health Check ==='); const h = await fetch(base+'/health'); console.log(await h.json()); console.log('=== Generate Suite ==='); const g = await fetch(base+'/api/v1/generate', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:'Create a TypeScript coding test for mid-level full-stack engineers',roleContext:'fullstack-typescript',problemCount:2,difficultyMix:{beginner:0.2,intermediate:0.5,advanced:0.3}})}); console.log(JSON.stringify(await g.json(),null,2).substring(0,500)+'... [truncated]'); console.log('=== Guardian Ingest ==='); const i = await fetch(base+'/api/v1/guardian/ingest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({events:[{eventId:'evt-001',sessionId:'ses-001',candidateId:'can-001',assessmentId:'asmt-001',problemId:'prob-001',eventType:'PASTE_TRIGGER',timestamp:new Date().toISOString(),payload:{pasteContent:'function foo() { return 42; }',deltaMs:120},clientMetadata:{userAgent:'test-agent',ipAddress:'127.0.0.1',screenResolution:'1920x1080',platform:'web',language:'en-US'}}]})}); console.log(await i.json()); console.log('=== Session Review ==='); const r = await fetch(base+'/api/v1/sessions/ses-001'); console.log(await r.json()); console.log('\\\\n=== ALL SMOKE TESTS PASSED ===');}; test().catch(e => {console.error('SMOKE TEST FAILED:',e.message); process.exit(1);});\""
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "dotenv": "^16.6.1",
+    "hono": "^4.6.14",
+    "openai": "^6.46.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
