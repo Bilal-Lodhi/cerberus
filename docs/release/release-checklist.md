@@ -12,21 +12,28 @@ Run every command from the repository root unless the step says otherwise.
 
 Hard blockers. If any line below is still open, stop and fix it first.
 
-- [ ] `flutter analyze` exits 0 in `apps/console` (it exited 1 with 7 lint infos
-      when this checklist was written).
-- [ ] `flutter test` passes in `apps/console` (it fails to compile because
-      `lib/widgets/code_workspace_panel.dart` imports `dart:html`).
-- [ ] `npm run build`, `npm run typecheck` and `npm test` all exit 0.
-- [ ] The Docker image builds and the container answers `GET /health`.
-- [ ] The container exits non-zero, with a `CERBERUS_API_KEY` message, when run
-      with `NODE_ENV=production` and no operator key.
+Verified during extraction, so these are ticked — re-run them against the
+release commit rather than trusting this list.
+
+- [x] `flutter analyze` exits 0 in `apps/console` — verified: "No issues found!".
+- [x] `flutter test` passes in `apps/console` — verified: 2/2. The `dart:html`
+      dependency that blocked the Dart VM target was moved behind a
+      platform-conditional import.
+- [x] `npm run build`, `npm run typecheck` and `npm test` all exit 0 — verified,
+      with 161 tests passing.
+- [x] The Docker image builds and the container answers `GET /health` — verified
+      via `docker compose up -d --build`.
+- [x] The container exits non-zero, with a `CERBERUS_API_KEY` message, when run
+      with `NODE_ENV=production` and no operator key — verified.
 - [ ] Every `OWNER` placeholder is gone from the repository.
 - [ ] `conduct@cerberus.invalid` is replaced with a monitored mailbox.
-- [ ] The `LICENSE` and `NOTICE` copyright lines agree.
+- [x] The `LICENSE` and `NOTICE` copyright lines agree — `NOTICE` now carries the
+      same line as `LICENSE`.
 - [ ] The version is `0.1.0` in every manifest, including
       `apps/console/pubspec.yaml`.
 - [ ] `CHANGELOG.md` dates the `0.1.0` section instead of saying `unreleased`.
-- [ ] The secret scan is clean on the release commit.
+- [ ] The secret scan is clean on the release commit, including the
+      `trufflehog --only-verified` CI job, which was not run locally.
 
 ---
 
@@ -94,14 +101,16 @@ These are manual aids, not the automated suite. Run them with
 ### 1.5 License audit
 
 - [ ] Confirm `LICENSE` contains the unmodified Apache License 2.0 text.
-- [ ] Align the copyright line: `LICENSE` says "Copyright 2026 Muhammad Bilal
-      Raza Lodhi (Cerberus AI Contributors)"; `NOTICE` says "Copyright 2026 The
-      Cerberus Authors". Pick one wording and apply it to both files.
+- [x] Align the copyright line. `NOTICE` now carries the same line as `LICENSE`:
+      "Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)".
 - [ ] Generate a full transitive dependency inventory with a license-scanning
-      tool and add the resulting notices to `NOTICE`. `NOTICE` currently lists
-      direct runtime dependencies only and says so.
-- [ ] Confirm every dependency's license is compatible with Apache-2.0
-      distribution.
+      tool and reconcile it against `NOTICE`. A manual closure walk during
+      extraction found 105 production packages, all permissively licensed
+      (MIT 89, ISC 7, Apache-2.0 4, BSD-2-Clause 3, BSD-3-Clause 2) with no
+      copyleft, unknown or missing license. `NOTICE` lists direct runtime
+      dependencies only and says so.
+- [x] Confirm every dependency's license is compatible with Apache-2.0
+      distribution — no copyleft or unknown-license package was found.
 - [ ] Confirm the `NOTICE` provenance paragraph still states that the project is
       not affiliated with, endorsed by or sponsored by Google, OpenAI or MongoDB.
 

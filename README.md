@@ -149,7 +149,34 @@ The Flutter console is not containerised. Run it separately:
 
 ```bash
 cd apps/console
-flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080
+flutter pub get
+flutter run -d chrome \
+  --dart-define=API_BASE_URL=http://localhost:8080 \
+  --dart-define=CERBERUS_API_KEY=<your CERBERUS_API_KEY>
+```
+
+Both defines have defaults (`http://localhost:8080` and an empty key), so with
+`CERBERUS_DEV_MODE=true` the console connects with no key at all. Against an
+authenticated API you must supply the key.
+
+To produce a deployable bundle instead of a dev session:
+
+```bash
+flutter build web --release \
+  --dart-define=API_BASE_URL=https://your-cerberus-host \
+  --dart-define=CERBERUS_API_KEY=<your CERBERUS_API_KEY>
+```
+
+> **Note:** `--dart-define` values are compiled into the web bundle, so anyone
+> who can fetch the bundle can read the API key. Serve the console only to
+> trusted operators, or place it behind a proxy that injects the credential.
+
+The console can also be verified without a backend:
+
+```bash
+cd apps/console
+flutter analyze     # must be clean
+flutter test        # runs on the Dart VM; no browser or server needed
 ```
 
 ### Local, without Docker
