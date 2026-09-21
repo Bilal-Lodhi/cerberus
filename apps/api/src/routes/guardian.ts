@@ -618,13 +618,15 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         );
         const status = normalizeStatus(String(doc["status"] ?? "active"));
 
-        if (!activeSessions.has(sessionId)) {
+        // A terminated session is listed for review but must never re-enter the
+        // live registry, or a restart would resurrect it as actively monitored.
+        if (!activeSessions.has(sessionId) && isMonitored(status)) {
           activeSessions.set(sessionId, {
             sessionId,
             employeeId,
             matrixId,
             targetSystem: String(doc["targetSystem"] ?? ""),
-            status,
+            status: status as ActiveSession["status"],
             deployedAt,
             riskIndex: riskScore,
           });
@@ -971,15 +973,34 @@ export function collectPasteContents(events: MicroEvent[]): string[] {
     .map((event) => event.payload.pasteContent ?? event.payload.newText ?? "");
 }
 
-export function normalizeStatus(raw: string): ActiveSession["status"] {
-  const valid: ActiveSession["status"][] = [
-    "active",
-    "flagged",
-    "investigating",
-    "cleared",
-    "locked",
-  ];
-  return (valid as string[]).includes(raw) ? (raw as ActiveSession["status"]) : "active";
+/**
+ * Every status a session document may legitimately carry.
+ *
+ * This is the union of the review vocabulary and the MCP adapter's writable
+ * set, and it deliberately includes `terminated`: a session recovered from
+ * MongoDB after a restart must not be reported as live again.
+ */
+export const PERSISTED_SESSION_STATUSES = [
+  "active",
+  "flagged",
+  "investigating",
+  "cleared",
+  "locked",
+  "terminated",
+] as const;
+
+export type PersistedSessionStatus = (typeof PERSISTED_SESSION_STATUSES)[number];
+
+/** Maps an arbitrary stored value onto the known status vocabulary. */
+export function normalizeStatus(raw: string): PersistedSessionStatus {
+  return (PERSISTED_SESSION_STATUSES as readonly string[]).includes(raw)
+    ? (raw as PersistedSessionStatus)
+    : "active";
+}
+
+/** A terminated session is preserved for review but is no longer monitored. */
+export function isMonitored(status: PersistedSessionStatus): boolean {
+  return status !== "terminated";
 }
 
 function buildIncidentSummary(

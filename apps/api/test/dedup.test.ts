@@ -16,6 +16,7 @@ import {
   computeEventFingerprint,
   computeKeystrokeMetrics,
   hasAnomalousKeystrokes,
+  isMonitored,
   normalizeStatus,
   type SessionState,
 } from "../src/routes/guardian.js";
@@ -235,6 +236,27 @@ describe("normalizeStatus", () => {
   });
 
   test("does not leak the terminated status into the active registry", () => {
-    assert.equal(normalizeStatus("terminated"), "active");
+    // Regression: 'terminated' was absent from the known set, so a durably
+    // terminated session recovered from MongoDB was reported as 'active' —
+    // i.e. a stopped session was resurrected after a restart.
+    assert.equal(normalizeStatus("terminated"), "terminated");
+    assert.equal(isMonitored(normalizeStatus("terminated")), false);
+  });
+
+  test("does not resurrect the retired 'in_progress' creation status", () => {
+    assert.equal(normalizeStatus("in_progress"), "active");
+  });
+});
+
+describe("isMonitored", () => {
+  test("a terminated session is not monitored", () => {
+    assert.equal(isMonitored("terminated"), false);
+  });
+
+  test("every other status is monitored", () => {
+    const monitored = ["active", "flagged", "investigating", "cleared", "locked"] as const;
+    for (const status of monitored) {
+      assert.equal(isMonitored(status), true, `${status} should be monitored`);
+    }
   });
 });
