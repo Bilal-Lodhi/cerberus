@@ -1,0 +1,19 @@
+# Normalise line endings in the repository, not in the working tree.
+* text=auto eol=lf
+
+# Shell scripts must keep LF so they run inside the Linux container.
+*.sh text eol=lf
+
+# Windows-only helpers keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets are never normalised.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+
+# Generated or lock files that should not appear in diffs.
+package-lock.json linguist-generated=true
+apps/console/pubspec.lock linguist-generated=true
