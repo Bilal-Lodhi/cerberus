@@ -1,26 +1,25 @@
 {
-  "name": "google-cloud-rapid-agent-hackathon",
-  "version": "1.0.0",
+  "name": "cerberus",
+  "version": "0.1.0",
   "private": true,
-  "description": "Cerberus FinSec — Insider threat & data exfiltration guardian for financial services compliance",
   "license": "Apache-2.0",
+  "description": "Cerberus — real-time insider-threat and data-exfiltration telemetry guardian.",
+  "type": "module",
   "workspaces": [
-    "sandbox/hono-api",
-    "sandbox/mcp-server"
+    "apps/api",
+    "packages/mcp-mongodb"
   ],
-  "scripts": {
-    "build": "npm run build -w sandbox/hono-api && npm run build -w sandbox/mcp-server",
-    "build:api": "npm run build -w sandbox/hono-api",
-    "build:mcp": "npm run build -w sandbox/mcp-server",
-    "dev:api": "npm run dev -w sandbox/hono-api",
-    "dev:mcp": "npm run dev -w sandbox/mcp-server",
-    "dev": "cd sandbox && npm run dev",
-    "dev:backend": "npm run build && node sandbox/start-services.js",
-    "start": "node sandbox/start-services.js",
-    "deploy": "npm run deploy --workspace=sandbox/hono-api"
-  },
   "engines": {
     "node": ">=20.0.0"
   },
-  "dependencies": {}
+  "scripts": {
+    "build": "npm run build --workspace @cerberus/api && npm run build --workspace @cerberus/mcp-mongodb",
+    "build:api": "npm run build --workspace @cerberus/api",
+    "build:mcp": "npm run build --workspace @cerberus/mcp-mongodb",
+    "typecheck": "npm run typecheck --workspace @cerberus/api && npm run typecheck --workspace @cerberus/mcp-mongodb",
+    "test": "npm run test --workspace @cerberus/api",
+    "dev": "node scripts/dev-services.js",
+    "start": "node scripts/start-services.js",
+    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1"
+  }
 }

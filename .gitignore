@@ -1,38 +1,47 @@
-# ─── Dependencies ──────────────────────────────────────────
+# ─── Dependencies ──────────────────────────────────────────────
 node_modules/
 
-# ─── Build output ──────────────────────────────────────────
+# ─── Build output ──────────────────────────────────────────────
 dist/
 build/
-.dart_tool/
-.packages
 *.tsbuildinfo
 
-# ─── Environment secrets (NEVER commit .env files) ────────
+# ─── Flutter / Dart ────────────────────────────────────────────
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+apps/console/build/
+apps/console/.dart_tool/
+
+# ─── Environment secrets (NEVER commit real .env files) ────────
 .env
-**/.env
-*.env
-!*.env.example
-!*.env.template
-!*.env.sample
+.env.*
+!.env.example
 application_default_credentials.json
+*.pem
+*.key
 
-# ─── Generated documentation (authored by build tools / AI) ─
-*.md
-!README.md
-!LICENSE.md
-!CONTRIBUTING.md
-!CHANGELOG.md
-!CODE_OF_CONDUCT.md
-!SECURITY.md
+# ─── Firebase / cloud deployment state ─────────────────────────
+.firebase/
+firebase-debug.log
+.firebaserc
+firebase.json
+gcloud-credentials.json
 
-# ─── Hackathon audit reports (local only) ─────────────────
-HACKATHON-COMPLIANCE-AUDIT.md
-_verify.txt
-
-# ─── OS & editor artifacts ────────────────────────────────
+# ─── Local runtime output ──────────────────────────────────────
 *.log
+logs/
+coverage/
+.nyc_output/
+
+# ─── OS & editor artifacts ─────────────────────────────────────
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+*.swp
+
+# ─── NOTE ──────────────────────────────────────────────────────
+# Documentation is a first-class part of this repository.
+# Do NOT add a blanket `*.md` ignore rule here.

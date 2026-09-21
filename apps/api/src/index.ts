@@ -1,0 +1,166 @@
+/**
+ * Cerberus API entry point.
+ *
+ *   Hono (routing, CORS, auth) → OpenAIProvider (OpenAI SDK)
+ *                              → MCP MongoDB adapter (persistence)
+ *
+ * Endpoints:
+ *   GET    /health                              liveness + capability discovery
+ *   POST   /api/v1/identity/set                 register an operator display identity
+ *   GET    /api/v1/identity/me                  read the current operator identity
+ *   POST   /api/v1/scenarios                    author a threat scenario matrix
+ *   POST   /api/v1/scenarios/cancel             cancel an in-flight authoring request
+ *   POST   /api/v1/guardian/ingest              ingest telemetry
+ *   POST   /api/v1/guardian/deploy              create a monitored session
+ *   GET    /api/v1/guardian/sessions            list sessions (live + durable)
+ *   GET    /api/v1/guardian/sessions/:id        live session detail
+ *   POST   /api/v1/guardian/sessions/:id/terminate
+ *   DELETE /api/v1/guardian/sessions/:id
+ *   GET    /api/v1/sessions                     session list for the console
+ *   GET    /api/v1/sessions/:id                 full session review
+ *   POST   /api/v1/auditor/query                natural-language audit query
+ *
+ * Everything except /health requires the operator API key. See
+ * ../middleware/auth.ts and SECURITY.md.
+ */
+
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { logger } from "hono/logger";
+import { prettyJSON } from "hono/pretty-json";
+import { randomUUID } from "node:crypto";
+
+import { loadConfig, ConfigError, type AppConfig } from "./config.js";
+import { createAuthMiddleware } from "./middleware/auth.js";
+import { createScenariosRouter } from "./routes/scenarios.js";
+import { createGuardianRouter } from "./routes/guardian.js";
+import { createReviewRouter } from "./routes/review.js";
+import { createAuditorRouter } from "./routes/auditor.js";
+import { healthRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
+import { identityRouter } from "./routes/identity.js";
+
+/** Builds the fully-wired Hono application. */
+export function createApp(config: AppConfig): Hono {
+  const app = new Hono();
+
+  // ── CORS: explicit allow-list only ──────────────────────────────
+  const allowedOrigins = config.cors.allowedOrigins;
+  app.use(
+    "*",
+    cors({
+      origin: (origin) => {
+        if (!origin) return undefined;
+        return allowedOrigins.includes(origin) ? origin : undefined;
+      },
+      allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+      allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "X-Session-Token",
+        "X-Generation-Request-Id",
+      ],
+      exposeHeaders: ["X-Correlation-Id"],
+      maxAge: 86400,
+    }),
+  );
+
+  // ── Correlation id ──────────────────────────────────────────────
+  app.use("*", async (c, next) => {
+    c.header("X-Correlation-Id", randomUUID());
+    await next();
+  });
+
+  // ── Authentication boundary ─────────────────────────────────────
+  app.use("*", createAuthMiddleware(config));
+
+  // ── Observability ───────────────────────────────────────────────
+  if (config.devMode) {
+    app.use("*", logger());
+  }
+  app.use("*", prettyJSON());
+
+  // ── Routes ──────────────────────────────────────────────────────
+  const guardian = createGuardianRouter(config);
+
+  app.route("/", healthRouter);
+  app.route("/health", healthRouter);
+  app.route("/api/v1/identity", identityRouter);
+  app.route("/api/v1/scenarios", createScenariosRouter(config));
+  app.route("/api/v1/guardian", guardian.router);
+  app.route(
+    "/api/v1/sessions",
+    createReviewRouter(config, guardian.sessionStore, guardian.activeSessions),
+  );
+  app.route("/api/v1/auditor", createAuditorRouter(config));
+
+  // ── 404 ─────────────────────────────────────────────────────────
+  app.notFound((c) =>
+    c.json(
+      {
+        success: false,
+        error: "Route not found.",
+        code: "NOT_FOUND",
+        path: `${c.req.method} ${c.req.path}`,
+      },
+      404,
+    ),
+  );
+
+  // ── Error handler: never leak framework or provider internals ───
+  app.onError((err, c) => {
+    console.error("[api] unhandled error:", err);
+    return c.json(
+      {
+        success: false,
+        error: "Internal server error.",
+        code: "INTERNAL_ERROR",
+        correlationId: c.res.headers.get("X-Correlation-Id") ?? "unknown",
+      },
+      500,
+    );
+  });
+
+  return app;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Bootstrap
+// ═══════════════════════════════════════════════════════════════════
+
+async function main(): Promise<void> {
+  let config: AppConfig;
+  try {
+    config = loadConfig();
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      console.error(`[api] FATAL: ${error.message}`);
+      process.exit(1);
+    }
+    throw error;
+  }
+
+  const app = createApp(config);
+
+  console.log(
+    `\n  ${SERVICE_NAME} v${SERVICE_VERSION}\n` +
+      `  mode:    ${config.devMode ? "development" : "production"}\n` +
+      `  listen:  http://localhost:${config.port}\n` +
+      `  auth:    ${config.devMode ? "DISABLED (dev mode)" : "API key required"}\n` +
+      `  mcp:     ${config.mcp.serverEndpoint}\n` +
+      `  cors:    ${config.cors.allowedOrigins.length} origin(s) allow-listed\n`,
+  );
+
+  const { serve } = await import("@hono/node-server");
+  serve({ fetch: app.fetch, port: config.port });
+}
+
+const isMainModule =
+  process.argv[1]?.endsWith("index.js") || process.argv[1]?.endsWith("index.ts");
+
+if (isMainModule) {
+  main().catch((error) => {
+    console.error("[api] Fatal startup error:", error);
+    process.exit(1);
+  });
+}

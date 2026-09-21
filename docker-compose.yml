@@ -1,0 +1,80 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Cerberus — local stack
+# ═══════════════════════════════════════════════════════════════════════════
+#
+#   cp .env.example .env     # then set OPENAI_API_KEY
+#   docker compose up --build
+#
+#   API:     http://localhost:8080/health
+#   MongoDB: mongodb://localhost:27017  (database: cerberus)
+#
+# The console (apps/console) is a Flutter app and is NOT containerised here.
+# Run it separately with `flutter run -d chrome`; see docs/architecture.md.
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # ── Runtime ──
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "8080"
+      MCP_PORT: "3001"
+      MCP_BIND_HOST: "127.0.0.1"
+      MCP_SERVER_ENDPOINT: "http://127.0.0.1:3001"
+
+      # ── Authentication ──
+      # Explicit development mode is required to run without credentials.
+      CERBERUS_DEV_MODE: ${CERBERUS_DEV_MODE:-false}
+      CERBERUS_API_KEY: ${CERBERUS_API_KEY:-}
+      CERBERUS_MCP_TOKEN: ${CERBERUS_MCP_TOKEN:-}
+      CERBERUS_CORS_ORIGINS: ${CERBERUS_CORS_ORIGINS:-}
+
+      # ── AI provider (required) ──
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-gpt-5.6}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-65536}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
+      OPENAI_REQUEST_TIMEOUT_MS: ${OPENAI_REQUEST_TIMEOUT_MS:-90000}
+
+      # ── Persistence ──
+      MONGODB_URI: "mongodb://mongodb:27017"
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-cerberus}
+      MCP_TIMEOUT_MS: ${MCP_TIMEOUT_MS:-10000}
+
+      # ── Detection thresholds ──
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-7200}
+      MAX_PASTE_EVENTS: ${MAX_PASTE_EVENTS:-5}
+      MIN_HUMAN_KEYSTROKE_MS: ${MIN_HUMAN_KEYSTROKE_MS:-80}
+      DATA_LEAKAGE_SIMILARITY_THRESHOLD: ${DATA_LEAKAGE_SIMILARITY_THRESHOLD:-0.75}
+
+      # ── Notifications (optional) ──
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      EMAIL_TO: ${EMAIL_TO:-}
+
+volumes:
+  mongodb-data:

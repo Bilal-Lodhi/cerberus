@@ -8,8 +8,8 @@
   },
   "include": [],
   "references": [
-    { "path": "./sandbox/hono-api" },
-    { "path": "./sandbox/mcp-server" }
+    { "path": "./apps/api" },
+    { "path": "./packages/mcp-mongodb" }
   ],
   "exclude": ["node_modules", "dist"]
 }
