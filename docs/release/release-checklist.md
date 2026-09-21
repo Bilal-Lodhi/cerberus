@@ -12,7 +12,7 @@ Run every command from the repository root unless the step says otherwise.
 
 Hard blockers. If any line below is still open, stop and fix it first.
 
-- [ ] `flutter analyze` exits 0 in `apps/console` (it exited 1 with 18 findings
+- [ ] `flutter analyze` exits 0 in `apps/console` (it exited 1 with 7 lint infos
       when this checklist was written).
 - [ ] `flutter test` passes in `apps/console` (it fails to compile because
       `lib/widgets/code_workspace_panel.dart` imports `dart:html`).

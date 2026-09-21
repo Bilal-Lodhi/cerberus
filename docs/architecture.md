@@ -61,9 +61,8 @@ Supporting files:
 
 The API deliberately keeps its own copy of the tool-name set rather than
 importing the MCP package, so the two services remain independently
-deployable. A test (`apps/api/test/mcp-tool-mapping.test.ts`, referenced in the
-source comments) is intended to assert the two sets are identical; the test
-directory is not present in this release.
+deployable. `apps/api/test/mcp-tool-mapping.test.ts` asserts the two sets are
+identical, so renaming a tool on one side without the other fails the suite.
 
 ## 2. Data flow — telemetry ingestion
 
