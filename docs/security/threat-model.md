@@ -1,0 +1,229 @@
+# Threat model
+
+Scope: the Cerberus API (`apps/api`), the MCP MongoDB adapter
+(`packages/mcp-mongodb`), the Flutter console (`apps/console`) and their data at
+rest in MongoDB, as shipped in version 0.1.0.
+
+This document describes the security posture of the software as written. It is
+not a claim of fitness for any particular deployment. Cerberus is not
+production ready and does not guarantee that it detects or prevents anything.
+
+## 1. Assets
+
+| Asset | Where it lives | Why it matters |
+| --- | --- | --- |
+| Telemetry payloads | `micro_events`, request bodies | Keystroke characters, paste content, copied text, code deltas, terminal snapshots, user agent, IP address, screen resolution, platform, language. |
+| Reconstructed terminal content | `monitored_sessions.terminalContent`, `SessionState.currentCode` | A best-effort reconstruction of what the monitored operator was working on. |
+| Risk assessments | `risk_assessments`, `RiskAssessmentPayload` | Scores, flags, exfiltration matches, behavioural anomalies, paste snippets, code snapshot, incident summary. |
+| Employee identifiers | `employeeId` on sessions and assessments | Names or ids of monitored people. Personal data in most jurisdictions. |
+| Threat scenario matrices | `threat_scenarios` | Authored target systems, mandates, threat vectors, detection rules, penetration scenarios. Describes your defensive posture. |
+| Operator API key | `CERBERUS_API_KEY` | Full read and delete access to everything above. |
+| MCP shared secret | `CERBERUS_MCP_TOKEN` | Full read and delete access to the persistence layer. |
+| OpenAI API key | `OPENAI_API_KEY` | Billable credential; also the credential that authorises sending telemetry-derived prompts to the provider. |
+| Notification credentials | `SLACK_WEBHOOK_URL`, `SENDGRID_API_KEY` | Ability to post content into a third-party channel. |
+| MongoDB credentials | `MONGODB_URI` | Direct database access, bypassing Cerberus entirely. |
+
+## 2. Actors
+
+| Actor | Capability | Notes |
+| --- | --- | --- |
+| Authenticated operator | Anything the API exposes | Holds the single API key. There is exactly one privilege level. |
+| Anonymous network client | `GET /health`, `GET /`; everything else receives 401 | Health exposes service name, version, uptime, timestamp and route hints. |
+| Monitored operator | Controls the browser that produces telemetry | Can attempt to forge, replay, suppress or flood telemetry, and can read whatever the console sends. |
+| Operator with local access to the API host | Environment variables, process memory, `.env` | Can read every secret. |
+| Compromised monitored host | Same as the monitored operator, plus arbitrary code execution | Can forge any telemetry the console could have produced. |
+| Third-party AI provider | Receives prompt content | Sees terminal content, paste snippets and keystroke metrics included in prompts. |
+| Notification provider | Receives alert content | Sees employee id, risk score, session id, summary and flag types. |
+| Network attacker | Off-path or on-path | Relevant only if TLS is absent or terminated incorrectly. |
+
+There is no administrator role, no auditor role, no read-only role and no
+per-user account. Authorization is binary.
+
+## 3. Trust boundaries
+
+```text
+  [ untrusted ]                [ trusted: self-hosted ]                [ external ]
+ ┌───────────────┐   key    ┌───────────────────────────┐   key    ┌──────────────┐
+ │ console /     │─────────▶│ Cerberus API              │─────────▶│ OpenAI       │
+ │ any client    │          │ session state, secrets    │          └──────────────┘
+ └───────────────┘          └────────────┬──────────────┘
+                                         │ MCP bearer token
+                                         ▼
+                            ┌───────────────────────────┐   conn str  ┌──────────────┐
+                            │ MCP HTTP adapter          │────────────▶│ MongoDB      │
+                            │ (loopback by default)     │             └──────────────┘
+                            └───────────────────────────┘
+```
+
+1. **Client → API.** Crossed with a pre-shared key. Everything in the body is
+   untrusted and shape-validated per route.
+2. **API → OpenAI.** Crossed with the provider API key. The response is
+   untrusted text and is parsed defensively.
+3. **API → MCP adapter.** Crossed with `CERBERUS_MCP_TOKEN`.
+4. **MCP adapter → MongoDB.** Crossed with whatever `MONGODB_URI` carries. This
+   boundary is entirely the deployer's responsibility.
+5. **API/MCP → notification providers.** Crossed with webhook URL and API key.
+   Outbound only.
+
+## 4. The API-key model
+
+Cerberus ships exactly two principals: **authenticated operator** and
+**anonymous**. This is stated in `apps/api/src/middleware/auth.ts`.
+
+How it works:
+
+- One key, from `CERBERUS_API_KEY`, held in process memory for the lifetime of
+  the process.
+- Presented as `Authorization: Bearer <key>` (matched
+  case-insensitively as `Bearer`) or as `X-API-Key: <key>`. `Authorization`
+  takes priority when both are present.
+- Compared with `crypto.timingSafeEqual`. Length mismatch is handled by
+  comparing the supplied value against a same-length zero buffer, so the
+  rejection path does not short-circuit on length. Empty supplied or expected
+  values always return false.
+- The missing-credential and wrong-credential responses are byte-identical:
+  HTTP 401 with `{ success: false, error: "Authentication required.", code:
+  "UNAUTHENTICATED" }`. Neither response echoes the supplied or expected value.
+- `GET /health` and `GET /` bypass the check (`PUBLIC_PATHS`).
+- `CERBERUS_DEV_MODE=true` bypasses the check for **every** route, logging a
+  warning the first time.
+
+The MCP adapter uses the same construction with `CERBERUS_MCP_TOKEN`, accepting
+only `Authorization: Bearer <token>`. Its `GET /health` is also unauthenticated
+so container orchestrators can probe it.
+
+### What the key model does protect against
+
+- Unauthenticated use of the API or the MCP adapter.
+- Credential guessing via timing side channels on the comparison itself.
+- Information disclosure through authentication error messages.
+- Accidental unauthenticated boot: a missing `CERBERUS_API_KEY` or
+  `CERBERUS_MCP_TOKEN` is a startup failure, not a warning.
+- Accidental dev-mode deployment: `CERBERUS_DEV_MODE=true` with
+  `NODE_ENV=production` is refused at startup.
+
+### What it does not protect against
+
+- **A compromised host.** If an attacker has code execution or read access on
+  the machine running the API or the MCP adapter, they can read
+  `CERBERUS_API_KEY`, `CERBERUS_MCP_TOKEN`, `OPENAI_API_KEY`, the MongoDB
+  connection string and all live session state. No part of Cerberus defends this
+  boundary.
+- **No per-user attribution.** Every action taken with the key is
+  indistinguishable from every other action taken with the key. The identity
+  registry (`apps/api/src/routes/identity.ts`) records a display name, but it is
+  explicitly not an authentication mechanism, and the handle it returns is an
+  opaque per-process token that is not accepted as a credential anywhere.
+- **No replay protection beyond TLS.** A captured request can be replayed while
+  the key is valid. There is no nonce, timestamp window, request signing or
+  idempotency key on the API surface. Telemetry ingestion has an
+  application-level fingerprint ring that suppresses *duplicate event content*,
+  but that is a data-quality mechanism, not a security control, and it only
+  holds 128 fingerprints per session.
+- **Manual key rotation.** Rotation means changing the environment variable and
+  restarting the processes. There is no overlap window, no second valid key, no
+  revocation list and no rotation tooling.
+- **No rate limiting.** Nothing throttles authentication attempts or ingestion
+  volume at the application level. `scripts/stress-telemetry.ps1` exists
+  precisely because bursts are expected.
+- **No brute-force lockout or alerting.** Failed authentications are not counted
+  or surfaced.
+- **No authorization.** Any authenticated caller can read every session, delete
+  any session, and author scenarios.
+- **No encryption of telemetry at rest** by Cerberus. It writes what MongoDB is
+  configured to accept.
+
+## 5. CORS posture
+
+- The API applies an explicit allow-list. With `CERBERUS_CORS_ORIGINS` empty and
+  dev mode off, **no cross-origin access is granted**; an unlisted origin
+  receives no `Access-Control-Allow-Origin` header.
+- With dev mode on and no explicit list, a fixed localhost list is substituted
+  (ports 8080 and 5173 on `localhost` and `127.0.0.1`).
+- Allowed methods: `GET`, `POST`, `DELETE`, `OPTIONS`. Allowed headers:
+  `Content-Type`, `Authorization`, `X-API-Key`, `X-Session-Token`,
+  `X-Generation-Request-Id`. Exposed header: `X-Correlation-Id`. Preflight
+  results are cached for 86400 seconds.
+- The MCP adapter emits **no CORS headers at all** unless
+  `CERBERUS_MCP_CORS_ORIGINS` is set, because it is a server-to-server
+  interface. When set, it echoes the request origin only if it is on the list,
+  and sets `Vary: Origin`.
+- CORS is a browser-enforced control. It limits which pages can read responses
+  from a browser. It does not constrain non-browser clients, which is why the
+  API key remains load-bearing. Do not treat a restrictive CORS list as an
+  authorization boundary.
+
+## 6. Fail-closed behaviours
+
+These are the places where the code chooses to refuse rather than proceed:
+
+| Behaviour | Where | Result |
+| --- | --- | --- |
+| Missing mandatory secret | `loadConfig()` in `apps/api/src/config.ts` | `ConfigError`, process exits 1. `OPENAI_API_KEY` is always required; `CERBERUS_API_KEY` and `CERBERUS_MCP_TOKEN` are required unless dev mode is on. |
+| Dev mode under `NODE_ENV=production` | `loadConfig()` | `ConfigError`, process exits 1. |
+| Missing MCP token outside dev mode | `packages/mcp-mongodb/src/http-adapter.ts` | Prints a fatal message and exits 1. |
+| Missing API key in the container entrypoint | `scripts/entrypoint.sh` | Exits 1 when `NODE_ENV=production` and `CERBERUS_API_KEY` is unset. |
+| Scenario classifier unavailable | `apps/api/src/routes/scenarios.ts` | HTTP 503 `CLASSIFIER_UNAVAILABLE`. The request is **not** admitted without validation. |
+| Classifier output unparseable | `parseScenarioClassifierVerdict()` in `apps/api/src/ai/parsers.ts` | Returns `isAppropriate: false` with a `PARSE_ERROR` flag, which `evaluateVerdict()` rejects. |
+| Deterministic pre-filter rejection | `runPreFilter()` in `apps/api/src/routes/scenarios.ts` | HTTP 422 before any inference is spent. |
+| Unlisted CORS origin | `apps/api/src/index.ts` | No `Access-Control-Allow-Origin` header returned. |
+| Unknown MCP tool name | `packages/mcp-mongodb/src/http-adapter.ts` | HTTP 404 with the list of tools that do exist. |
+| Invalid `set_session_status` value | `packages/mcp-mongodb/src/tools.ts` | `ToolArgumentError`, HTTP 400. |
+| Oversized MCP request body | `parseBody()` in `http-adapter.ts` | Request destroyed above 8 MiB. Note: the parser resolves with `{}` rather than an explicit error, so an oversized body surfaces as a missing-argument 400. |
+| Unhandled API error | `app.onError` in `apps/api/src/index.ts` | Generic HTTP 500 with a correlation id. Framework and provider internals are logged server-side, never returned. |
+| Missing/invalid credential | `apps/api/src/middleware/auth.ts` | HTTP 401, identical for both cases. |
+
+Deliberate **fail-open** behaviours, for completeness:
+
+- AI risk analysis failure during ingestion is logged and swallowed. The request
+  still returns success, because the telemetry has already been persisted. A
+  persistent provider outage therefore means telemetry keeps accumulating
+  without risk scoring.
+- MCP persistence failures in the scenario route are logged and swallowed; the
+  matrix is returned to the caller with `persisted: false`.
+- Notification failures are logged and swallowed.
+- All MCP calls from the API resolve `{ ok: false }` rather than throwing, and
+  callers degrade rather than fail.
+
+## 7. Data protection considerations
+
+- Telemetry is designed to capture content: `codeSnapshot`, `pasteSnippets`,
+  `copyContent`, `selectedText` and `terminalSnapshot` may contain secrets,
+  customer data or third-party material. There is no redaction, scrubbing or
+  field-level encryption in the codebase.
+- Client metadata captured per event includes `userAgent`, `ipAddress`,
+  `screenResolution`, `platform` and `language`.
+- Timestamps are generated with the server's local timezone offset
+  (`apps/api/src/utils/time.ts`) rather than UTC, which makes records easier to
+  read but means stored timestamps depend on server configuration.
+- Deleting a session cascades to its micro-events and risk assessments
+  (`delete_session`). Terminating a session does not delete anything. There is
+  no retention policy, no automatic expiry enforcement and no TTL index, despite
+  `SESSION_TTL_SECONDS` existing in configuration.
+- Prompt content — terminal content, paste snippets, keystroke metrics — is sent
+  to the configured AI provider on every analysed batch. Pointing
+  `OPENAI_BASE_URL` elsewhere sends it elsewhere.
+
+## 8. Operator-facing limitations
+
+State these plainly to anyone who will run this:
+
+1. Not production ready. No guarantee of detection or prevention.
+2. Single-tenant, single shared key. No accounts, roles, OAuth, SSO, billing or
+   multi-tenancy.
+3. Session state is in memory and is lost on restart. MongoDB is the durable
+   fallback.
+4. Reference completions for similarity comparison are not populated, so
+   exfiltration similarity matching currently returns empty matches.
+5. The endpoint agent that would emit telemetry is not built. Telemetry comes
+   from the console/browser.
+6. No endpoint `.exe` agent, no SaaS, no enterprise features.
+7. Deploying this against employees has legal and ethical implications
+   (consent, works councils, data-protection law) that the software does not
+   address.
+
+## 9. Reporting a vulnerability
+
+See [SECURITY.md](../../SECURITY.md) at the repository root for the private
+reporting process, scope, and expected response times. Do not open a public
+issue for a security problem.

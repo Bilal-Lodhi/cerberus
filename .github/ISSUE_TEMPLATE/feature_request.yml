@@ -1,0 +1,72 @@
+name: Feature request
+description: Propose a change or addition to Cerberus
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    id: before-you-file
+    attributes:
+      value: |
+        Thanks for proposing a change to Cerberus.
+
+        Before filing, please read `SUPPORT.md` and search existing issues for a
+        duplicate.
+
+        **Scope note.** Cerberus deliberately does not accept enterprise-auth,
+        billing, or multi-tenancy features in the OSS baseline. The baseline is a
+        self-hosted, single-tenant service with one shared operator API key:
+        there is no user directory, no OAuth, no SSO, no role model, no payment
+        path, and no tenant isolation. Proposals in those areas will be closed,
+        because supporting them would require an architecture the baseline does
+        not have. If your need is in that space, a fork or a downstream product
+        is the appropriate place for it.
+
+        Do **not** report security vulnerabilities here. Follow `SECURITY.md`
+        instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem being solved
+      description: Describe the problem or limitation you are hitting, and who it affects. Focus on the problem rather than the implementation.
+      placeholder: |
+        When reviewing a session, there is no way to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: Describe what you would like Cerberus to do. If it touches the API, the MCP tools, or the console, say which.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any other approaches you considered, including working around the limitation today, and why you rejected them.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willing-to-implement
+    attributes:
+      label: Would you be willing to implement this?
+      description: An offer to implement is helpful but not required. A maintainer will still review the design first.
+      options:
+        - "Yes, I can open a pull request"
+        - "Yes, with guidance on the approach"
+        - "No, I am only reporting the need"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Anything else that would help evaluate the request. Redact all credentials and personal data.
+    validations:
+      required: false

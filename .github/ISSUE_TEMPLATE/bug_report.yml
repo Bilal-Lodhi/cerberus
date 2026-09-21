@@ -1,0 +1,109 @@
+name: Bug report
+description: Report a reproducible problem with Cerberus
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    id: before-you-file
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        Before filing, please read `SUPPORT.md` and search existing issues for a
+        duplicate. Cerberus is an early-stage (0.1.0) project and is not
+        production ready.
+
+        Do **not** report security vulnerabilities here. Follow `SECURITY.md`
+        instead.
+
+        Redact every secret from logs, configuration, and connection strings
+        before pasting them: API keys, bearer tokens, MCP tokens, MongoDB
+        connection strings, and any real personal or employee data.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the actual behaviour you observed, including the exact error message or response body.
+      placeholder: |
+        POST /api/v1/guardian/ingest returned 500 with code INTERNAL_ERROR.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected to happen
+      description: Describe the behaviour you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Give the smallest sequence of steps that reproduces the problem, starting from a known state.
+      placeholder: |
+        1. docker compose up -d mongodb
+        2. npm run build && npm run start
+        3. POST /api/v1/guardian/deploy with ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The exact version or commit hash you are running.
+      placeholder: "0.1.0, or the output of: git rev-parse HEAD"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      description: How are you running Cerberus?
+      options:
+        - docker compose
+        - local (npm run dev / npm run start)
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: The output of `node --version`. Cerberus requires Node.js 20 or newer.
+      placeholder: "v20.x.x"
+    validations:
+      required: true
+
+  - type: input
+    id: mongodb-version
+    attributes:
+      label: MongoDB version
+      description: The server version you are running against.
+      placeholder: "7.0.x"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste the relevant log lines with all secrets redacted.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Redaction confirmation
+      options:
+        - label: I have redacted all credentials, tokens, connection strings, and personal data from this report.
+          required: true

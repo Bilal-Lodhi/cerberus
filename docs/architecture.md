@@ -1,0 +1,366 @@
+# Architecture
+
+This document describes what the repository actually contains as of version
+0.1.0. It is written from the source, not from intent. Where a capability is
+partial or absent, that is stated.
+
+## 1. Component map
+
+| Component | Path | Runtime | Role |
+| --- | --- | --- | --- |
+| API | `apps/api` | Node 20+, TypeScript, ESM, Hono | HTTP surface, authentication, CORS, in-memory session state, AI orchestration, MCP calls |
+| Console | `apps/console` | Flutter (Dart), web target | Operator UI: identity setup, scenario authoring, live session view, session review |
+| MCP server | `packages/mcp-mongodb` | Node 20+, TypeScript, ESM | MongoDB persistence exposed as MCP tools |
+
+Supporting files:
+
+- `Dockerfile` — multi-stage build; stage 2 runs both Node services in one
+  non-root container (`cerberus` user), with the API on `PORT` and the MCP
+  adapter on `MCP_PORT`.
+- `scripts/entrypoint.sh` — container entrypoint. Starts the MCP adapter in the
+  background, waits two seconds, then starts the API with
+  `MCP_SERVER_ENDPOINT` pointed at the adapter. Refuses to start when
+  `NODE_ENV=production` and `CERBERUS_API_KEY` is unset.
+- `scripts/dev-services.js` / `scripts/start-services.js` — local launchers for
+  the same two processes (watch mode and compiled mode respectively). Both load
+  the repository-root `.env` via `dotenv`.
+- `scripts/smoke-api.ps1`, `scripts/smoke-telemetry.ps1`,
+  `scripts/stress-telemetry.ps1`, `scripts/verify-all.ps1` — PowerShell
+  smoke/stress runners that drive a running API over HTTP.
+
+### API internals
+
+| File | Responsibility |
+| --- | --- |
+| `apps/api/src/index.ts` | Builds the Hono app: CORS, correlation id, auth middleware, route mounting, 404 and error handlers. Bootstrap and `loadConfig()` failure handling. |
+| `apps/api/src/config.ts` | Reads every environment variable once, validates mandatory secrets, refuses `CERBERUS_DEV_MODE=true` under `NODE_ENV=production`, prints a banner that never contains secret material. |
+| `apps/api/src/middleware/auth.ts` | Constant-time API-key check. Two principals only: authenticated operator and anonymous. |
+| `apps/api/src/routes/health.ts` | Unauthenticated liveness plus capability discovery. |
+| `apps/api/src/routes/identity.ts` | Display-identity registry. Explicitly **not** an authentication mechanism. |
+| `apps/api/src/routes/scenarios.ts` | Threat scenario authoring: regex pre-filter, AI classifier, generation, persistence. |
+| `apps/api/src/routes/guardian.ts` | Telemetry ingestion, session deploy/list/detail/terminate/delete, deduplication, risk analysis, auto-lock/auto-clear. Holds the session state. |
+| `apps/api/src/routes/review.ts` | Session list and full session review (timeline + risk summary), merging in-memory and MongoDB sources. |
+| `apps/api/src/routes/auditor.ts` | Natural-language query translated to a MongoDB pipeline, then interpreted in-process against a whitelist of stages. |
+| `apps/api/src/ai/provider.ts` | The single inference boundary: `OpenAIProvider`, Chat Completions via the `openai` SDK. |
+| `apps/api/src/ai/parsers.ts` | Pure, defensive structured-output parsers. No network access, so they are testable with fixtures. |
+| `apps/api/src/services/mcp-client.ts` | The only place the API calls the MCP adapter. Always resolves, never throws. |
+| `apps/api/src/services/mcp-tool-names.ts` | API-side copy of the canonical MCP tool names. |
+| `apps/api/src/services/notifications.ts` | Optional Slack webhook and SendGrid email. Failures are logged and swallowed. |
+| `apps/api/src/types.ts` | All contracts: scenario matrix, micro-events, risk payload, session review, MCP call envelope. |
+| `apps/api/src/utils/time.ts` | ISO-8601 timestamps carrying the server's local offset, plus a human-readable local time label. |
+
+### MCP internals
+
+| File | Responsibility |
+| --- | --- |
+| `packages/mcp-mongodb/src/tool-names.ts` | Canonical tool names, Cerberus-native collection names, default database name, valid session statuses. Dependency-free so both sides can import it. |
+| `packages/mcp-mongodb/src/mongo-client.ts` | MongoDB Node driver data layer. No ORM. Owns index creation. |
+| `packages/mcp-mongodb/src/tools.ts` | Tool registry and input validation. Typed as `Record<McpToolName, ToolHandler>`, so a missing handler fails the TypeScript build. |
+| `packages/mcp-mongodb/src/server.ts` | stdio transport for MCP-capable agent hosts, plus a `mongo://health` resource. |
+| `packages/mcp-mongodb/src/http-adapter.ts` | HTTP transport used by the API. `GET /health`, `GET /tools`, `POST /tools/:toolName`. |
+
+The API deliberately keeps its own copy of the tool-name set rather than
+importing the MCP package, so the two services remain independently
+deployable. A test (`apps/api/test/mcp-tool-mapping.test.ts`, referenced in the
+source comments) is intended to assert the two sets are identical; the test
+directory is not present in this release.
+
+## 2. Data flow — telemetry ingestion
+
+Entry point: `POST /api/v1/guardian/ingest` in `apps/api/src/routes/guardian.ts`.
+
+```text
+console (browser)
+  │  { events: MicroEvent[] }  — batched, non-empty array required
+  ▼
+auth middleware  (apps/api/src/middleware/auth.ts)
+  ▼
+POST /api/v1/guardian/ingest
+  │
+  ├─ 1. ensureMongoSession()      → MCP get_session_review, then create_session
+  │                                 if the session document does not exist
+  ├─ 2. MCP ingest_micro_events   → raw telemetry persisted (8 MiB body cap)
+  ├─ 3. processEvent() per event  → in-memory SessionState mutated
+  │                                 (fingerprint dedup applied here)
+  ├─ 4. MCP update_session_counts → durable aggregate counters refreshed
+  ├─ 5. shouldAnalyze?            → see trigger conditions below
+  │     └─ yes, and currentCode.length > 50:
+  │          ├─ SHA-256 of currentCode compared to lastAnalyzedCodeHash
+  │          │    └─ equal → reuse cached payload, return early (no inference)
+  │          ├─ OpenAIProvider.analyzeRisk()  → RiskAssessmentPayload
+  │          ├─ behavioural score blend applied to the payload
+  │          ├─ incident context enrichment (paste snippets, code snapshot,
+  │          │    behavioural counters, keystroke metrics, summary, label)
+  │          ├─ score >= 75  → recommendIncidentActions(), Slack + email,
+  │          │                 lockSession()  → MCP set_session_status "locked"
+  │          ├─ score <  25  → unlockSession() if currently locked
+  │          └─ MCP store_risk_assessment → payload persisted
+  ▼
+{ success, processedCount, riskPayload, alertTriggered, anomalyRiskIndex }
+```
+
+Notes grounded in the code:
+
+- Analysis is triggered by any of: a `PASTE` event with `changeLength >= 100`;
+  `pasteCount` above `MAX_PASTE_EVENTS`; `tabSwitchCount > 3`;
+  `fullscreenExitCount > 0`; `copyAttemptCount > 2`; or anomalous keystrokes.
+- Anomalous keystrokes require at least 10 recorded deltas and a ratio of
+  sub-`MIN_HUMAN_KEYSTROKE_MS` deltas above 0.3.
+- A failure inside AI analysis is non-fatal and logged: the telemetry is already
+  persisted by that point, and the request still returns success.
+- Every MCP call from a route uses a 5 000 ms timeout
+  (`MCP_TIMEOUT_MS` in `guardian.ts` and `review.ts`). The MCP client always
+  resolves `{ ok: false }` on timeout, non-2xx status, connection refusal or an
+  unparseable body, so a slow database degrades the response instead of
+  stalling the ingestion loop.
+
+## 3. Data flow — scenario authoring
+
+Entry point: `POST /api/v1/scenarios` in `apps/api/src/routes/scenarios.ts`.
+
+```text
+{ prompt, roleContext, vectorCount (1..25), severityMix? }
+  ▼
+Stage 1  runPreFilter()            deterministic regexes, no inference cost
+           empty | greeting-only | too short | profanity | gibberish
+           → HTTP 422 with preFilterFlags
+  ▼
+Stage 2  OpenAIProvider.classifyScenarioRequest()
+           verdict: isInputMeaningful, isScenarioRelated, isAppropriate,
+                    contentFlags, confidence, detectedDomain, reason
+           evaluateVerdict() rejects when:
+             !isAppropriate  OR  !isInputMeaningful  OR  !isScenarioRelated
+             OR confidence < 0.75  OR detectedDomain shorter than 3 chars
+           classifier throws → HTTP 503 CLASSIFIER_UNAVAILABLE (fail-closed)
+  ▼
+Stage 3  OpenAIProvider.authorThreatScenarioMatrix()
+           promptFingerprint replaced with SHA-256 of the raw prompt
+           MCP store_threat_scenario (best-effort: a persistence failure is
+           logged but the matrix is still returned)
+  ▼
+201 { success, matrix, mcpCorrelationId, persisted, generationRequestId, pipeline }
+```
+
+Cancellation: `POST /api/v1/scenarios/cancel` with a `generationRequestId`
+aborts the in-flight `AbortController` registered for that request. A cancelled
+generation returns HTTP 200 with `cancelled: true`.
+
+`normalizeSeverityMix()` coerces the four weights, rejects negatives and
+non-finite values, and renormalises to sum to 1.0; an unusable mix falls back to
+`{ low: 0.25, medium: 0.35, high: 0.25, critical: 0.15 }`.
+
+## 4. Session state model
+
+Live state lives in two in-process maps created per `createGuardianRouter()`
+call and shared with the review router:
+
+- `sessionStore: Map<string, SessionState>` — authoritative for sessions that
+  have ingested events. Holds the full event array, reconstructed
+  `currentCode`, paste/tab/fullscreen/copy counters, keystroke deltas, the last
+  risk payload, the last analysed code hash and the fingerprint ring.
+- `activeSessions: Map<string, ActiveSession>` — the deployment registry, so a
+  freshly deployed session appears in listings before any event arrives. Holds
+  `sessionId`, `employeeId`, `matrixId`, `targetSystem`, `status`, `deployedAt`
+  and `riskIndex`.
+
+`SessionState` fields are defined in `apps/api/src/routes/guardian.ts`. Notable
+details:
+
+- `currentCode` is reconstructed from telemetry, not from a filesystem:
+  `PASTE_TRIGGER` appends `pasteContent`; `CODE_DELTA` applies `diffPatch`
+  (a unified diff keeps only added lines, anything else is appended); `SUBMIT`
+  replaces it with `pasteContent`; `EDIT` replaces it with `newText`; `PASTE`
+  replaces it with `newText`.
+- `endedAt` is set only by terminate, never by delete.
+- Status values written by the API are `active`, `locked`, `in_progress` and
+  `terminated`. `SESSION_STATUSES` in `tool-names.ts` lists only
+  `active | locked | terminated` as valid for the MCP `set_session_status`
+  tool, and the tool rejects anything else with a `ToolArgumentError` (HTTP 400
+  over the HTTP adapter).
+- **State is lost on restart.** MongoDB is the durable fallback. The guardian
+  session list falls back to `list_sessions` only when the in-memory result is
+  empty; the review router always merges both and takes the larger count for
+  each counter, so a restart does not under-report activity.
+- The identity registry (`apps/api/src/routes/identity.ts`) is a separate
+  per-process `Map` and also resets on restart.
+
+## 5. Deduplication layers
+
+Four layers, all in `apps/api/src/routes/guardian.ts`:
+
+1. **Risk-assessment id.** The AI contract carries `riskAssessmentId`; the
+   parser generates a UUID when the model omits one
+   (`apps/api/src/ai/parsers.ts`).
+2. **Code-hash equality.** SHA-256 of `currentCode` is compared against
+   `lastAnalyzedCodeHash`. When unchanged, the previous payload is reused and no
+   inference is performed; the cached payload is returned with
+   `alertTriggered` computed as score > 50.
+3. **Micro-event fingerprint ring.** `computeEventFingerprint()` builds a slim
+   key from event type, the first 512 characters of
+   `pasteContent`/`newText`/`diffPatch`, `changeLength`, and `deltaMs` bucketed
+   to 10 ms. A fingerprint already present in `recentEventFingerprints` causes
+   the event to be dropped. The set is trimmed to the most recent 128 entries.
+4. **Behavioural counter blend.** The semantic score is blended with a
+   behavioural boost:
+
+   ```text
+   pastePenalty      = min(pasteCount * 5, 30)
+   tabPenalty        = min(tabSwitchCount * 4, 16)
+   copyPenalty       = min(copyAttemptCount * 6, 18)
+   fullscreenPenalty = fullscreenExitCount > 0 ? 10 : 0
+   keystrokePenalty  = anomalousKeystrokes ? 12 : 0
+   behaviouralBoost  = sum of the above
+   blendedScore      = min(round(semanticScore * 0.85 + behaviouralBoost * 0.15), 100)
+   ```
+
+   `dataExfiltration` and `policyViolation` dimensions are then adjusted by the
+   blend factor and the paste/tab/copy penalties, each capped at 100.
+
+## 6. Persistence model
+
+All persistence goes through the MCP HTTP adapter. The API never opens a
+MongoDB connection.
+
+### Collections
+
+Cerberus-native names, from `packages/mcp-mongodb/src/tool-names.ts`:
+
+| Collection | Holds |
+| --- | --- |
+| `threat_scenarios` | Authored scenario matrices, keyed by `metadata.matrixId`. |
+| `monitored_sessions` | Session documents: identity, matrix association, target system, status, aggregate counters, terminal content. |
+| `micro_events` | Raw telemetry, one document per event. |
+| `risk_assessments` | `RiskAssessmentPayload` documents plus the enrichment context. |
+
+Default database: `cerberus` (`DEFAULT_DATABASE_NAME`), overridable with
+`MONGODB_DATABASE`.
+
+### Index inventory
+
+Created by `MongoStore.ensureIndexes()` in
+`packages/mcp-mongodb/src/mongo-client.ts`, on every `connect()`. The calls are
+idempotent for identical specifications.
+
+| Collection | Index | Options |
+| --- | --- | --- |
+| `monitored_sessions` | `{ sessionId: 1 }` | unique |
+| `monitored_sessions` | `{ employeeId: 1, auditId: 1 }` | |
+| `monitored_sessions` | `{ createdAt: -1 }` | |
+| `micro_events` | `{ sessionId: 1, timestamp: -1 }` | |
+| `micro_events` | `{ eventType: 1 }` | |
+| `risk_assessments` | `{ sessionId: 1, generatedAt: -1 }` | |
+| `risk_assessments` | `{ employeeId: 1 }` | |
+| `threat_scenarios` | `{ "metadata.matrixId": 1 }` | unique |
+| `threat_scenarios` | `{ "metadata.generatedAt": -1 }` | |
+
+### MCP tool inventory
+
+From `MCP_TOOL_NAMES`, present identically on both sides:
+
+`store_threat_scenario`, `get_threat_scenario`, `create_session`,
+`update_session_terminal_content`, `delete_session`, `append_micro_event`,
+`ingest_micro_events`, `store_risk_assessment`, `update_session_counts`,
+`set_session_status`, `get_session_review`, `get_employee_risk_history`,
+`list_sessions`, `health_check`.
+
+`create_session` upserts on `sessionId` with `$setOnInsert`, so it is
+idempotent. `delete_session` removes the session document and cascades to
+`micro_events` and `risk_assessments` for that session.
+
+### Auditor pipeline restriction
+
+`apps/api/src/routes/auditor.ts` never forwards a model-generated pipeline to
+MongoDB. `applySafePipeline()` interprets only:
+
+- `$match` with equality or `$gt` / `$gte` / `$lt` / `$lte` / `$ne` on top-level
+  numeric fields,
+- `$sort` (first field and direction only),
+- `$limit`.
+
+Any other stage is ignored rather than executed. The records it filters come
+from `list_sessions`, which returns a projection of session fields, not raw
+events.
+
+## 7. Trust boundaries
+
+```text
+        untrusted                         trusted (self-hosted)                    external
+ ┌───────────────────────┐      ┌──────────────────────────────────────┐   ┌──────────────────┐
+ │ Browser / console     │─────▶│ Cerberus API                         │──▶│ OpenAI           │
+ │ operator input,       │ key  │ holds CERBERUS_API_KEY, MCP token,   │   │ Chat Completions │
+ │ telemetry payloads,   │      │ OPENAI_API_KEY, session state        │   └──────────────────┘
+ │ model output          │      └───────┬──────────────────────────────┘
+ └───────────────────────┘              │ bearer CERBERUS_MCP_TOKEN
+                                        ▼
+                          ┌──────────────────────────────────────┐   ┌──────────────────┐
+                          │ MCP HTTP adapter (loopback default)  │──▶│ MongoDB          │
+                          └──────────────────────────────────────┘   └──────────────────┘
+```
+
+Boundary by boundary:
+
+- **Console → API.** Untrusted input. Authentication is a single pre-shared key
+  (`Authorization: Bearer <key>` or `X-API-Key: <key>`), compared with
+  `crypto.timingSafeEqual`; the missing-credential and wrong-credential
+  responses are byte-identical. `GET /health` and `GET /` bypass the check
+  (`PUBLIC_PATHS` in `middleware/auth.ts`); `/` is served by the health router.
+  Request bodies are treated as untrusted: shapes are validated explicitly, and
+  the global error handler returns a generic 500 with a correlation id rather
+  than framework or provider internals.
+- **API → OpenAI.** Model output is untrusted text. It is parsed defensively
+  (strip markdown fences → `JSON.parse` → repair trailing commas and control
+  characters → extract the first balanced JSON object) and every field is
+  coerced. A parse failure in the scenario classifier is treated as a rejection.
+- **API → MCP adapter.** A shared-secret bearer token
+  (`CERBERUS_MCP_TOKEN`), compared in constant time. The adapter binds to
+  `127.0.0.1` by default. It emits no CORS headers at all unless
+  `CERBERUS_MCP_CORS_ORIGINS` is set. Bodies are capped at 8 MiB.
+- **MCP adapter → MongoDB.** A single connection string from `MONGODB_URI`.
+  Cerberus does not manage MongoDB authentication, network policy or encryption.
+- **CORS.** The API uses an explicit allow-list. With an empty
+  `CERBERUS_CORS_ORIGINS` and no dev mode, no cross-origin access is granted.
+  Dev mode substitutes a fixed localhost list (ports 8080 and 5173 on
+  `localhost` and `127.0.0.1`).
+- **Outbound notifications.** Slack webhook and SendGrid email are optional and
+  unauthenticated-by-default no-ops when unconfigured. They carry the employee
+  id, risk score, session id, summary and flag types to a third party. Failures
+  never fail ingestion.
+
+What the boundaries do **not** provide is enumerated in
+[security/threat-model.md](security/threat-model.md).
+
+## 8. Known gaps in this release
+
+Cerberus is at `v0.1.0` and is not production ready. The following are known,
+deliberate or unresolved gaps rather than defects.
+
+- **No endpoint agent.** Telemetry is currently produced by the console/browser
+  only. The architecture above reserves the ingestion boundary for a future
+  endpoint agent, but no agent implementation ships in this release.
+- **Exfiltration similarity matching is inert.**
+  `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is read from configuration, but the
+  reference-completion source returns an empty set, so `ExfiltrationReport`
+  matches are always empty. The mechanism and its contract are retained.
+- **`SESSION_TTL_SECONDS` is parsed but not enforced.** There is no TTL index and
+  no expiry sweep; sessions live until terminated or deleted.
+- **Session status vocabulary is narrow.** `ActiveSession` in
+  `apps/api/src/types.ts` permits `active | flagged | investigating | cleared |
+  locked`, while the MCP adapter's `SESSION_STATUSES` permits only
+  `active | locked | terminated`. Only the intersection is written durably:
+  sessions are created as `active`, and the guardian writes `locked`,
+  `active` and `terminated`. The richer review-only states (`flagged`,
+  `investigating`) are derived at read time by `apps/api/src/routes/review.ts`
+  rather than persisted. Widening the persisted set is deferred.
+- **No rate limiting, no replay protection beyond TLS, and no automated key
+  rotation.** See [security/threat-model.md](security/threat-model.md).
+- **Single shared API key.** Cerberus cannot attribute an action to an individual
+  operator, and rotating access for one person rotates it for everyone.
+- **The console is an operator console, not a hardened client.** Its operator API
+  key is supplied at build time via
+  `--dart-define=CERBERUS_API_KEY=...`, which means the key is embedded in the
+  built web bundle. Serve the console only to trusted operators, or front it with
+  a proxy that injects the credential.
+- **No migration tooling** for the historical schema. See
+  [migration.md](migration.md).
+- **No `CODEOWNERS` file** and no `docs/` index page.
+

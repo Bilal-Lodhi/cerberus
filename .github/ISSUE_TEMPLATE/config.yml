@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and general help
+    url: https://github.com/OWNER/cerberus/blob/main/SUPPORT.md
+    about: Read SUPPORT.md for where to ask questions, and what the project cannot help with.
+  - name: Report a security vulnerability
+    url: https://github.com/OWNER/cerberus/security/policy
+    about: Do not open a public issue for a vulnerability. Follow the security policy instead.
+
+# NOTE: "OWNER" in the URLs above is a placeholder. Substitute the real GitHub
+# organization or user name before the first public release. The same
+# substitution is required in CHANGELOG.md and CONTRIBUTING.md.
