@@ -60,6 +60,25 @@ repository at extraction.
 - Hackathon-only files, tracked build artifacts, and unrelated cloud-project
   identifiers.
 
+### Fixed
+
+- The OpenAI provider no longer sends a `temperature` unless one is explicitly
+  configured. Every request previously carried a temperature — the
+  `OPENAI_TEMPERATURE` default of `0.2`, or a hard-coded `0`, `0.1` or `0.2` at
+  individual call sites — and the default model (`gpt-5.6`) rejects any value
+  other than its own default with HTTP 400. The effect was that **every** AI
+  path failed: scenario authoring, risk analysis, incident recommendations, the
+  natural-language auditor and session summarisation. `OPENAI_TEMPERATURE` is
+  now an opt-in override; when it is unset the parameter is omitted and the
+  model uses its own default.
+- The default per-attempt AI request timeout is raised from 90s to 180s
+  (`OPENAI_REQUEST_TIMEOUT_MS`). A multi-vector scenario matrix routinely takes
+  longer than 90s to generate on the default model, so the provider exhausted all
+  three attempts and the route returned a retryable `AI_UNAVAILABLE` for a
+  request size its own contract accepts.
+- Corrected the Code of Conduct enforcement contact and removed the placeholder
+  banner.
+
 ### Security
 
 - Removed the `origin: "*"` CORS wildcard. Cross-origin access now requires an

@@ -46,9 +46,17 @@ verification it replaced.
       and its comparison links contain no zero-SHA compare target.
 - [x] The dependency-license inventory is complete and compatible: 106 runtime
       packages, all permissively licensed, no copyleft and no unknown license.
-- [ ] `conduct@cerberus.invalid` is replaced. **Still open.** No contact address
-      is established anywhere in the project, so this needs a maintainer decision
-      (see `community-health-checklist.md`). Do not invent an address.
+- [x] The Code of Conduct enforcement contact is set. **Verified** —
+      `CODE_OF_CONDUCT.md` publishes `braza4715@gmail.com`, the address supplied
+      by the maintainer, and the placeholder banner was removed. A repository
+      grep for an invalid-TLD address returns nothing.
+- [x] Real OpenAI inference succeeds against the configured provider boundary.
+      **Verified** — `POST /api/v1/scenarios` with `vectorCount=1` returned HTTP
+      201 in 45.3s on model `gpt-5.6`, the matrix parsed with all five top-level
+      keys, token usage was reported, and the document persisted. Two blocking
+      defects were found and fixed by this exercise: the provider sent a
+      `temperature` the model rejects, and the default per-attempt timeout was
+      too low for large matrices.
 - [ ] The secret scan is green on the **final** release commit. The
       `trufflehog --only-verified` job is CI-only and the binary is not installed
       locally; confirm the `Secret scan` job passes on the pushed release commit.
@@ -96,16 +104,25 @@ verification it replaced.
 These are manual aids, not the automated suite. Run them with
 `CERBERUS_API_KEY` set and `CERBERUS_DEV_MODE=false`:
 
-- [ ] `pwsh -File scripts/smoke-api.ps1 -ApiKey $env:CERBERUS_API_KEY` — all 14
-      checks pass. **Not re-run at release prep.** One check drives the AI
-      scenario path, so a clean 14/14 needs a real OpenAI key; without one that
-      step fails closed with `CLASSIFIER_UNAVAILABLE` and the run scores 13/14.
-- [ ] `pwsh -File scripts/smoke-telemetry.ps1 -ApiKey $env:CERBERUS_API_KEY` —
-      all 18 checks pass. **Not re-run at release prep.**
-- [ ] `pwsh -File scripts/verify-all.ps1 -ApiKey $env:CERBERUS_API_KEY` — all
-      three suites pass. Skip or lower `-GenerateCount` on
-      `scripts/stress-telemetry.ps1` to limit AI-provider spend. **Not re-run at
-      release prep.**
+- [x] `pwsh -File scripts/smoke-api.ps1 -ApiKey $env:CERBERUS_API_KEY` — **14/14
+      passed** against a live stack with a real OpenAI key and authentication
+      enabled. The AI scenario step returned a persisted 3-vector matrix.
+- [x] `pwsh -File scripts/smoke-telemetry.ps1 -ApiKey $env:CERBERUS_API_KEY` —
+      **18/18 passed** (all twelve event types plus the deploy/review lifecycle).
+      The large-paste step scored risk 78 with 4 flags and the session
+      auto-locked. Two client timeouts in this script had to be raised first:
+      the scenario step (180s → 600s) and the ingest steps (30s → 120s), because
+      both aborted requests the server was still working on.
+- [x] `pwsh -File scripts/verify-all.ps1 -ApiKey $env:CERBERUS_API_KEY` — run
+      with `-GenerateCount 1 -IngestCount 5` to keep AI spend low. Suites 1 and 3
+      passed; suite 2 failed on the timeouts above and passed 18/18 on re-run.
+      `verify-all.ps1` now forwards `-GenerateCount` / `-IngestCount` /
+      `-IngestBatchSize`; previously it always ran the burst at its 25-request
+      default, so the "lower the count" instruction in this checklist was not
+      actually possible.
+- [x] `pwsh -File scripts/stress-telemetry.ps1 -GenerateCount 1 -IngestCount 5` —
+      **6/6 requests, 0 failures**; 43.3s scenario latency, 50ms mean ingest
+      latency.
 - [x] Confirm an unauthenticated call to `GET /api/v1/sessions` returns 401 —
       verified live against a production-shaped compose stack, together with the
       full boundary: no credential 401, wrong `Bearer` 401, wrong `X-API-Key` 401,
@@ -181,14 +198,15 @@ These are manual aids, not the automated suite. Run them with
 - [x] Confirm no other `OWNER` placeholder remains:
       `git grep -n 'OWNER' -- .` — remaining hits are the word `CODEOWNERS` and
       historical notes in `docs/release/`, not repository-URL placeholders.
-- [ ] Replace `conduct@cerberus.invalid` in `CODE_OF_CONDUCT.md` with a real,
-      monitored mailbox, and remove the "Placeholder contact" banner at the top of
-      that file. **Still open, and blocked on a maintainer decision**: the project
-      publishes no contact address, so this must not be invented. The only
-      `*.invalid` string left in the tree is this one, and it is deliberate.
-- [ ] Confirm no other placeholder address remains:
-      `git grep -n 'invalid' -- .` — returns only the `CODE_OF_CONDUCT.md`
-      placeholder and the release documents that describe it.
+- [x] Replace the placeholder Code of Conduct enforcement address in
+      `CODE_OF_CONDUCT.md` with a real, monitored mailbox, and remove the
+      "Placeholder contact" banner at the top of that file. **Verified** — the
+      file now publishes `braza4715@gmail.com` (maintainer-supplied) and carries
+      no placeholder banner.
+- [x] Confirm no other placeholder address remains: a repository grep for an
+      invalid-TLD address returns nothing. The only remaining `placeholder`
+      string in the tree is the Flutter `base href` comment in
+      `apps/console/web/index.html`, which is a framework note, not a contact.
 
 ### 1.8 Documentation accuracy
 

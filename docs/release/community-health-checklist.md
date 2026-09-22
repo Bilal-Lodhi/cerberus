@@ -22,7 +22,7 @@ GitHub setting, not visible in the tree).
 | `LICENSE` | Done | Unmodified Apache License 2.0 text. Appendix copyright line: `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)`. |
 | `NOTICE` | Done | Provenance paragraph, third-party attributions, trademark note. Copyright line: `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)` — now identical to the `LICENSE` line. Covers direct runtime dependencies only and says so. |
 | `CONTRIBUTING.md` | Done | Development setup, conventions, commit style and pull-request expectations. The `git clone` URL now names the real owner (`Bilal-Lodhi/cerberus`). |
-| `CODE_OF_CONDUCT.md` | Done, with a placeholder | Contributor Covenant 2.1 with enforcement guidelines. The enforcement address `conduct@cerberus.invalid` is still a placeholder, flagged in a banner at the top of the file and again in the Enforcement section. See "Placeholders that block publication" below — this one needs a human decision, not a substitution. |
+| `CODE_OF_CONDUCT.md` | Done | Contributor Covenant 2.1 with enforcement guidelines. The enforcement address is `braza4715@gmail.com`, supplied by the maintainer; the placeholder banner and the invalid-TLD address are gone. |
 | `SECURITY.md` | Done | Reporting route via private vulnerability reporting, scope, security model, known limitations, manual key rotation, deployment guidance. |
 | `SUPPORT.md` | Done | Where to ask, what the project cannot help with, and a bug-report checklist. Points at GitHub Discussions. Publishes no contact address. |
 | `CHANGELOG.md` | Done | Keep a Changelog format with a clean `[Unreleased]` section and a dated `[0.1.0] - 2026-09-22`. Comparison links point at the real repository and contain no `OWNER` placeholder and no zero-SHA compare target. |
@@ -156,24 +156,17 @@ decision down so the next contributor does not re-litigate it.
 
 ### Placeholders that block publication
 
-The `OWNER` placeholder has been resolved. Every repository URL in
-`CHANGELOG.md`, `CONTRIBUTING.md` and `.github/ISSUE_TEMPLATE/config.yml` now
-names `Bilal-Lodhi/cerberus`, and `git grep -n 'OWNER' -- .` returns no
-repository-URL placeholder.
+None remain. Both blockers from the extraction pass are resolved:
 
-One placeholder remains, and it is a human decision rather than a substitution:
+1. `OWNER` — every repository URL in `CHANGELOG.md`, `CONTRIBUTING.md` and
+   `.github/ISSUE_TEMPLATE/config.yml` now names `Bilal-Lodhi/cerberus`.
+   `git grep -n 'OWNER' -- .` returns no repository-URL placeholder.
+2. The Code of Conduct enforcement contact — `CODE_OF_CONDUCT.md` now publishes
+   `braza4715@gmail.com`, the address supplied by the maintainer, and the
+   placeholder banner was removed. A repository grep for an invalid-TLD address
+   returns nothing.
 
-1. `conduct@cerberus.invalid` in `CODE_OF_CONDUCT.md`. The project publishes no
-   contact address anywhere — `SUPPORT.md` routes questions to GitHub
-   Discussions and `SECURITY.md` routes vulnerabilities to GitHub private
-   vulnerability reporting. Neither is a Code of Conduct enforcement channel, and
-   inventing an address would publish a mailbox nobody monitors. **A maintainer
-   must either supply a monitored address or choose a non-email enforcement
-   route, then edit `CODE_OF_CONDUCT.md` and remove its placeholder banner.**
-   This is the only pre-release item left that cannot be completed from inside
-   the repository.
-
-The `LICENSE` / `NOTICE` copyright-line disagreement is resolved: both now read
+The `LICENSE` / `NOTICE` copyright-line disagreement is also resolved: both read
 `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)`.
 
 ### Demo media — deferred
