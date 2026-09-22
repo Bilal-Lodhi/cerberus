@@ -320,6 +320,18 @@ still `disabled`. Enabling them opens automated fix pull requests, which is a
 maintainer workflow decision, not a hardening default: Settings → Code security
 and analysis → Dependabot → "Dependabot security updates".
 
+### Classification of the remaining manual items
+
+None of these blocks v0.1.0. Each is recorded with the reason it does not:
+
+| Item | Class | Why |
+| --- | --- | --- |
+| Social preview image (1280x640) | **C — intentionally deferred** | Cosmetic link-preview only. No image exists in the tree and one must not be fabricated. |
+| `CODEOWNERS` decision | **C — intentionally deferred** | Recorded as a deliberate choice for a single-maintainer repository. Branch protection plus the pull-request template already cover review, and a `CODEOWNERS` file would need owner handles nobody can supply yet. |
+| Secret scanning — non-provider patterns | **B — recommended, can follow** | Broadens detection to generic secret shapes. Verified-secret scanning, push protection and the CI `Secret scan` job are already on, so this is depth, not a gap. |
+| Secret scanning — validity checks | **B — recommended, can follow** | Reduces false positives on detected secrets. A signal-quality improvement, not a control. |
+| Dependabot security updates | **B — recommended, can follow** | Dependabot **alerts** are already enabled, so advisories are visible. This only automates the fix pull requests, which is a maintainer workflow preference. |
+
 ### Ordering note — branch protection and the release push
 
 Branch protection was applied **after** the release-prep commits were pushed and
