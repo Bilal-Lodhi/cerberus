@@ -26,9 +26,16 @@ an authoritative decision.
 | Report a reproducible bug | GitHub Issues (bug report form) |
 | Request a feature | GitHub Issues (feature request form) |
 | Report a security vulnerability | `SECURITY.md` — never a public issue |
+| Reach the maintainer privately | `braza4715@gmail.com` |
 
 Discussions is the right place for "how do I", "is this expected", and open-ended
 design conversations. Issues are for things that can be reproduced and closed.
+
+The address above is the maintainer's contact for matters that should not be
+public — including asking for a private channel when GitHub's private
+vulnerability reporting is unavailable to you (see `SECURITY.md`) and Code of
+Conduct reports (see `CODE_OF_CONDUCT.md`). It is a real, monitored mailbox, not
+a placeholder.
 
 ## What we cannot help with
 

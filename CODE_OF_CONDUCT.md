@@ -1,9 +1,5 @@
 # Contributor Covenant Code of Conduct
 
-> **Placeholder contact:** the enforcement address below,
-> `conduct@cerberus.invalid`, is a placeholder. The maintainers will replace it
-> with a real, monitored mailbox before the first public release.
-
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our
@@ -64,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-`conduct@cerberus.invalid`.
+`braza4715@gmail.com`.
 
 All complaints will be reviewed and investigated promptly and fairly.
 
