@@ -33,9 +33,16 @@ export interface OpenAIConfig {
   model: string;
   /** Maximum output tokens per response. */
   maxOutputTokens: number;
-  /** Temperature (0-2). Lower = more deterministic. */
-  temperature: number;
-  /** Per-attempt timeout in ms (default 90_000 = 90s). */
+  /**
+   * Optional sampling temperature (0-2).
+   *
+   * Only present when `OPENAI_TEMPERATURE` is explicitly set. Several current
+   * models — including the default `gpt-5.6` — reject any temperature other
+   * than their own default, so an unset value means "omit the parameter and let
+   * the model decide" rather than "send a repository-chosen default".
+   */
+  temperature?: number;
+  /** Per-attempt timeout in ms (default 180_000 = 180s). */
   requestTimeoutMs: number;
   /** Optional API base URL override (proxies / self-hosted gateways). */
   baseUrl?: string;
@@ -158,12 +165,16 @@ export function loadConfig(): AppConfig {
     );
   }
 
+  const rawTemperature = readEnv("OPENAI_TEMPERATURE");
+
   const openai: OpenAIConfig = {
     apiKey: openaiApiKey,
     model: readEnv("OPENAI_MODEL_NAME") || "gpt-5.6",
     maxOutputTokens: readInt("OPENAI_MAX_OUTPUT_TOKENS", 65536),
-    temperature: readFloat("OPENAI_TEMPERATURE", 0.2),
-    requestTimeoutMs: readInt("OPENAI_REQUEST_TIMEOUT_MS", 90000),
+    // Omitted unless the operator opts in: the default model rejects any
+    // temperature other than its own default.
+    ...(rawTemperature ? { temperature: readFloat("OPENAI_TEMPERATURE", 1) } : {}),
+    requestTimeoutMs: readInt("OPENAI_REQUEST_TIMEOUT_MS", 180000),
     baseUrl: readEnv("OPENAI_BASE_URL") || undefined,
   };
 

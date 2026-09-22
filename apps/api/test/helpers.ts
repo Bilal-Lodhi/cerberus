@@ -21,7 +21,8 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       apiKey: "test-openai-key",
       model: "test-model",
       maxOutputTokens: 1024,
-      temperature: 0,
+      // No temperature: mirrors the production default, where the parameter is
+      // omitted unless OPENAI_TEMPERATURE is explicitly set.
       requestTimeoutMs: 5_000,
     },
     mcp: {

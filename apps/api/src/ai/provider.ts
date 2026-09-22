@@ -60,7 +60,7 @@ export class OpenAIProvider {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly maxOutputTokens: number;
-  private readonly temperature: number;
+  private readonly temperature: number | undefined;
 
   constructor(config: AppConfig) {
     if (!config.openai.apiKey) {
@@ -85,7 +85,8 @@ export class OpenAIProvider {
 
     console.log(
       `[ai] OpenAI provider ready → model="${this.model}" ` +
-        `maxOutputTokens=${this.maxOutputTokens} temperature=${this.temperature} ` +
+        `maxOutputTokens=${this.maxOutputTokens} ` +
+        `temperature=${this.temperature ?? "model default (not sent)"} ` +
         `timeout=${config.openai.requestTimeoutMs}ms`,
     );
   }
@@ -118,13 +119,18 @@ export class OpenAIProvider {
       try {
         const request: Record<string, unknown> = {
           model: this.model,
-          temperature,
           max_completion_tokens: maxTokens,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
           ],
         };
+        // Only sent when a temperature is explicitly configured or requested.
+        // Several models reject any value other than their own default, so
+        // omitting the parameter is the only portable behaviour.
+        if (temperature !== undefined) {
+          request["temperature"] = temperature;
+        }
         if (options.jsonMode) {
           request["response_format"] = { type: "json_object" };
         }
@@ -145,16 +151,19 @@ export class OpenAIProvider {
 
         // Empty response: retry once without the JSON-mode constraint.
         if (options.jsonMode) {
+          const fallbackRequest: Record<string, unknown> = {
+            model: this.model,
+            max_completion_tokens: maxTokens,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+          };
+          if (temperature !== undefined) {
+            fallbackRequest["temperature"] = temperature;
+          }
           const fallback = await this.client.chat.completions.create(
-            {
-              model: this.model,
-              temperature,
-              max_completion_tokens: maxTokens,
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userPrompt },
-              ],
-            } as never,
+            fallbackRequest as never,
             { signal },
           );
           const fallbackText = fallback.choices[0]?.message?.content ?? "";
@@ -235,7 +244,7 @@ export class OpenAIProvider {
           "actions array containing exactly 3 specific, actionable steps.",
         `Given this risk assessment (JSON), suggest 3 specific, actionable steps for a security team:\n` +
           JSON.stringify(payload),
-        { temperature: 0.1, maxTokens: 1000 },
+        { maxTokens: 1000 },
       );
       return parseRecommendedActions(raw);
     } catch (error) {
@@ -298,7 +307,7 @@ export class OpenAIProvider {
       "You are a MongoDB expert. Convert the question into a MongoDB aggregation " +
         "pipeline. Return JSON with a pipeline array of stages for the sessions collection.",
       question,
-      { temperature: 0, maxTokens: 2000 },
+      { maxTokens: 2000 },
     );
     try {
       const parsed = JSON.parse(raw) as { pipeline?: unknown };
@@ -313,7 +322,7 @@ export class OpenAIProvider {
       "Summarize these session records in plain English, highlighting the most " +
         "important risks, employees, and actions taken. Max 3 paragraphs.",
       JSON.stringify({ question, results }),
-      { temperature: 0.2, maxTokens: 1200 },
+      { maxTokens: 1200 },
     );
   }
 }

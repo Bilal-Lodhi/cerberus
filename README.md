@@ -217,8 +217,8 @@ refuses to boot when a mandatory secret is missing.
 | `OPENAI_API_KEY` | — | **Required.** |
 | `OPENAI_MODEL_NAME` | `gpt-5.6` | Model id sent to Chat Completions. |
 | `OPENAI_MAX_OUTPUT_TOKENS` | `65536` | Sent as `max_completion_tokens`. |
-| `OPENAI_TEMPERATURE` | `0.2` | |
-| `OPENAI_REQUEST_TIMEOUT_MS` | `90000` | Per-attempt SDK timeout. |
+| `OPENAI_TEMPERATURE` | unset | Optional. Omitted from the request unless set; `gpt-5.6` rejects any value but its own default. |
+| `OPENAI_REQUEST_TIMEOUT_MS` | `180000` | Per-attempt SDK timeout. |
 | `OPENAI_BASE_URL` | — | Optional base URL override for proxies or gateways. |
 | **MongoDB / MCP** | | |
 | `MONGODB_URI` | `mongodb://localhost:27017` | Read by the MCP server. |

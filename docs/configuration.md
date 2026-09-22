@@ -32,8 +32,8 @@ runtime, firewall or reverse proxy.
 | `OPENAI_API_KEY` | string (secret) | — | **Yes, always** | Required even in dev mode. The API refuses to start without it. |
 | `OPENAI_MODEL_NAME` | string | `gpt-5.6` | No | Model id passed to Chat Completions. |
 | `OPENAI_MAX_OUTPUT_TOKENS` | integer | `65536` | No | Sent as `max_completion_tokens`. |
-| `OPENAI_TEMPERATURE` | float | `0.2` | No | |
-| `OPENAI_REQUEST_TIMEOUT_MS` | integer | `90000` | No | Per-attempt SDK timeout. Retries use exponential backoff with jitter, up to 3 attempts, and never retry 401/403, `invalid_api_key` or `insufficient_quota`. |
+| `OPENAI_TEMPERATURE` | float | unset | No | Optional sampling temperature (0-2). When unset, the parameter is omitted from the request entirely and the model uses its own default. Set it only if your model accepts a custom value: `gpt-5.6` rejects anything other than its default with HTTP 400. |
+| `OPENAI_REQUEST_TIMEOUT_MS` | integer | `180000` | No | Per-attempt SDK timeout. Retries use exponential backoff with jitter, up to 3 attempts, and never retry 401/403, `invalid_api_key` or `insufficient_quota`. 180s rather than 90s because a multi-vector scenario matrix routinely takes longer than 90s to generate on current models. |
 | `OPENAI_BASE_URL` | string (URL) | unset | No | Overrides the API base URL. Intended for a proxy or self-hosted gateway. |
 
 Security notes:
@@ -194,9 +194,10 @@ CERBERUS_DEV_MODE=true
 # ── AI provider (still required in dev mode) ──
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL_NAME=gpt-5.6
-OPENAI_TEMPERATURE=0.2
+# Optional. Leave unset unless your model accepts a custom temperature.
+# OPENAI_TEMPERATURE=1
 OPENAI_MAX_OUTPUT_TOKENS=65536
-OPENAI_REQUEST_TIMEOUT_MS=90000
+OPENAI_REQUEST_TIMEOUT_MS=180000
 
 # ── MongoDB / MCP ──
 MONGODB_URI=mongodb://localhost:27017
@@ -256,8 +257,9 @@ CERBERUS_MCP_CORS_ORIGINS=
 OPENAI_API_KEY=<secret>
 OPENAI_MODEL_NAME=gpt-5.6
 OPENAI_MAX_OUTPUT_TOKENS=65536
-OPENAI_TEMPERATURE=0.2
-OPENAI_REQUEST_TIMEOUT_MS=90000
+# Optional: omit to let the model use its own default temperature.
+# OPENAI_TEMPERATURE=1
+OPENAI_REQUEST_TIMEOUT_MS=180000
 
 # ── MongoDB / MCP ──
 MONGODB_URI=mongodb+srv://<user>:<password>@<cluster>/cerberus?retryWrites=true&w=majority

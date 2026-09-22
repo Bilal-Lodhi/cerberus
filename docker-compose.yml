@@ -56,8 +56,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-gpt-5.6}
       OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-65536}
-      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.2}
-      OPENAI_REQUEST_TIMEOUT_MS: ${OPENAI_REQUEST_TIMEOUT_MS:-90000}
+      # Optional: omit to let the model use its own default temperature.
+      # gpt-5.6 rejects any explicit value other than its own default.
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-}
+      OPENAI_REQUEST_TIMEOUT_MS: ${OPENAI_REQUEST_TIMEOUT_MS:-180000}
 
       # ── Persistence ──
       MONGODB_URI: "mongodb://mongodb:27017"
