@@ -7,14 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Nothing yet. Changes that land after `0.1.0` are recorded here.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-09-22
 
-The initial independent open-source extraction. Cerberus began as a Google
-Cloud / OpenAI hackathon project ("Cerberus FinSec", MongoDB partner track) and
-was subsequently extracted into a standalone project. No published release
-exists yet; this section describes the state of the repository at extraction.
+The initial independent open-source extraction. Cerberus began as "Cerberus
+FinSec" in the **Google Cloud Rapid Agent Hackathon 2026** (Financial Services
+track, MongoDB partner track), built on Google Cloud Agent Builder and Gemini.
+The AI boundary was later migrated to the OpenAI SDK during **OpenAI Build Week
+2026** (Agentic Coding track). The project was subsequently extracted from the
+historical `Google-Cloud-Hackathon` repository into this standalone repository.
+No published release exists yet; this section describes the state of the
+repository at extraction.
 
 ### Added
 
@@ -67,10 +71,14 @@ exists yet; this section describes the state of the repository at extraction.
   refuses to start with `CERBERUS_DEV_MODE=true` while `NODE_ENV=production`.
 
 <!--
-RELEASE BLOCKER: the comparison links below use the placeholder owner "OWNER".
-Substitute the real GitHub organization or user name before publishing 0.1.0,
-and update this file and .github/ISSUE_TEMPLATE/config.yml at the same time.
+Comparison links for the real repository. Both targets resolve today and keep
+resolving after the release.
+
+There is deliberately no `compare/...` link: 0.1.0 is the first release, so
+there is no earlier tag to compare against, and a `v0.1.0...HEAD` compare link
+would 404 until the `v0.1.0` tag is pushed. Add one here when a second release
+makes a real comparison available.
 -->
 
-[Unreleased]: https://github.com/OWNER/cerberus/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/cerberus/compare/0000000000000000000000000000000000000000...v0.1.0
+[Unreleased]: https://github.com/Bilal-Lodhi/cerberus/commits/main
+[0.1.0]: https://github.com/Bilal-Lodhi/cerberus/releases
