@@ -5,10 +5,10 @@ activity from a browser-based operator console, scores it with an LLM for
 insider-threat and data-exfiltration indicators, and persists sessions, events
 and risk assessments in MongoDB.
 
-> **Status: 0.1.0 — first independent open-source release, not yet published.**
-> This is an experimental research system. It is not production ready, and it
-> makes no guarantee that it will detect or prevent anything. Read the
-> [Security & privacy warning](#security--privacy-warning) before running it.
+> **Status: 0.1.0 — first independent open-source release, published as a
+> pre-release.** This is an experimental research system. It is not production
+> ready, and it makes no guarantee that it will detect or prevent anything. Read
+> the [Security & privacy warning](#security--privacy-warning) before running it.
 
 ## What problem it solves
 

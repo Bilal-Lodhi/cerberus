@@ -35,12 +35,12 @@ We will credit reporters in the release notes unless you ask us not to.
 
 ## Supported versions
 
-There has been no public release yet. Once `v0.1.0` is published, only the latest
-minor release line will receive security fixes. Older versions are not supported.
+`v0.1.0` was published as a pre-release on 2026-09-22. Only the latest minor
+release line receives security fixes. Older versions are not supported.
 
 | Version | Supported |
 | ------- | --------- |
-| `0.1.x` (unreleased) | Yes, once published |
+| `0.1.x` | Yes |
 | anything older | No |
 
 ## Scope

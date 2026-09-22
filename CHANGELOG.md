@@ -17,7 +17,7 @@ track, MongoDB partner track), built on Google Cloud Agent Builder and Gemini.
 The AI boundary was later migrated to the OpenAI SDK during **OpenAI Build Week
 2026** (Agentic Coding track). The project was subsequently extracted from the
 historical `Google-Cloud-Hackathon` repository into this standalone repository.
-No published release exists yet; this section describes the state of the
+Published 2026-09-22 as a pre-release; this section describes the state of the
 repository at extraction.
 
 ### Added
@@ -90,14 +90,12 @@ repository at extraction.
   refuses to start with `CERBERUS_DEV_MODE=true` while `NODE_ENV=production`.
 
 <!--
-Comparison links for the real repository. Both targets resolve today and keep
-resolving after the release.
+Comparison links for the real repository.
 
-There is deliberately no `compare/...` link: 0.1.0 is the first release, so
-there is no earlier tag to compare against, and a `v0.1.0...HEAD` compare link
-would 404 until the `v0.1.0` tag is pushed. Add one here when a second release
-makes a real comparison available.
+`v0.1.0` is tagged, so the `[Unreleased]` compare link resolves. It is the only
+compare link: 0.1.0 is the first release, so there is no earlier tag to compare
+it against.
 -->
 
-[Unreleased]: https://github.com/Bilal-Lodhi/cerberus/commits/main
-[0.1.0]: https://github.com/Bilal-Lodhi/cerberus/releases
+[Unreleased]: https://github.com/Bilal-Lodhi/cerberus/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Bilal-Lodhi/cerberus/releases/tag/v0.1.0

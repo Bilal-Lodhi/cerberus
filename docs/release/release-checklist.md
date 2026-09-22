@@ -351,24 +351,46 @@ it.
 
 ## Phase 3 — Tagging and release
 
-- [ ] Confirm the release commit is the head of `main` and CI is green on it.
-- [ ] Create an annotated tag: `git tag -a v0.1.0 -m "Cerberus v0.1.0"`.
-- [ ] Sign the tag if a signing key is configured (`git tag -s v0.1.0`), and
-      confirm `git tag -v v0.1.0` verifies.
-- [ ] Confirm the tag points at the intended commit:
-      `git rev-list -n 1 v0.1.0`.
-- [ ] Push the tag: `git push origin v0.1.0`.
-- [ ] Create the GitHub Release from tag `v0.1.0` with the title
-      `Cerberus v0.1.0 — First Independent Open-Source Release`.
-- [ ] Attach `docs/release/v0.1.0-release-notes.md` as the release body and
-      confirm every link renders (no literal `OWNER`).
-- [ ] Decide the release type explicitly: tick "Set as a pre-release" if the
+- [x] Confirm the release commit is the head of `main` and CI is green on it.
+      **Verified at the time of tagging** — `ef98f96` was the head of `main` with
+      all five CI jobs green (run `35749583788`). `main` has since advanced to
+      post-release documentation commits, as expected; the tag was not moved.
+- [x] Create an annotated tag: `git tag -a v0.1.0 -m "Cerberus v0.1.0"`.
+      **Verified** — tag object `55329b5e378cb890c9b9775647396ea57fd7bdc7`.
+- [x] Sign the tag if a signing key is configured (`git tag -s v0.1.0`), and
+      confirm `git tag -v v0.1.0` verifies. **Not applicable, and deliberately so**
+      — no `user.signingkey`, `gpg.format` or `tag.gpgsign` is configured on the
+      release machine, and this phase must not configure signing from scratch. The
+      tag is annotated, not signed.
+- [x] Confirm the tag points at the intended commit:
+      `git rev-list -n 1 v0.1.0`. **Verified** —
+      `ef98f962530fb62340cf213b408f1cd715755c01`.
+- [x] Push the tag: `git push origin v0.1.0`. **Verified** — the remote tag
+      resolves to the same commit; the push carried no force and did not move
+      `main`.
+- [x] Create the GitHub Release from tag `v0.1.0` with the title
+      `Cerberus v0.1.0 — First Independent Open-Source Release`. **Verified** —
+      title matches exactly (em dash included).
+- [x] Attach `docs/release/v0.1.0-release-notes.md` as the release body and
+      confirm every link renders (no literal `OWNER`). **Verified, after a
+      correction** — the first publication carried seven relative links, four of
+      which resolved against the release URL rather than `docs/release/` and
+      404'd (`../migration.md` rendered as `/blob/migration.md`). They are now
+      absolute repository URLs and all resolve on the release page. The body was
+      edited in place; the tag was not moved.
+- [x] Decide the release type explicitly: tick "Set as a pre-release" if the
       project still describes itself as an experimental research system in
-      `README.md`, and record the decision. Do not leave the default unexamined.
-- [ ] Confirm the released assets are only what is intended (no build artifacts,
-      no `.env`).
-- [ ] Confirm the tag appears in the `CHANGELOG.md` comparison links, which now
-      need a real `v0.1.0` compare target.
+      `README.md`, and record the decision. **Decided: pre-release**, and
+      `prerelease: true` is set on the published release. `README.md` still
+      describes 0.1.0 as an experimental research system, so marking it "Latest"
+      would contradict the project's own status wording.
+- [x] Confirm the released assets are only what is intended (no build artifacts,
+      no `.env`). **Verified** — the release has **zero attached assets**; only
+      GitHub's generated source archives are available.
+- [x] Confirm the tag appears in the `CHANGELOG.md` comparison links, which now
+      need a real `v0.1.0` compare target. **Verified** — `[Unreleased]` now
+      compares `v0.1.0...HEAD` and `[0.1.0]` points at the release tag, both of
+      which resolve because the tag exists.
 
 ---
 
@@ -389,14 +411,28 @@ it.
       3, 5 and 7 were dropped as already fixed. Re-confirm each against the
       released commit.
 - [ ] Watch the issue tracker for the first two weeks and triage every report.
-- [ ] Watch the CI runs on `main` after the tag, including the advisory
-      dependency-audit job.
+      **Ongoing.**
+- [x] Watch the CI runs on `main` after the tag, including the advisory
+      dependency-audit job. **Verified** — `main` CI is green on both
+      post-release commits, with the advisory dependency audit passing alongside
+      the four required jobs.
 - [ ] Confirm private vulnerability reporting is reachable and that a test report
-      can be filed.
-- [ ] Record the released SHA, the image digest and the test counts in the
-      release notes file in the repository.
-- [ ] Update `SECURITY.md` "Supported versions" so `0.1.x` reads as supported
-      rather than "Yes, once published".
-- [ ] Re-check the `docs/` set for anything that still says "unreleased".
+      can be filed. **Still open** — the setting is enabled and verified, but
+      filing a probe report would create a real advisory entry, so this is left
+      for a deliberate manual check.
+- [x] Record the released SHA, the image digest and the test counts in the
+      release notes file in the repository. **Verified** — the release notes now
+      carry the tag, the release commit
+      `ef98f962530fb62340cf213b408f1cd715755c01`, the publish date, the image
+      digest and the 161/161 + 2/2 test counts.
+- [x] Update `SECURITY.md` "Supported versions" so `0.1.x` reads as supported
+      rather than "Yes, once published". **Verified** — the table now reads
+      `0.1.x` → Yes, with the publication date recorded.
+- [x] Re-check the `docs/` set for anything that still says "unreleased".
+      **Verified** — `README.md`, `SECURITY.md` and `CHANGELOG.md` were the three
+      files carrying publication-state claims, and all three are updated. The
+      remaining `[Unreleased]` references are the Keep a Changelog section
+      heading and the pull-request template, both of which are correct.
 - [ ] Schedule a dependency-audit triage pass, since the audit job is advisory
-      and does not block anything.
+      and does not block anything. **Still open** — a scheduling decision, not a
+      release gate.
