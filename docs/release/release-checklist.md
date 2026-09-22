@@ -249,16 +249,30 @@ GitHub CLI/API and then re-read to confirm the value took effect.
 - [x] Confirm the issue-template chooser works: `blank_issues_enabled: false` in
       `.github/ISSUE_TEMPLATE/config.yml` means both contact links must resolve.
       Both now point at `Bilal-Lodhi/cerberus` and resolve.
-- [ ] Protect `main`: require a pull request before merging, and require the
-      status checks below. **Not yet applied** — see the ordering note at the end
-      of this phase.
-- [ ] Mark these CI jobs as required status checks:
-      - [ ] `TypeScript (build, typecheck, test)` (job id `typescript`)
-      - [ ] `Flutter console (analyze, test)` (job id `console`)
-      - [ ] `Docker build` (job id `docker`)
-      - [ ] `Secret scan` (job id `secrets`)
-- [ ] Leave `Dependency audit (advisory)` (job id `dependencies`) as a
+- [x] Protect `main`: require a pull request before merging, and require the
+      status checks below. **Verified** — protection is active on `main` with
+      `required_pull_request_reviews` set, `allow_force_pushes: false` and
+      `allow_deletions: false`.
+- [x] Mark these CI jobs as required status checks. **Verified** — all four are
+      registered as required contexts, with `strict: true` (the branch must be up
+      to date before merging):
+      - [x] `TypeScript (build, typecheck, test)` (job id `typescript`)
+      - [x] `Flutter console (analyze, test)` (job id `console`)
+      - [x] `Docker build` (job id `docker`)
+      - [x] `Secret scan` (job id `secrets`)
+- [x] Leave `Dependency audit (advisory)` (job id `dependencies`) as a
       non-required check — it is `continue-on-error: true` by design.
+      **Verified** — it is not in the required-contexts list.
+
+Two deliberate choices in that configuration, recorded so they are not mistaken
+for omissions:
+
+- `required_approving_review_count` is **0**. Requiring one approval on a
+  single-maintainer repository would make every pull request unmergeable, because
+  nobody but the author is available to approve. The rule still forces all
+  changes through a pull request.
+- `enforce_admins` is **false**, so the repository owner is not locked out of
+  their own branch. Turn it on once a second maintainer exists.
 - [x] Confirm the CI workflow actually runs on a pull request to `main`, not only
       on push — `.github/workflows/ci.yml` triggers on `pull_request` targeting
       `main` as well as `push`.
@@ -288,13 +302,13 @@ still `disabled`. Enabling them opens automated fix pull requests, which is a
 maintainer workflow decision, not a hardening default: Settings → Code security
 and analysis → Dependabot → "Dependabot security updates".
 
-### Ordering note — branch protection must come after the release push
+### Ordering note — branch protection and the release push
 
-Do **not** enable "require a pull request before merging" on `main` until the
-release-prep commits are pushed. Once that rule is on, a direct push to `main` is
-rejected, including the maintainer's own. The correct order is: push the release
-commits, confirm CI is green on the resulting HEAD, then apply branch protection
-and the required checks.
+Branch protection was applied **after** the release-prep commits were pushed and
+CI was confirmed green on the resulting HEAD (`b6a6141`). Once "require a pull
+request before merging" is on, a direct push to `main` is rejected unless the
+pusher is an admin and `enforce_admins` is false. Keep that ordering in mind for
+any future release: push, confirm CI, then protect.
 
 ---
 

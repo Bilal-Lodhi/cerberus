@@ -121,15 +121,17 @@ Items marked **Unverified** are still open.
       than a hardening default. **Manual UI step:** Settings → Code security and
       analysis → Dependabot → "Dependabot security updates".
       Status: **Unverified**.
-- [ ] **Branch protection on `main`**: require a pull request before merging.
-      Deliberately deferred until after the release commits are pushed — the rule
-      would reject the maintainer's own direct push.
-      Status: **Unverified**.
-- [ ] **Required status checks** on `main`: `TypeScript (build, typecheck, test)`,
+- [x] **Branch protection on `main`**: require a pull request before merging.
+      Status: **Verified** — protection is active, with force-pushes and branch
+      deletion disallowed. `required_approving_review_count` is 0 (a
+      single-maintainer repository cannot satisfy a mandatory approval) and
+      `enforce_admins` is false so the owner is not locked out.
+- [x] **Required status checks** on `main`: `TypeScript (build, typecheck, test)`,
       `Flutter console (analyze, test)`, `Docker build`, `Secret scan`. Leave
       `Dependency audit (advisory)` non-required — it is
       `continue-on-error: true` by design.
-      Status: **Unverified**, and gated on the branch-protection step above.
+      Status: **Verified** — all four registered with `strict: true`, and the
+      advisory audit is not among them.
 
 ---
 
