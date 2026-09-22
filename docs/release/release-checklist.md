@@ -57,9 +57,11 @@ verification it replaced.
       defects were found and fixed by this exercise: the provider sent a
       `temperature` the model rejects, and the default per-attempt timeout was
       too low for large matrices.
-- [ ] The secret scan is green on the **final** release commit. The
-      `trufflehog --only-verified` job is CI-only and the binary is not installed
-      locally; confirm the `Secret scan` job passes on the pushed release commit.
+- [x] The secret scan is green on the release commit. **Verified** — the
+      `Secret scan` CI job (`trufflehog --only-verified`) passes on the pushed
+      release candidate, and the repository reports zero secret-scanning alerts
+      and zero Dependabot alerts. The binary is not installed locally, so this
+      line is confirmed through CI rather than a local run.
 
 ---
 
