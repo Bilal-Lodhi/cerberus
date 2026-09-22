@@ -1,29 +1,51 @@
 # Good first issue candidates — v0.1.0
 
-Nine small, self-contained issues suitable for a first-time contributor. Each one
-was verified against the repository at the time of writing: the file paths and
-line numbers below are citations, not estimates. Nothing here is a roadmap
-feature — every item is a gap that exists in the code or the documentation today.
+Nine small, self-contained issue candidates collected during the extraction. Each
+one was verified against the repository at the time of writing: the file paths and
+line numbers below are citations, not estimates.
 
-**Seven of the nine are open and ready to file.** Candidates 5 and 7 were fixed
-during the extraction itself and are kept only as a record; their sections are
-marked with a status note. Do not file those two.
+**Re-triaged against the release-prep tree before filing.** Of the nine, three
+were fixed during the extraction and are kept only as a record (3, 5 and 7 — do
+not file them), and one (8) had a premise that had already become false and has
+been rewritten below. That leaves five genuinely open candidates.
+
+Four are being filed. The status line on each section says which:
+
+| # | Title | Filed as | Labels |
+| --- | --- | --- | --- |
+| 1 | `SESSION_TTL_SECONDS` is parsed but never enforced | Filed | `bug`, `help wanted` |
+| 2 | `DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing | Deferred | — |
+| 3 | Reconcile the session-status vocabulary | Already fixed | — |
+| 4 | Send the console's risk weights as `severityMix` | Filed | `enhancement`, `help wanted` |
+| 5 | Align the `LICENSE` and `NOTICE` copyright lines | Already fixed | — |
+| 6 | Add an index for `docs/` | Filed | `documentation`, `good first issue` |
+| 7 | Fix two documentation claims that are no longer true | Already fixed | — |
+| 8 | Document the console web build output directory | Filed | `documentation`, `good first issue` |
+| 9 | Add a `CODEOWNERS` file | Deferred | — |
+
+Candidates 2 and 9 are real and still open, but each needs a maintainer decision
+before a contributor can start: 2 needs a choice between building a reference
+set and deleting the setting, and 9 needs the maintainer to name real owners. They
+are recorded here rather than filed so the tracker stays free of issues that
+cannot be started.
 
 Before opening one of these as a GitHub issue:
 
 1. Re-check it against the current commit. Line numbers move.
-2. Apply the `good first issue` label.
+2. Apply the labels named above.
 3. Add the acceptance criterion verbatim to the issue body, so "done" is not a
    matter of opinion.
 
-> **Note on `apps/console`.** The Flutter console was being modified while these
-> candidates were collected, and it does not currently pass `flutter analyze`.
-> Candidate 4 cites console files that were edited during that window. Re-verify
-> it before opening the issue; it may already be resolved.
+The required labels already exist on the repository: `bug`, `enhancement`,
+`documentation`, `good first issue` and `help wanted`.
 
 ---
 
 ## 1. Enforce `SESSION_TTL_SECONDS`, or remove it
+
+> **Status: filed as a `bug` + `help wanted` issue.** The setting is verified
+> inert, but the fix requires a maintainer choice between enforcing it and
+> deleting it, so it is not labelled `good first issue`.
 
 `SESSION_TTL_SECONDS` is documented as "session expiry in seconds", but nothing
 in the codebase ever reads it. `loadConfig()` parses it into
@@ -39,10 +61,10 @@ TTL) or delete the setting and the documentation that promises it.
 - `apps/api/src/config.ts:191` — the only place the variable is read.
 - `apps/api/src/routes/guardian.ts:85-87` — `sessionStore` and `activeSessions`,
   the two in-memory maps that hold live session state.
-- `apps/api/src/routes/guardian.ts:535-661` — `GET /api/v1/guardian/sessions`,
+- `apps/api/src/routes/guardian.ts:535-663` — `GET /api/v1/guardian/sessions`,
   where an expired session would have to stop being reported as live.
 - `apps/api/src/config.ts:64-73` — the `SecurityConfig` interface.
-- `docs/architecture.md:344-345` — already documents the setting as parsed but
+- `docs/architecture.md:343-344` — already documents the setting as parsed but
   not enforced.
 - `docs/configuration.md:137` — the variable reference entry.
 - `apps/api/test/helpers.ts:38` — the test config fixture that would need the new
@@ -55,24 +77,31 @@ Either (a) a session whose most recent event is older than
 `GET /api/v1/guardian/sessions` as a live session, and an automated test in
 `apps/api/test/session-lifecycle.test.ts` asserts the boundary using an injected
 TTL; or (b) `SESSION_TTL_SECONDS` no longer appears in `config.ts`,
-`docs/configuration.md`, `docs/architecture.md`, `.env.example` or
-`docker-compose.yml`, and `docs/architecture.md` records that session lifetime is
-unbounded by design.
+`docs/configuration.md`, `docs/architecture.md`, `README.md`,
+`docs/security/threat-model.md`, `.env.example`, `docker-compose.yml` or
+`apps/api/test/helpers.ts`, and `docs/architecture.md` records that session
+lifetime is unbounded by design.
 
 **Difficulty**
 
 Medium. The code change is small, but it changes observable behaviour of the
 session list and needs a test plus a documentation update. If the maintainers
-prefer option (b), it drops to easy — it becomes a pure deletion.
+prefer option (b), it drops to easy — it becomes a pure deletion across the eight
+files listed above.
 
 **Evidence:** confirmed by inspection. A repository-wide search for
 `sessionTTLSeconds` / `SESSION_TTL_SECONDS` across every file (excluding
 `node_modules`, `dist`, `build` and `.dart_tool`) returns only the declaration,
-the assignment, the test fixture, and documentation.
+the assignment, the test fixture, and documentation — no consumer, and no sweep.
 
 ---
 
 ## 2. Make `DATA_LEAKAGE_SIMILARITY_THRESHOLD` do something, or delete it
+
+> **Status: deferred — not filed.** The gap is real and verified, but option (a)
+> needs a data source for reference completions and option (b) reaches into the
+> scenario contract and the Flutter model, so it needs a maintainer decision
+> first. Filing it as a beginner issue would set a contributor up to fail.
 
 `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is parsed into configuration and passed into
 the risk-analysis prompt, but the similarity comparison it is supposed to gate
@@ -86,7 +115,7 @@ advertising similarity matching.
 
 - `apps/api/src/config.ts:72` — `dataLeakageSimilarityThreshold` declared.
 - `apps/api/src/config.ts:194-197` — read from the environment.
-- `apps/api/src/routes/guardian.ts:1023-1025` — `getReferenceCompletions()`
+- `apps/api/src/routes/guardian.ts:1045-1047` — `getReferenceCompletions()`
   returns `[]`.
 - `apps/api/src/routes/guardian.ts:222-227` — the empty array is passed into
   `analyzeRisk()`.
@@ -109,17 +138,34 @@ contract-only.
 
 **Difficulty**
 
-Medium. Option (a) is a real feature and needs a data source for reference
-completions, which is a design decision — do not start it without maintainer
-input. Option (b) is easy and mechanical, and is the honest minimum.
+Not beginner-suitable in either direction. Option (a) is a real feature and needs
+a data source for reference completions, which is a design decision. Option (b)
+looks mechanical but is not: the same constant also lives in
+`apps/api/src/types.ts:120` (`AntiExfiltrationThresholds`),
+`apps/api/src/ai/parsers.ts:240` (the default thresholds object),
+`apps/api/test/helpers.ts:41`, `apps/api/test/parsers.test.ts:242-243`, and
+`apps/console/lib/models/scenario_model.dart:374,382,393-394`; and
+`ExfiltrationReport` is a live field (`apps/api/src/types.ts:211`, parsed at
+`apps/api/src/ai/parsers.ts:216`). Removal touches the scenario contract and the
+console model, so it needs a maintainer to decide the shape first.
 
 **Evidence:** confirmed by inspection. `getReferenceCompletions` at
-`apps/api/src/routes/guardian.ts:1023-1025` has a body of `return [];`, and its
+`apps/api/src/routes/guardian.ts:1045-1047` has a body of `return [];`, and its
 doc comment states the historical cache "was never populated".
 
 ---
 
 ## 3. Reconcile the session-status vocabulary
+
+> **Status: already fixed during extraction.** Fixed by
+> `fix(api): never resurrect a terminated session after a restart`. Session
+> creation now writes `status: "active"` (`guardian.ts:760`), `createSession`
+> defaults to `"active"` and honours a caller-supplied status
+> (`mongo-client.ts:148-166`), and `normalizeStatus` recognises `terminated`
+> through `PERSISTED_SESSION_STATUSES` (`guardian.ts:983-999`). Regression tests
+> exist at `apps/api/test/dedup.test.ts:238-248`. The residual vocabulary spread
+> is documented as a deliberate deferral in `docs/architecture.md:345-352`. Kept
+> here as a record; do not re-file it as an issue.
 
 Three different sets of session status values exist in the codebase, and a fourth
 behaviour sits on top of them. `ActiveSession` permits five values, the MCP
@@ -176,6 +222,11 @@ against `SESSION_STATUSES` (`packages/mcp-mongodb/src/tools.ts:293-296`), while
 
 ## 4. Send the console's risk-distribution weights as `severityMix`
 
+> **Status: filed as an `enhancement` + `help wanted` issue.** Every citation
+> below was re-verified against the release-prep tree and is exact. The three
+> sliders map onto four severity keys, which is a product decision, so it is not
+> labelled `good first issue`.
+
 The scenario panel exposes three "Risk Distribution Weights" sliders, but the
 values never leave the client as structured data: they are interpolated into the
 prompt string, and the request body carries only `prompt`, `roleContext` and
@@ -218,11 +269,12 @@ Easy to medium. It is a single client-side data-plumbing change with no server
 work, but the mapping from three sliders to four severity keys is a product
 decision that needs a maintainer's answer before the code is written.
 
-**Evidence:** confirmed by inspection. The panel sliders and the prompt-folding
-line are cited above, and `api_service.dart:141-145` shows a three-key body. The
-API side is verified by `scenarios.ts:203` and `normalizeSeverityMix` at
-`scenarios.ts:449`. Re-verify before opening: `apps/console` was under active
-modification when this was written.
+**Evidence:** confirmed by inspection at the release-prep tree. The panel sliders
+and the prompt-folding line are cited above, and `api_service.dart:141-145` shows
+a three-key body. The API side is verified by `scenarios.ts:203` and
+`normalizeSeverityMix` at `scenarios.ts:449`. `severityMix` appears nowhere under
+`apps/console/lib`. `flutter analyze` is clean at this commit, so the console is
+safe to edit again.
 
 ---
 
@@ -260,7 +312,11 @@ simply wants to make a first contribution to the repository's paperwork.
 
 ## 6. Add an index for `docs/`
 
-`docs/` contains four documents and no entry point. `README.md` links each one
+> **Status: filed as a `documentation` + `good first issue` issue.** Re-verified:
+> no `docs/index.md` and no `docs/README.md` exists, and the corrected file count
+> is nine.
+
+`docs/` contains nine documents and no entry point. `README.md` links each one
 individually, but a reader who lands in `docs/` — or who follows a link to
 `docs/architecture.md` and wants to know what else is there — has no table of
 contents. Add a short index that lists each document with a one-line description
@@ -268,17 +324,21 @@ and the audience it is for.
 
 **Files involved**
 
-- `docs/` — currently `architecture.md`, `configuration.md`, `migration.md`,
-  `security/threat-model.md`.
+- `docs/` — nine tracked files: `architecture.md`, `configuration.md`,
+  `migration.md`, `security/threat-model.md`, and the five release-preparation
+  documents under `docs/release/` (`community-health-checklist.md`,
+  `good-first-issues.md`, `release-checklist.md`, `repository-metadata.md`,
+  `v0.1.0-release-notes.md`).
 - `docs/index.md` (new) or `docs/README.md` (new).
-- `README.md:264-273` — the existing documentation list, which the new index
+- `README.md:293-301` — the existing documentation list, which the new index
   should stay consistent with.
 
 **Acceptance criterion**
 
 `docs/index.md` or `docs/README.md` exists; it links every file under `docs/`
-including `docs/security/threat-model.md`; every link resolves; and `README.md`
-links to the new index instead of, or in addition to, listing each document.
+including `docs/security/threat-model.md` and the `docs/release/` set; every link
+resolves; and `README.md` links to the new index instead of, or in addition to,
+listing each document.
 
 **Difficulty**
 
@@ -333,50 +393,63 @@ root (130 lines), and `apps/api/test/` contains the eight files listed above;
 
 ---
 
-## 8. Document how to build the console for the web
+## 8. Document the console web build output directory
 
-Three places tell the reader that the Flutter console is not containerised and
-show `flutter run -d chrome`, which is a development command. Nothing documents
-how to produce a deployable web bundle, so anyone trying to serve the console
-outside a dev machine has to guess the `--dart-define` value and the output
-directory. Add a documented build step, and optionally a Compose service that
-serves the built bundle.
+> **Status: rewritten and filed as a `documentation` + `good first issue`
+> issue.** The original draft claimed nothing documented a production web build.
+> That was already false when it was written: `README.md` documents
+> `flutter build web --release` with both `--dart-define` values. The real,
+> narrower gap is below.
+
+`README.md` shows how to produce a deployable console bundle, but it never says
+where the bundle lands, and `CONTRIBUTING.md` stops at `flutter run -d chrome`,
+which is a development command. A contributor who follows either document has to
+guess the output directory before they can serve the bundle.
 
 **Files involved**
 
-- `docker-compose.yml:11-12` — the comment stating the console is not
-  containerised and pointing at `flutter run -d chrome`.
-- `README.md:148-153` — the same instruction under Quick start.
-- `CONTRIBUTING.md:76-86` — the console command block, which also stops at
-  `flutter run`.
+- `README.md:162-172` — the `flutter build web --release` block. It sets both
+  defines but never names the output directory.
+- `CONTRIBUTING.md:76-86` — the console command block, which stops at
+  `flutter run` and has no build step at all.
 - `apps/console/web/index.html:15` — notes that a `--base-href` argument is
   expected from `flutter build`.
-- `apps/console/lib/main.dart:32-42` — reads `API_BASE_URL` and
-  `CERBERUS_API_KEY` through `String.fromEnvironment`, so the documented build
+- `apps/console/lib/main.dart:28-35` — reads `API_BASE_URL` and
+  `CERBERUS_API_KEY` through `String.fromEnvironment`, so any documented build
   command must set both defines.
+- `docker-compose.yml:11-12` — the comment stating the console is not
+  containerised and pointing at `flutter run -d chrome`.
 - `SECURITY.md:113-114` — mentions the console's build-time
   `--dart-define=CERBERUS_API_KEY=...` value.
 
 **Acceptance criterion**
 
-`README.md` and `CONTRIBUTING.md` document a `flutter build web` command that
-includes the API base URL define and states the output directory; the documented
-command succeeds from a clean checkout; and, if a Compose service is added, it
-serves the built bundle and the README says which port it is on.
+`README.md` states the output directory produced by `flutter build web --release`
+(and it is the directory Flutter actually writes to when the documented command
+is run from `apps/console`), and `CONTRIBUTING.md` gains the same build command
+so the two documents agree. The documented command succeeds from a clean
+checkout.
 
 **Difficulty**
 
-Easy. It is documentation plus one verified command, unless the contributor also
-adds a Compose service, in which case it is easy-to-medium — the service needs a
-static file server and the built bundle needs to be produced at image build time.
+Trivial. Two documentation edits, plus running the documented command once to
+confirm the output path. No Compose service is required — the original draft's
+optional static-file-server service is out of scope for a first contribution.
 
-**Evidence:** confirmed by inspection. A repository-wide search for
-`flutter build` returns only the explanatory comment in
-`apps/console/web/index.html`; every documented console command is `flutter run`.
+**Evidence:** confirmed by inspection. `git grep -n "flutter build"` returns
+`README.md:165` and `apps/console/web/index.html:15`; `build/web` appears
+nowhere in `README.md` or `CONTRIBUTING.md`; and `CONTRIBUTING.md`'s console
+block contains only `flutter pub get`, `flutter analyze`, `dart format` and
+`flutter run`.
 
 ---
 
 ## 9. Add a `CODEOWNERS` file
+
+> **Status: deferred — not filed.** Still accurate: no `CODEOWNERS` file exists
+> anywhere. It is not a beginner issue, because the acceptance criterion requires
+> every handle to be a real GitHub user or team, which only the maintainer can
+> supply. It becomes fileable the moment the maintainer names the owners.
 
 GitHub looks for a `CODEOWNERS` file to decide who reviews a pull request, and
 this repository has none — so no review is requested automatically on any path.

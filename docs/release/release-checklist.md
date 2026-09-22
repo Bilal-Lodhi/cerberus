@@ -12,28 +12,46 @@ Run every command from the repository root unless the step says otherwise.
 
 Hard blockers. If any line below is still open, stop and fix it first.
 
-Verified during extraction, so these are ticked — re-run them against the
-release commit rather than trusting this list.
+Re-run every ticked line against the actual release commit rather than trusting
+this list. The state below is the release-prep verification, not the extraction
+verification it replaced.
 
-- [x] `flutter analyze` exits 0 in `apps/console` — verified: "No issues found!".
-- [x] `flutter test` passes in `apps/console` — verified: 2/2. The `dart:html`
-      dependency that blocked the Dart VM target was moved behind a
-      platform-conditional import.
-- [x] `npm run build`, `npm run typecheck` and `npm test` all exit 0 — verified,
-      with 161 tests passing.
-- [x] The Docker image builds and the container answers `GET /health` — verified
-      via `docker compose up -d --build`.
+- [x] `npm ci`, `npm run build`, `npm run typecheck` and `npm test` all exit 0 —
+      verified: **161 tests across 33 suites, 161 pass, 0 fail, 0 skipped**.
+- [x] `flutter pub get`, `flutter analyze` and `flutter test` exit 0 in
+      `apps/console` — verified: "No issues found!", **2/2 tests pass**.
+- [x] `dart format --output=none --set-exit-if-changed .` exits 0 in
+      `apps/console` — verified after formatting the four files that were
+      unformatted (`scenario_model.dart`, `api_service.dart`, `scenario_panel.dart`,
+      `widget_test.dart`). CI does not run this command, so it is a local-only
+      gate.
+- [x] The Docker image builds from a clean cache and the container answers
+      `GET /health` — verified with `docker build -t cerberus:v0.1.0 .` **and** a
+      `--no-cache` rebuild, plus `docker compose up -d --build` against `mongo:7`.
 - [x] The container exits non-zero, with a `CERBERUS_API_KEY` message, when run
       with `NODE_ENV=production` and no operator key — verified.
-- [ ] Every `OWNER` placeholder is gone from the repository.
-- [ ] `conduct@cerberus.invalid` is replaced with a monitored mailbox.
-- [x] The `LICENSE` and `NOTICE` copyright lines agree — `NOTICE` now carries the
-      same line as `LICENSE`.
-- [ ] The version is `0.1.0` in every manifest, including
-      `apps/console/pubspec.yaml`.
-- [ ] `CHANGELOG.md` dates the `0.1.0` section instead of saying `unreleased`.
-- [ ] The secret scan is clean on the release commit, including the
-      `trufflehog --only-verified` CI job, which was not run locally.
+- [x] `CERBERUS_DEV_MODE=true` is refused under `NODE_ENV=production` — verified,
+      exits 1 with "refused while NODE_ENV=production".
+- [x] Startup without `OPENAI_API_KEY` exits 1 — verified.
+- [x] Every `OWNER` placeholder is gone from the repository —
+      `git grep -n 'OWNER' -- .` returns no repository-URL placeholder.
+- [x] The `LICENSE` and `NOTICE` copyright lines agree — both read
+      `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)`.
+- [x] The version is `0.1.0` in every manifest — `package.json`,
+      `apps/api/package.json`, `packages/mcp-mongodb/package.json`,
+      `packages/mcp-mongodb/src/tool-names.ts` (`MCP_SERVER_VERSION`) and
+      `apps/console/pubspec.yaml` all read `0.1.0`, and `GET /health` reports
+      `"version":"0.1.0"`.
+- [x] `CHANGELOG.md` dates the `0.1.0` section instead of saying `unreleased`,
+      and its comparison links contain no zero-SHA compare target.
+- [x] The dependency-license inventory is complete and compatible: 106 runtime
+      packages, all permissively licensed, no copyleft and no unknown license.
+- [ ] `conduct@cerberus.invalid` is replaced. **Still open.** No contact address
+      is established anywhere in the project, so this needs a maintainer decision
+      (see `community-health-checklist.md`). Do not invent an address.
+- [ ] The secret scan is green on the **final** release commit. The
+      `trufflehog --only-verified` job is CI-only and the binary is not installed
+      locally; confirm the `Secret scan` job passes on the pushed release commit.
 
 ---
 
@@ -46,26 +64,32 @@ release commit rather than trusting this list.
 - [ ] `npm run typecheck` — exits 0 for both workspaces.
 - [ ] `npm test` — record the exact pass/fail/suite counts and paste them into
       the `## Verification` section of `docs/release/v0.1.0-release-notes.md`.
-      The last recorded run was 152 tests across 30 suites, 152 pass, 0 fail.
-- [ ] `cd apps/console && flutter pub get` — exits 0.
-- [ ] `cd apps/console && flutter analyze` — exits 0 with no findings.
-- [ ] `cd apps/console && flutter test` — exits 0.
-- [ ] `cd apps/console && dart format --output=none --set-exit-if-changed .` —
-      exits 0 (the command `CONTRIBUTING.md` documents).
+      The release-prep run was **161 tests across 33 suites, 161 pass, 0 fail,
+      0 skipped** (the previous recorded run was 152 tests across 30 suites).
+- [x] `cd apps/console && flutter pub get` — exits 0.
+- [x] `cd apps/console && flutter analyze` — exits 0 with "No issues found!".
+- [x] `cd apps/console && flutter test` — exits 0, 2/2 pass.
+- [x] `cd apps/console && dart format --output=none --set-exit-if-changed .` —
+      exits 0 (the command `CONTRIBUTING.md` documents). This failed at release
+      prep with four unformatted files and was fixed; note that CI does **not**
+      run this command, so it only guards a local run.
 
 ### 1.2 Container
 
-- [ ] `docker build -t cerberus:v0.1.0 .` — succeeds, and both
+- [x] `docker build -t cerberus:v0.1.0 .` — succeeds, and both
       `apps/api/dist/index.js` and `packages/mcp-mongodb/dist/http-adapter.js`
-      exist in the image (the Dockerfile asserts this).
-- [ ] `docker compose up --build` with a `.env` containing
-      `CERBERUS_DEV_MODE=true` and a placeholder `OPENAI_API_KEY` — both services
-      start.
-- [ ] `curl -sf http://localhost:8080/health` — returns `status: healthy`.
-- [ ] `docker compose down -v` — the stack and its volume are removed.
-- [ ] `docker run --rm -e NODE_ENV=production -e OPENAI_API_KEY=placeholder
-      cerberus:v0.1.0` — exits non-zero and the log names `CERBERUS_API_KEY`.
-- [ ] Record the image digest and the exact commands in the release notes.
+      exist in the image (the Dockerfile asserts this). Verified twice: once with
+      the local layer cache and once with `--no-cache`; both exited 0.
+- [x] `docker compose up --build` with `CERBERUS_DEV_MODE=true` and a placeholder
+      `OPENAI_API_KEY` — `mongo:7` reports healthy and the Cerberus container
+      starts.
+- [x] `curl -sf http://localhost:8080/health` — returns HTTP 200 with
+      `{"status":"healthy","service":"cerberus-api","version":"0.1.0",...}`.
+- [x] `docker compose down -v` — the stack, network and volume are removed.
+- [x] `docker run --rm -e NODE_ENV=production -e OPENAI_API_KEY=placeholder
+      cerberus:v0.1.0` — exits 1 and the log names `CERBERUS_API_KEY`
+      (`[entrypoint] FATAL: CERBERUS_API_KEY is not set.`).
+- [x] Record the image digest and the exact commands in the release notes.
 
 ### 1.3 Manual HTTP verification (needs a live server)
 
@@ -73,111 +97,161 @@ These are manual aids, not the automated suite. Run them with
 `CERBERUS_API_KEY` set and `CERBERUS_DEV_MODE=false`:
 
 - [ ] `pwsh -File scripts/smoke-api.ps1 -ApiKey $env:CERBERUS_API_KEY` — all 14
-      checks pass.
+      checks pass. **Not re-run at release prep.** One check drives the AI
+      scenario path, so a clean 14/14 needs a real OpenAI key; without one that
+      step fails closed with `CLASSIFIER_UNAVAILABLE` and the run scores 13/14.
 - [ ] `pwsh -File scripts/smoke-telemetry.ps1 -ApiKey $env:CERBERUS_API_KEY` —
-      all 18 checks pass.
+      all 18 checks pass. **Not re-run at release prep.**
 - [ ] `pwsh -File scripts/verify-all.ps1 -ApiKey $env:CERBERUS_API_KEY` — all
       three suites pass. Skip or lower `-GenerateCount` on
-      `scripts/stress-telemetry.ps1` to limit AI-provider spend.
-- [ ] Confirm an unauthenticated call to `GET /api/v1/sessions` returns 401.
+      `scripts/stress-telemetry.ps1` to limit AI-provider spend. **Not re-run at
+      release prep.**
+- [x] Confirm an unauthenticated call to `GET /api/v1/sessions` returns 401 —
+      verified live against a production-shaped compose stack, together with the
+      full boundary: no credential 401, wrong `Bearer` 401, wrong `X-API-Key` 401,
+      correct `Bearer` 200, correct `X-API-Key` 200. The MCP adapter answered 401
+      without a token, 401 with a wrong token, and 200 with the correct one.
 
 ### 1.4 Census and scans
 
-- [ ] Legacy-identifier census: run the CI command and confirm no output:
+- [x] Legacy-identifier census: run the CI command and confirm no output:
       `git grep -n -I -E 'webscraping-464710|gorilla_agents|gorilla-mcp-mongodb' -- .`
-- [ ] Extend the census to the old product and provider names and fix what it
+- [x] Extend the census to the old product and provider names and fix what it
       finds outside deliberate provenance text:
-      `git grep -n -I -E 'FinSec|Gemini' -- .`
-- [ ] Credential-file check: confirm no tracked file matches `.env`,
+      `git grep -n -I -E 'FinSec|Gemini' -- .` — remaining hits are deliberate
+      provenance text in `README.md`, `CHANGELOG.md`, `NOTICE`, `docs/migration.md`
+      and the release notes.
+- [x] Credential-file check: confirm no tracked file matches `.env`,
       `application_default_credentials.json`, `*.pem` or `*.key` (excluding
       `.env.example`).
 - [ ] Secret scan: run `trufflehog --only-verified` over the release commit, or
-      confirm the `Secret scan` CI job is green on it.
-- [ ] Confirm no `.env` file is staged or committed (`git ls-files .env` is
+      confirm the `Secret scan` CI job is green on it. The job is green on the
+      pre-release HEAD (`d9fc2b6`); confirm it again on the final release commit.
+- [x] Confirm no `.env` file is staged or committed (`git ls-files .env` is
       empty).
-- [ ] Confirm no build output is tracked: `apps/*/dist`, `apps/console/build`,
+- [x] Confirm no build output is tracked: `apps/*/dist`, `apps/console/build`,
       `apps/console/.dart_tool`, `*.tsbuildinfo`.
 
 ### 1.5 License audit
 
-- [ ] Confirm `LICENSE` contains the unmodified Apache License 2.0 text.
-- [x] Align the copyright line. `NOTICE` now carries the same line as `LICENSE`:
+- [x] Confirm `LICENSE` contains the unmodified Apache License 2.0 text
+      (169 lines, including the unmodified appendix).
+- [x] Align the copyright line. `NOTICE` carries the same line as `LICENSE`:
       "Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)".
-- [ ] Generate a full transitive dependency inventory with a license-scanning
-      tool and reconcile it against `NOTICE`. A manual closure walk during
-      extraction found 105 production packages, all permissively licensed
-      (MIT 89, ISC 7, Apache-2.0 4, BSD-2-Clause 3, BSD-3-Clause 2) with no
-      copyleft, unknown or missing license. `NOTICE` lists direct runtime
-      dependencies only and says so.
+- [x] Generate a full transitive dependency inventory and reconcile it against
+      `NOTICE`. The release-prep inventory found **106 runtime packages**, all
+      permissively licensed — MIT 90, ISC 7, Apache-2.0 4, BSD-2-Clause 3,
+      BSD-3-Clause 2 — with no copyleft, no unknown and no missing license. Every
+      package carried an explicit SPDX `license` field, so no text inference was
+      needed. All seven direct-dependency claims in `NOTICE` were verified
+      correct against the installed versions. Cross-checked with
+      `npm-license-crawler` (108/108 agreement) and an independent
+      `package-lock.json` walk. `NOTICE` lists direct runtime dependencies only
+      and says so.
 - [x] Confirm every dependency's license is compatible with Apache-2.0
       distribution — no copyleft or unknown-license package was found.
-- [ ] Confirm the `NOTICE` provenance paragraph still states that the project is
+- [x] Confirm the `NOTICE` provenance paragraph still states that the project is
       not affiliated with, endorsed by or sponsored by Google, OpenAI or MongoDB.
 
 ### 1.6 Changelog and versions
 
-- [ ] `CHANGELOG.md`: replace `## [0.1.0] - unreleased` with the release date in
-      `YYYY-MM-DD` form.
-- [ ] `CHANGELOG.md`: confirm `[Unreleased]` contains either "Nothing yet." or the
-      changes that are genuinely not in this release.
-- [ ] `CHANGELOG.md`: fix the comparison links, which currently point at
-      `.../compare/0000000000000000000000000000000000000000...v0.1.0`.
-- [ ] Version bump — all of the following must read `0.1.0`:
-      - [ ] `package.json` (`version`)
-      - [ ] `apps/api/package.json` (`version`)
-      - [ ] `packages/mcp-mongodb/package.json` (`version`)
-      - [ ] `packages/mcp-mongodb/src/tool-names.ts` (`MCP_SERVER_VERSION`)
-      - [ ] `apps/console/pubspec.yaml` (`version` — currently `1.0.0+1`, which
-            does not match the rest of the repository)
-- [ ] Confirm the service version reported by `GET /health` matches `0.1.0`.
+- [x] `CHANGELOG.md`: `## [0.1.0] - 2026-09-22` carries the release-prep date
+      instead of `unreleased`.
+- [x] `CHANGELOG.md`: `[Unreleased]` contains a clean "Nothing yet." entry.
+- [x] `CHANGELOG.md`: the comparison links point at
+      `https://github.com/Bilal-Lodhi/cerberus`, with no `OWNER` placeholder and
+      no zero-SHA compare target. There is deliberately no `compare/...` link:
+      0.1.0 is the first release, so there is no earlier tag, and a
+      `v0.1.0...HEAD` link would 404 until the tag is pushed.
+- [x] Version bump — all of the following read `0.1.0`:
+      - [x] `package.json` (`version`)
+      - [x] `apps/api/package.json` (`version`)
+      - [x] `packages/mcp-mongodb/package.json` (`version`)
+      - [x] `packages/mcp-mongodb/src/tool-names.ts` (`MCP_SERVER_VERSION`)
+      - [x] `apps/console/pubspec.yaml` (`version` — now `0.1.0+1`)
+- [x] Confirm the service version reported by `GET /health` matches `0.1.0` —
+      verified live in the container: `"version":"0.1.0"`.
 
 ### 1.7 Placeholders
 
-- [ ] Remove `OWNER` from `CHANGELOG.md` (the comment and both comparison links).
-- [ ] Remove `OWNER` from `CONTRIBUTING.md` (the `git clone` URL).
-- [ ] Remove `OWNER` from `.github/ISSUE_TEMPLATE/config.yml` (both contact
+- [x] Remove `OWNER` from `CHANGELOG.md` (the comment and both comparison links).
+- [x] Remove `OWNER` from `CONTRIBUTING.md` (the `git clone` URL).
+- [x] Remove `OWNER` from `.github/ISSUE_TEMPLATE/config.yml` (both contact
       links) and delete the note that documents the placeholder.
-- [ ] Confirm no other `OWNER` placeholder remains:
-      `git grep -n 'OWNER' -- .`
+- [x] Confirm no other `OWNER` placeholder remains:
+      `git grep -n 'OWNER' -- .` — remaining hits are the word `CODEOWNERS` and
+      historical notes in `docs/release/`, not repository-URL placeholders.
 - [ ] Replace `conduct@cerberus.invalid` in `CODE_OF_CONDUCT.md` with a real,
       monitored mailbox, and remove the "Placeholder contact" banner at the top of
-      that file.
+      that file. **Still open, and blocked on a maintainer decision**: the project
+      publishes no contact address, so this must not be invented. The only
+      `*.invalid` string left in the tree is this one, and it is deliberate.
 - [ ] Confirm no other placeholder address remains:
-      `git grep -n 'invalid' -- .`
+      `git grep -n 'invalid' -- .` — returns only the `CODE_OF_CONDUCT.md`
+      placeholder and the release documents that describe it.
 
 ### 1.8 Documentation accuracy
 
-- [ ] `README.md`: the note claiming `SECURITY.md` "is not yet present in the
-      tree" is wrong — the file exists. Remove or correct the note.
-- [ ] `docs/architecture.md`: the claim that the API test directory "is not
-      present in this release" is wrong — `apps/api/test/` holds eight test files
-      and `npm test` runs 152 tests. Remove or correct it.
-- [ ] Add real media to `README.md`: resolve the `TODO` comments for the demo GIF,
-      the architecture screenshot and the three console screenshots, or delete the
-      `## Screenshots` section.
-- [ ] Confirm every relative link in `README.md`, `docs/` and the new
-      `docs/release/` files resolves.
+- [x] `README.md`: the note claiming `SECURITY.md` "is not yet present in the
+      tree" was wrong — the file exists. Removed.
+- [x] `docs/architecture.md`: the claim that the API test directory "is not
+      present in this release" was wrong. Corrected; it now names
+      `apps/api/test/mcp-tool-mapping.test.ts`.
+- [x] README media: the `## Demo` and `## Screenshots` sections and their five
+      `TODO` comments were removed rather than left as empty placeholders. Real
+      media is deferred to a post-0.1.0 issue.
+- [x] Confirm every relative link in `README.md`, `docs/` and the
+      `docs/release/` files resolves — audited: 36 relative path links, all
+      resolve, with exact case. One broken in-page anchor in `docs/migration.md`
+      was found and fixed.
 
 ### 1.9 Freeze
 
-- [ ] `git status --porcelain` shows only files that belong to this release.
-- [ ] Confirm the branch is up to date with the intended release commit.
-- [ ] Confirm the working tree contains no editor, OS or build residue.
-- [ ] Record the release commit SHA; it goes in the tag annotation and the
-      release notes.
+- [x] `git status --porcelain` shows only files that belong to this release.
+- [x] Confirm the branch is up to date with the intended release commit.
+- [x] Confirm the working tree contains no editor, OS or build residue.
+- [x] Record the release commit SHA; it goes in the tag annotation and the
+      release notes. The local-only `AGENTS.md` is excluded through
+      `.git/info/exclude`, so it never appears in `git status`.
 
 ---
 
 ## Phase 2 — Repository setup
 
 Settings, not files. Do these before the tag is pushed so the first visitors find
-a configured repository.
+a configured repository. Everything marked verified below was applied through the
+GitHub CLI/API and then re-read to confirm the value took effect.
 
-- [ ] Set the repository description to the text in
-      `docs/release/repository-metadata.md` (<= 350 characters).
-- [ ] Add the topics listed in `docs/release/repository-metadata.md`.
+- [x] Set the repository description to the text in
+      `docs/release/repository-metadata.md` (264 characters, under the 350
+      limit). **Verified** by re-reading the repository.
+- [x] Add the topics listed in `docs/release/repository-metadata.md` — all 15
+      present. **Verified** by re-reading the repository.
+- [x] Enable GitHub's security policy so `SECURITY.md` is surfaced under the
+      Security tab. **Verified** — the file is present at the repository root.
+- [x] Enable private vulnerability reporting, which `SECURITY.md` instructs
+      reporters to use. **Verified**: `private-vulnerability-reporting` reads
+      `{"enabled":true}`.
+- [x] Enable Dependabot alerts. **Verified**: `GET /vulnerability-alerts`
+      returns 204 instead of 404.
+- [x] Confirm secret scanning is on. **Verified**:
+      `secret_scanning` is `enabled`.
+- [x] Confirm secret-scanning push protection is on. **Verified**:
+      `secret_scanning_push_protection` is `enabled`.
+- [x] Enable GitHub Discussions, which `SUPPORT.md` points people to.
+      **Verified**: `has_discussions` reads `true`.
+- [x] Create the labels used by the repository: `bug`, `enhancement`,
+      `documentation`, `good first issue`, `help wanted`, plus any triage labels
+      the maintainers want. **Verified** — all five already existed, alongside
+      `accessibility`, `duplicate`, `invalid`, `question` and `wontfix`.
+- [x] Confirm the `good first issue` label exists before opening any issue from
+      `docs/release/good-first-issues.md`. **Verified.**
+- [x] Confirm the issue-template chooser works: `blank_issues_enabled: false` in
+      `.github/ISSUE_TEMPLATE/config.yml` means both contact links must resolve.
+      Both now point at `Bilal-Lodhi/cerberus` and resolve.
 - [ ] Protect `main`: require a pull request before merging, and require the
-      status checks below.
+      status checks below. **Not yet applied** — see the ordering note at the end
+      of this phase.
 - [ ] Mark these CI jobs as required status checks:
       - [ ] `TypeScript (build, typecheck, test)` (job id `typescript`)
       - [ ] `Flutter console (analyze, test)` (job id `console`)
@@ -185,25 +259,42 @@ a configured repository.
       - [ ] `Secret scan` (job id `secrets`)
 - [ ] Leave `Dependency audit (advisory)` (job id `dependencies`) as a
       non-required check — it is `continue-on-error: true` by design.
-- [ ] Confirm the CI workflow actually runs on a pull request to `main`, not only
-      on push.
-- [ ] Enable GitHub's security policy so `SECURITY.md` is surfaced under the
-      Security tab.
-- [ ] Enable private vulnerability reporting, which `SECURITY.md` instructs
-      reporters to use.
-- [ ] Enable GitHub Discussions, which `SUPPORT.md` points people to.
-- [ ] Create the labels used by the repository: `bug`, `enhancement`,
-      `documentation`, `good first issue`, `help wanted`, plus any triage labels
-      the maintainers want.
-- [ ] Confirm the `good first issue` label exists before opening any issue from
-      `docs/release/good-first-issues.md`.
-- [ ] Confirm the issue-template chooser works: `blank_issues_enabled: false` in
-      `.github/ISSUE_TEMPLATE/config.yml` means both contact links must resolve.
-- [ ] Upload a social preview image (1280x640).
+- [x] Confirm the CI workflow actually runs on a pull request to `main`, not only
+      on push — `.github/workflows/ci.yml` triggers on `pull_request` targeting
+      `main` as well as `push`.
+- [ ] Upload a social preview image (1280x640). **Manual UI step.** No image
+      exists in the tree, and the repository deliberately ships no fabricated
+      media; this needs a real screenshot.
 - [ ] Decide whether `CODEOWNERS` is needed and either add
-      `.github/CODEOWNERS` or record the decision not to.
+      `.github/CODEOWNERS` or record the decision not to. **Still open** — see
+      `community-health-checklist.md`.
 - [ ] Confirm the repository name and its collision risk; see
-      `docs/release/repository-metadata.md`.
+      `docs/release/repository-metadata.md`. **Still open** — the collision risk
+      is documented but the naming decision has not been made. The repository was
+      **not** renamed.
+
+### Settings that could not be applied through the API — do these in the UI
+
+Two secret-scanning options accepted a `PATCH` with HTTP 200 but did not change
+value when re-read, so they are reported rather than claimed:
+
+- **Secret scanning → Non-provider patterns.** Settings → Code security and
+  analysis → Secret Protection → enable "Scan for non-provider patterns".
+- **Secret scanning → Validity checks.** Same screen → enable "Check validity of
+  detected secrets".
+
+Dependabot **security updates** (distinct from the alerts enabled above) are also
+still `disabled`. Enabling them opens automated fix pull requests, which is a
+maintainer workflow decision, not a hardening default: Settings → Code security
+and analysis → Dependabot → "Dependabot security updates".
+
+### Ordering note — branch protection must come after the release push
+
+Do **not** enable "require a pull request before merging" on `main` until the
+release-prep commits are pushed. Once that rule is on, a direct push to `main` is
+rejected, including the maintainer's own. The correct order is: push the release
+commits, confirm CI is green on the resulting HEAD, then apply branch protection
+and the required checks.
 
 ---
 
@@ -234,8 +325,17 @@ a configured repository.
 
 - [ ] Post an announcement in GitHub Discussions describing what 0.1.0 is and,
       explicitly, what it is not.
-- [ ] Open the issues drafted in `docs/release/good-first-issues.md`, apply the
-      `good first issue` label, and confirm each one still reproduces against the
+- [x] Open the issues drafted in `docs/release/good-first-issues.md`, apply the
+      labels recorded there, and confirm each one still reproduces against the
+      current commit. Four were filed at release prep:
+      [#1](https://github.com/Bilal-Lodhi/cerberus/issues/1) docs index,
+      [#2](https://github.com/Bilal-Lodhi/cerberus/issues/2) console web build
+      output directory,
+      [#3](https://github.com/Bilal-Lodhi/cerberus/issues/3)
+      `SESSION_TTL_SECONDS`,
+      [#4](https://github.com/Bilal-Lodhi/cerberus/issues/4) `severityMix`.
+      Candidates 2 and 9 were deferred as maintainer decisions, and candidates
+      3, 5 and 7 were dropped as already fixed. Re-confirm each against the
       released commit.
 - [ ] Watch the issue tracker for the first two weeks and triage every report.
 - [ ] Watch the CI runs on `main` after the tag, including the advisory
