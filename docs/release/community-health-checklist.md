@@ -18,14 +18,14 @@ GitHub setting, not visible in the tree).
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `README.md` | Done | 315 lines. States the 0.1.0 status, the security and privacy warning, configuration, roadmap and provenance. No demo media: five `TODO` comments stand in for screenshots. The note at the end claiming `SECURITY.md` is absent is wrong — the file exists. |
+| `README.md` | Done | 328 lines. States the 0.1.0 status, the security and privacy warning, configuration, roadmap and provenance. The empty `## Demo` and `## Screenshots` sections and their five `TODO` comments were removed for 0.1.0; media is deferred to a later issue. The stale note claiming `SECURITY.md` was absent is gone. |
 | `LICENSE` | Done | Unmodified Apache License 2.0 text. Appendix copyright line: `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)`. |
-| `NOTICE` | Done | Provenance paragraph, third-party attributions, trademark note. Copyright line: `Copyright 2026 The Cerberus Authors` — disagrees with `LICENSE`. Covers direct runtime dependencies only and says so. |
-| `CONTRIBUTING.md` | Done, with a placeholder | Development setup, conventions, commit style and pull-request expectations. `git clone https://github.com/OWNER/cerberus.git` still contains the `OWNER` placeholder. |
-| `CODE_OF_CONDUCT.md` | Done, with a placeholder | Contributor Covenant 2.1 with enforcement guidelines. The enforcement address `conduct@cerberus.invalid` is a placeholder, flagged in a banner at the top of the file and again in the Enforcement section. |
+| `NOTICE` | Done | Provenance paragraph, third-party attributions, trademark note. Copyright line: `Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)` — now identical to the `LICENSE` line. Covers direct runtime dependencies only and says so. |
+| `CONTRIBUTING.md` | Done | Development setup, conventions, commit style and pull-request expectations. The `git clone` URL now names the real owner (`Bilal-Lodhi/cerberus`). |
+| `CODE_OF_CONDUCT.md` | Done, with a placeholder | Contributor Covenant 2.1 with enforcement guidelines. The enforcement address `conduct@cerberus.invalid` is still a placeholder, flagged in a banner at the top of the file and again in the Enforcement section. See "Placeholders that block publication" below — this one needs a human decision, not a substitution. |
 | `SECURITY.md` | Done | Reporting route via private vulnerability reporting, scope, security model, known limitations, manual key rotation, deployment guidance. |
-| `SUPPORT.md` | Done | Where to ask, what the project cannot help with, and a bug-report checklist. Points at GitHub Discussions. |
-| `CHANGELOG.md` | Done, with a placeholder | Keep a Changelog format with an `[Unreleased]` and a `[0.1.0] - unreleased` section. Both comparison links and the `RELEASE BLOCKER` comment use the `OWNER` placeholder. |
+| `SUPPORT.md` | Done | Where to ask, what the project cannot help with, and a bug-report checklist. Points at GitHub Discussions. Publishes no contact address. |
+| `CHANGELOG.md` | Done | Keep a Changelog format with a clean `[Unreleased]` section and a dated `[0.1.0] - 2026-09-22`. Comparison links point at the real repository and contain no `OWNER` placeholder and no zero-SHA compare target. |
 
 ### GitHub templates and workflow
 
@@ -33,7 +33,7 @@ GitHub setting, not visible in the tree).
 | --- | --- | --- |
 | `.github/ISSUE_TEMPLATE/bug_report.yml` | Done | Structured form: what happened, expected, reproduction, version, deployment method, Node and MongoDB versions, logs, redaction confirmation. Applies the `bug` label. |
 | `.github/ISSUE_TEMPLATE/feature_request.yml` | Done | Structured form: problem, proposed solution, alternatives, willingness to implement, additional context. Applies the `enhancement` label and carries an explicit scope note that enterprise-auth, billing and multi-tenancy proposals will be closed. |
-| `.github/ISSUE_TEMPLATE/config.yml` | Done, with a placeholder | `blank_issues_enabled: false` with two contact links (SUPPORT.md, security policy). Both URLs use the `OWNER` placeholder, and a trailing comment documents it. |
+| `.github/ISSUE_TEMPLATE/config.yml` | Done | `blank_issues_enabled: false` with two contact links (SUPPORT.md, security policy). Both URLs name `Bilal-Lodhi/cerberus`; the placeholder note is gone. |
 | `.github/pull_request_template.md` | Done | Summary, motivation, type of change, scope boundaries, exact test commands, and a checklist that mirrors `CONTRIBUTING.md`. |
 | `.github/workflows/ci.yml` | Done | Five jobs: TypeScript build/typecheck/test, Flutter console analyze/test, Docker build with a `/health` smoke test and a fail-closed assertion, a secret scan, and an advisory dependency audit. |
 | `CODEOWNERS` | **Missing** | Neither `.github/CODEOWNERS`, `CODEOWNERS` nor `docs/CODEOWNERS` exists. See the decision note below. |
@@ -54,7 +54,7 @@ GitHub setting, not visible in the tree).
 | Item | Status | Notes |
 | --- | --- | --- |
 | `.env.example` | Done | Annotated, no real credentials, dev mode on by default. |
-| `.gitignore` | Done | `.env` is ignored; a local `.env` exists in the working tree and is not tracked. |
+| `.gitignore` | Done | `.env` is ignored. No `.env` exists in the working tree and none is tracked; `.env.example` is the documented starting point. |
 | `docker-compose.yml`, `Dockerfile`, `scripts/entrypoint.sh` | Done | Local stack, multi-stage non-root image, and a container entrypoint with its own fail-closed check. |
 | `scripts/*.ps1` | Done | Four manual HTTP runners: `smoke-api.ps1`, `smoke-telemetry.ps1`, `stress-telemetry.ps1`, `verify-all.ps1`. |
 
@@ -62,49 +62,74 @@ GitHub setting, not visible in the tree).
 
 ## Part 2 — GitHub settings that must be enabled
 
-These live in the repository settings, not in the tree. Confirm each one on the
-repository after the first push and before announcing the release.
+These live in the repository settings, not in the tree. Everything marked
+**Verified** below was applied through the GitHub CLI/API during release
+preparation and then re-read from the API to confirm the value took effect.
+Items marked **Unverified** are still open.
 
 ### Community features
 
-- [ ] **Discussions enabled.** `SUPPORT.md` sends every open-ended question to
+- [x] **Discussions enabled.** `SUPPORT.md` sends every open-ended question to
       Discussions; if it is off, that document points nowhere.
-      Status: **Unverified**.
-- [ ] **Labels created.** `bug` and `enhancement` are applied automatically by
+      Status: **Verified** (`has_discussions` reads `true`).
+- [x] **Labels created.** `bug` and `enhancement` are applied automatically by
       the issue templates; `documentation`, `good first issue` and `help wanted`
       are used by the release checklist and the issue drafts.
-      Status: **Unverified**.
-- [ ] **`good first issue` label present.** Required before opening any issue
+      Status: **Verified** — all five exist.
+- [x] **`good first issue` label present.** Required before opening any issue
       from `docs/release/good-first-issues.md`.
-      Status: **Unverified**.
-- [ ] **Issue templates enabled and blank issues disabled.** The templates set
+      Status: **Verified**.
+- [x] **Issue templates enabled and blank issues disabled.** The templates set
       `blank_issues_enabled: false`, so the chooser must resolve both contact
-      links.
-      Status: **Unverified**.
-- [ ] **Repository description set** to the text in
-      `docs/release/repository-metadata.md`.
-      Status: **Unverified**.
-- [ ] **Topics set** from the list in `docs/release/repository-metadata.md`.
-      Status: **Unverified**.
-- [ ] **Social preview image uploaded** (1280x640). `README.md` has no media at
-      all, so the link preview is currently the default.
+      links. Both now point at `Bilal-Lodhi/cerberus` and resolve.
+      Status: **Verified**.
+- [x] **Repository description set** to the text in
+      `docs/release/repository-metadata.md` (264 characters).
+      Status: **Verified**.
+- [x] **Topics set** from the list in `docs/release/repository-metadata.md` — all
+      15 present.
+      Status: **Verified**.
+- [ ] **Social preview image uploaded** (1280x640). No image exists in the tree
+      and none should be fabricated. **Manual UI step.**
       Status: **Unverified**.
 
 ### Security settings
 
-- [ ] **Security policy enabled** so `SECURITY.md` is surfaced on the Security
-      tab.
-      Status: **Unverified**.
-- [ ] **Private vulnerability reporting enabled.** `SECURITY.md` instructs
+- [x] **Security policy enabled** so `SECURITY.md` is surfaced on the Security
+      tab. `SECURITY.md` is present at the repository root.
+      Status: **Verified**.
+- [x] **Private vulnerability reporting enabled.** `SECURITY.md` instructs
       reporters to use it as the primary route.
+      Status: **Verified** (`{"enabled":true}`).
+- [x] **Dependabot alerts enabled.**
+      Status: **Verified** (`GET /vulnerability-alerts` returns 204).
+- [x] **Secret scanning enabled.**
+      Status: **Verified**.
+- [x] **Secret-scanning push protection enabled.**
+      Status: **Verified**.
+- [ ] **Secret scanning — non-provider patterns.** A `PATCH` to enable this was
+      accepted with HTTP 200 but the value did not change on re-read, so it is
+      reported rather than claimed. **Manual UI step:** Settings → Code security
+      and analysis → Secret Protection → "Scan for non-provider patterns".
+      Status: **Unverified**.
+- [ ] **Secret scanning — validity checks.** Same behaviour: accepted, not
+      applied. **Manual UI step:** same screen → "Check validity of detected
+      secrets".
+      Status: **Unverified**.
+- [ ] **Dependabot security updates.** Still `disabled`. Enabling it opens
+      automated fix pull requests, which is a maintainer workflow decision rather
+      than a hardening default. **Manual UI step:** Settings → Code security and
+      analysis → Dependabot → "Dependabot security updates".
       Status: **Unverified**.
 - [ ] **Branch protection on `main`**: require a pull request before merging.
+      Deliberately deferred until after the release commits are pushed — the rule
+      would reject the maintainer's own direct push.
       Status: **Unverified**.
 - [ ] **Required status checks** on `main`: `TypeScript (build, typecheck, test)`,
       `Flutter console (analyze, test)`, `Docker build`, `Secret scan`. Leave
       `Dependency audit (advisory)` non-required — it is
       `continue-on-error: true` by design.
-      Status: **Unverified**.
+      Status: **Unverified**, and gated on the branch-protection step above.
 
 ---
 
@@ -129,19 +154,32 @@ decision down so the next contributor does not re-litigate it.
 
 ### Placeholders that block publication
 
-Three placeholder values are still in the tree. They are documented in the files
-themselves, and every one of them must be resolved before the repository is
-announced:
+The `OWNER` placeholder has been resolved. Every repository URL in
+`CHANGELOG.md`, `CONTRIBUTING.md` and `.github/ISSUE_TEMPLATE/config.yml` now
+names `Bilal-Lodhi/cerberus`, and `git grep -n 'OWNER' -- .` returns no
+repository-URL placeholder.
 
-1. `OWNER` in `CHANGELOG.md`, `CONTRIBUTING.md` and
-   `.github/ISSUE_TEMPLATE/config.yml`.
-2. `conduct@cerberus.invalid` in `CODE_OF_CONDUCT.md`.
-3. The `LICENSE` / `NOTICE` copyright-line disagreement, which is a placeholder
-   decision rather than a placeholder string.
+One placeholder remains, and it is a human decision rather than a substitution:
 
-### Demo media — missing
+1. `conduct@cerberus.invalid` in `CODE_OF_CONDUCT.md`. The project publishes no
+   contact address anywhere — `SUPPORT.md` routes questions to GitHub
+   Discussions and `SECURITY.md` routes vulnerabilities to GitHub private
+   vulnerability reporting. Neither is a Code of Conduct enforcement channel, and
+   inventing an address would publish a mailbox nobody monitors. **A maintainer
+   must either supply a monitored address or choose a non-email enforcement
+   route, then edit `CODE_OF_CONDUCT.md` and remove its placeholder banner.**
+   This is the only pre-release item left that cannot be completed from inside
+   the repository.
 
-`README.md` has five `TODO` comments covering a demo GIF, an architecture
-screenshot and three console screenshots. Until they are replaced or the
-`## Screenshots` section is deleted, the repository's first impression is a
-placeholder comment.
+The `LICENSE` / `NOTICE` copyright-line disagreement is resolved: both now read
+`Copyright 2026 Muhammad Bilal Raza Lodhi (Cerberus AI Contributors)`.
+
+### Demo media — deferred
+
+`README.md` had five `TODO` comments covering a demo GIF, an architecture
+screenshot and three console screenshots, with no media checked in. Both the
+`## Demo` and `## Screenshots` sections were removed for 0.1.0 rather than left
+as empty placeholders, so the repository no longer advertises media it does not
+have. Adding real screenshots or a demo GIF is a post-0.1.0 task; it needs a
+running stack and a real OpenAI key to capture honestly, so it is not a
+release blocker.

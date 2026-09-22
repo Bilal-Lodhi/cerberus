@@ -28,7 +28,7 @@ Requirements:
 Setup:
 
 ```bash
-git clone https://github.com/OWNER/cerberus.git
+git clone https://github.com/Bilal-Lodhi/cerberus.git
 cd cerberus
 
 # Install all workspace dependencies from the repository root.

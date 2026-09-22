@@ -116,5 +116,6 @@ Both are lowercase and hyphenated, so they are valid GitHub repository names and
 valid as a future npm scope. Renaming the repository does not require renaming
 anything in the tree: the root `package.json` is `private`, the workspaces are
 scoped `@cerberus/*`, and no published package depends on the repository URL.
-The only files that embed the URL are the `OWNER/cerberus` placeholders listed in
-`release-checklist.md`, which have to be updated anyway.
+The only files that embed the URL are `CHANGELOG.md`, `CONTRIBUTING.md` and
+`.github/ISSUE_TEMPLATE/config.yml`, all of which now name
+`Bilal-Lodhi/cerberus` and would need updating if the repository were renamed.
