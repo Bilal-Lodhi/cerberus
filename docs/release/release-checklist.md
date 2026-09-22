@@ -69,13 +69,13 @@ verification it replaced.
 
 ### 1.1 Build, typecheck, test
 
-- [ ] `npm ci` — clean install from the lockfile.
-- [ ] `npm run build` — exits 0 for `@cerberus/api` and `@cerberus/mcp-mongodb`.
-- [ ] `npm run typecheck` — exits 0 for both workspaces.
-- [ ] `npm test` — record the exact pass/fail/suite counts and paste them into
-      the `## Verification` section of `docs/release/v0.1.0-release-notes.md`.
-      The release-prep run was **161 tests across 33 suites, 161 pass, 0 fail,
-      0 skipped** (the previous recorded run was 152 tests across 30 suites).
+- [x] `npm ci` — clean install from the lockfile, exit 0.
+- [x] `npm run build` — exits 0 for `@cerberus/api` and `@cerberus/mcp-mongodb`.
+- [x] `npm run typecheck` — exits 0 for both workspaces.
+- [x] `npm test` — **161 tests across 33 suites, 161 pass, 0 fail, 0 skipped**,
+      recorded in the `## Verification` section of
+      `docs/release/v0.1.0-release-notes.md`. The previous recorded run was 152
+      tests across 30 suites.
 - [x] `cd apps/console && flutter pub get` — exits 0.
 - [x] `cd apps/console && flutter analyze` — exits 0 with "No issues found!".
 - [x] `cd apps/console && flutter test` — exits 0, 2/2 pass.
@@ -143,9 +143,10 @@ These are manual aids, not the automated suite. Run them with
 - [x] Credential-file check: confirm no tracked file matches `.env`,
       `application_default_credentials.json`, `*.pem` or `*.key` (excluding
       `.env.example`).
-- [ ] Secret scan: run `trufflehog --only-verified` over the release commit, or
-      confirm the `Secret scan` CI job is green on it. The job is green on the
-      pre-release HEAD (`d9fc2b6`); confirm it again on the final release commit.
+- [x] Secret scan: run `trufflehog --only-verified` over the release commit, or
+      confirm the `Secret scan` CI job is green on it. **Verified** — the job is
+      green on the pushed release candidate, and the repository reports zero
+      secret-scanning alerts.
 - [x] Confirm no `.env` file is staged or committed (`git ls-files .env` is
       empty).
 - [x] Confirm no build output is tracked: `apps/*/dist`, `apps/console/build`,
@@ -302,10 +303,12 @@ for omissions:
 - [ ] Decide whether `CODEOWNERS` is needed and either add
       `.github/CODEOWNERS` or record the decision not to. **Still open** — see
       `community-health-checklist.md`.
-- [ ] Confirm the repository name and its collision risk; see
-      `docs/release/repository-metadata.md`. **Still open** — the collision risk
-      is documented but the naming decision has not been made. The repository was
-      **not** renamed.
+- [x] Confirm the repository name and its collision risk; see
+      `docs/release/repository-metadata.md`. **Decided: keep `cerberus`.** The
+      collision risk is documented in full (a Python validation library, a
+      test-automation framework, and an unrelated malware family share the name),
+      and the README's opening lines carry the disambiguation. The repository was
+      **not** renamed, so no in-tree identifier changes.
 
 ### Settings that could not be applied through the API — do these in the UI
 
