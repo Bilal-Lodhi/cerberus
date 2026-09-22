@@ -305,10 +305,12 @@ and analysis → Dependabot → "Dependabot security updates".
 ### Ordering note — branch protection and the release push
 
 Branch protection was applied **after** the release-prep commits were pushed and
-CI was confirmed green on the resulting HEAD (`b6a6141`). Once "require a pull
-request before merging" is on, a direct push to `main` is rejected unless the
-pusher is an admin and `enforce_admins` is false. Keep that ordering in mind for
-any future release: push, confirm CI, then protect.
+CI was confirmed green on the resulting HEAD. Once "require a pull request before
+merging" is on, a direct push to `main` is rejected unless the pusher is an admin
+and `enforce_admins` is false. Keep that ordering in mind for any future release:
+push, confirm CI, then protect. The exact release-prep commit SHA is recorded at
+tag time, per step 1.9 — do not hard-code it here, because documenting it moves
+it.
 
 ---
 
