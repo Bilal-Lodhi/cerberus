@@ -20,7 +20,11 @@
 # PREREQUISITES
 #   npm run build && npm start      (or: npm run dev)
 #
-# NOTE: step 4 calls the configured AI provider and may take 20-60 seconds.
+# NOTE: step 4 calls the configured AI provider and may take 45-180 seconds.
+# Ingest steps use a 120s client timeout because a paste above the configured
+# threshold triggers a synchronous risk-analysis call, which takes 10-30s on a
+# real model. The previous 30s ceiling aborted requests the server was still
+# working on.
 # ═══════════════════════════════════════════════════════════════════
 
 param(
@@ -98,7 +102,7 @@ try {
 
 # ─── 4. Author Threat Scenario Matrix ──────────────────────────────
 Write-Host ""
-Write-Host "[4/$Total] Author threat scenario matrix (AI provider - 20-60s)..." -ForegroundColor Cyan
+Write-Host "[4/$Total] Author threat scenario matrix (AI provider - 45-120s)..." -ForegroundColor Cyan
 Write-Host "  Calling the configured AI provider..." -ForegroundColor DarkYellow
 try {
   $body = @{
@@ -107,7 +111,10 @@ try {
     vectorCount = 5
     severityMix = @{ low=0.25; medium=0.35; high=0.25; critical=0.15 }
   } | ConvertTo-Json
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/scenarios" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 180
+  # 600s: the provider allows 3 attempts at a 180s timeout each, so a 5-vector
+  # matrix can legitimately take several minutes. The old 180s ceiling aborted
+  # requests the server was still working on.
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/scenarios" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 600
   $matrixId = $r.matrix.metadata.matrixId
   Write-Host "  PASS - matrixId: $matrixId (persisted: $($r.persisted))" -ForegroundColor Green
   $Passed++
@@ -145,7 +152,7 @@ try {
     payload=@{ key="A"; deltaMs=45 }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -163,7 +170,7 @@ try {
     payload=@{ pasteContent="function exfiltrateData() { return fetch('/api/export', {method:'POST',body:JSON.stringify(sensitiveData)}); }"; deltaMs=120 }
     clientMetadata=@{ userAgent="Mozilla/5.0"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount), alertTriggered: $($r.alertTriggered), riskIndex: $($r.anomalyRiskIndex)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -181,7 +188,7 @@ try {
     payload=@{ diffPatch="+ function transferFunds(account) { ... }"; changedFile="main.dart" }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -199,7 +206,7 @@ try {
     payload=@{ visibilityState="hidden" }
     clientMetadata=@{ userAgent="Mozilla/5.0"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -217,7 +224,7 @@ try {
     payload=@{ focusDurationMs=3500 }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -235,7 +242,7 @@ try {
     payload=@{ selectionLength=245; selectionPreview="transferToOffshore" }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -253,7 +260,7 @@ try {
     payload=@{ panelName="Console" }
     clientMetadata=@{ userAgent="Chrome/130"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -271,7 +278,7 @@ try {
     payload=@{ fullscreenDurationMs=12000 }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -289,7 +296,7 @@ try {
     payload=@{ targetApp="Telegram"; windowTitle="Trade Secrets Chat" }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -307,7 +314,7 @@ try {
     payload=@{ codeLength=512; language="dart" }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -325,7 +332,7 @@ try {
     payload=@{ newText="void main() {`n  print('hello');`n}"; changeLength=15 }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount)" -ForegroundColor Green
   $Passed++
 } catch {
@@ -343,7 +350,7 @@ try {
     payload=@{ newText="void main() {`n  print('hello');`n  // Pasted: suspicious cross-border transfer`n  SwiftTransfer.execute(bic: 'OFFSHOREBNK', amount: 500000.00, currency: 'USD');`n}"; changeLength=150 }
     clientMetadata=@{ userAgent="Flutter/Dart"; ipAddress="10.0.0.1"; screenResolution="1920x1080"; platform="Windows"; language="en" }
   }) } | ConvertTo-Json -Depth 5
-  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 30
+  $r = Invoke-RestMethod -Uri "$BaseUrl/api/v1/guardian/ingest" -Method POST -ContentType "application/json" -Body $body -Headers (Merge-Headers) -TimeoutSec 120
   Write-Host "  PASS - processed: $($r.processedCount), alertTriggered: $($r.alertTriggered)" -ForegroundColor Green
   if ($r.riskPayload) {
     Write-Host "         riskScore: $($r.riskPayload.overallRiskScore), flags: $($r.riskPayload.flags.Count)" -ForegroundColor DarkGray

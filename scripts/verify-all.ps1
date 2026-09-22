@@ -17,13 +17,22 @@
 #   $env:CERBERUS_API_KEY = "<your key>"
 #   pwsh -File scripts/verify-all.ps1 -BaseUrl http://localhost:8080
 #
+#   # keep AI spend down: each scenario request is a paid AI call
+#   pwsh -File scripts/verify-all.ps1 -GenerateCount 1 -IngestCount 5
+#
 # PREREQUISITES
 #   npm run build && npm start      (or: npm run dev)
 # ═══════════════════════════════════════════════════════════════════
 
 param(
   [string]$BaseUrl = "http://localhost:8080",
-  [string]$ApiKey  = $env:CERBERUS_API_KEY
+  [string]$ApiKey  = $env:CERBERUS_API_KEY,
+  # Forwarded to stress-telemetry.ps1. Each scenario request is a paid AI call,
+  # so these are exposed here rather than buried: running this suite unmodified
+  # spends $GenerateCount AI requests.
+  [int]$GenerateCount   = 25,
+  [int]$IngestCount     = 25,
+  [int]$IngestBatchSize = 3
 )
 
 $ErrorActionPreference = "Continue"
@@ -102,7 +111,8 @@ Write-Host ""
 Write-Host "--- SUITE 3/3: 50-REQUEST STAGED CONCURRENT BURST ---" -ForegroundColor Magenta
 $s3Start = Get-Date
 $script = Join-Path $ScriptDir "stress-telemetry.ps1"
-& pwsh -File $script -BaseUrl $BaseUrl -ApiKey $ApiKey
+& pwsh -File $script -BaseUrl $BaseUrl -ApiKey $ApiKey `
+  -GenerateCount $GenerateCount -IngestCount $IngestCount -IngestBatchSize $IngestBatchSize
 $exitCode = $LASTEXITCODE
 $s3Elapsed = "{0:N0}s" -f ((Get-Date) - $s3Start).TotalSeconds
 

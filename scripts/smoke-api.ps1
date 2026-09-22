@@ -18,7 +18,7 @@
 # PREREQUISITES
 #   npm run build && npm start      (or: npm run dev)
 #
-# NOTE: step 4 calls the configured AI provider and may take 20-60 seconds.
+# NOTE: step 5 calls the configured AI provider and may take 45-120 seconds.
 # ═══════════════════════════════════════════════════════════════════
 
 param(
