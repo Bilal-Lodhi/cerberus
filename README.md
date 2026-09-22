@@ -10,15 +10,6 @@ and risk assessments in MongoDB.
 > makes no guarantee that it will detect or prevent anything. Read the
 > [Security & privacy warning](#security--privacy-warning) before running it.
 
-## Demo
-
-<!-- TODO: add demo GIF (console → deploy session → telemetry → risk assessment → review) -->
-<!-- TODO: add architecture screenshot -->
-<!-- TODO: add console screenshot: session review split panel -->
-<!-- TODO: add console screenshot: live risk notification -->
-
-No demo media is checked in yet.
-
 ## What problem it solves
 
 Insider data exfiltration in regulated environments is usually reconstructed
@@ -37,9 +28,10 @@ It is a research vehicle for that idea, not a compliance product.
 Implemented today:
 
 - **Streaming micro-event telemetry ingestion** over `POST /api/v1/guardian/ingest`,
-  covering keystrokes, paste triggers, code deltas, tab switches, window blur,
-  copy attempts, dev-tools open, fullscreen exit, external app switch, edits and
-  submissions. Session state is held in memory.
+  covering twelve event types: keystrokes, paste triggers, code deltas, tab
+  switches, window blur, copy attempts, dev-tools open, fullscreen exit,
+  external app switch, edits, submissions and pastes. Session state is held in
+  memory.
 - **Multi-layer deduplication** before spending inference: identical
   risk-assessment id, code-hash equality to skip re-analysis of an unchanged
   workspace, a 128-entry micro-event fingerprint ring to suppress replayed
@@ -257,12 +249,6 @@ Full type/default/security detail, plus worked development and production
 examples, is in [docs/configuration.md](docs/configuration.md). The annotated
 `.env.example` is the canonical starting point for a local stack.
 
-## Screenshots
-
-<!-- TODO: add screenshot: identity setup screen -->
-<!-- TODO: add screenshot: session review timeline and risk summary -->
-<!-- TODO: add screenshot: risk notification with behavioural counters -->
-
 ## Security & privacy warning
 
 **This software observes employee terminal activity.** Deploying it has legal
@@ -327,12 +313,15 @@ what this repository does and what an operator would need is explicit.
 
 ## Project provenance
 
-Cerberus originated as **Cerberus FinSec**, a Google Cloud / OpenAI hackathon
-project built for the MongoDB partner track. It was subsequently extracted from
-the historical `Google-Cloud-Hackathon` repository into this independent
-open-source project, which is why some historical naming survives in
-documentation and in the console. This repository does not support the
-historical schema or tool names; see [docs/migration.md](docs/migration.md).
+Cerberus originated as **Cerberus FinSec** in the **Google Cloud Rapid Agent
+Hackathon 2026** (Financial Services track, MongoDB partner track), where it was
+built on Google Cloud Agent Builder with Gemini as the model. The AI boundary
+was migrated to the OpenAI SDK later, during **OpenAI Build Week 2026** (Agentic
+Coding track). It was subsequently extracted from the historical
+`Google-Cloud-Hackathon` repository into this independent open-source project,
+which is why some historical naming survives in documentation and in the
+console. This repository does not support the historical schema or tool names;
+see [docs/migration.md](docs/migration.md).
 
 ## License
 

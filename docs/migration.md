@@ -18,7 +18,7 @@ Concretely:
 
 If you have data or client code that uses the historical names, you must rename
 it before Cerberus 0.1.0 can read it. See
-[If you have existing data](#if-you-have-existing-data).
+[If you have existing data](#4-if-you-have-existing-data).
 
 ## 1. MongoDB collections
 
