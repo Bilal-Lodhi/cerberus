@@ -22,7 +22,10 @@ import 'package:cerberus_console/providers/identity_provider.dart';
 /// so no server is required.
 void main() {
   ApiService buildApiService() {
-    final api = ApiService(baseUrl: 'http://localhost:8787', apiKey: 'test-key');
+    final api = ApiService(
+      baseUrl: 'http://localhost:8787',
+      apiKey: 'test-key',
+    );
     addTearDown(api.dispose);
     return api;
   }
@@ -59,7 +62,9 @@ void main() {
   ) async {
     final api = buildApiService();
 
-    await tester.pumpWidget(wrap(api, const MaterialApp(home: DashboardScreen())));
+    await tester.pumpWidget(
+      wrap(api, const MaterialApp(home: DashboardScreen())),
+    );
     await tester.pump();
 
     // The dashboard chrome renders. We assert on the shell's own labels rather

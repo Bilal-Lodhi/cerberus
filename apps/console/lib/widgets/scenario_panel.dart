@@ -264,8 +264,7 @@ class _ScenarioPanelContent extends StatefulWidget {
   const _ScenarioPanelContent();
 
   @override
-  State<_ScenarioPanelContent> createState() =>
-      _ScenarioPanelContentState();
+  State<_ScenarioPanelContent> createState() => _ScenarioPanelContentState();
 }
 
 class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {

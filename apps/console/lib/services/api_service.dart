@@ -512,9 +512,7 @@ class ApiService {
         peakRiskScore: gs.peakRiskScore > rs.peakRiskScore
             ? gs.peakRiskScore
             : rs.peakRiskScore,
-        riskScore: gs.riskScore > rs.riskScore
-            ? gs.riskScore
-            : rs.riskScore,
+        riskScore: gs.riskScore > rs.riskScore ? gs.riskScore : rs.riskScore,
         eventCount: gs.eventCount > 0 ? gs.eventCount : rs.eventCount,
         pasteCount: gs.pasteCount > 0 ? gs.pasteCount : rs.pasteCount,
         tabSwitchCount: gs.tabSwitchCount > 0

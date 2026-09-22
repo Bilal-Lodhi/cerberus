@@ -36,9 +36,7 @@ class ThreatScenarioMatrix {
       ),
       targetSystems: (json['targetSystems'] as List<dynamic>? ?? [])
           .whereType<Map<String, dynamic>>()
-          .map(
-            (r) => TargetSystemDescriptor.fromJson(r),
-          )
+          .map((r) => TargetSystemDescriptor.fromJson(r))
           .toList(),
       regulatoryMandates: (json['regulatoryMandates'] as List<dynamic>? ?? [])
           .whereType<Map<String, dynamic>>()
@@ -51,11 +49,7 @@ class ThreatScenarioMatrix {
       penetrationScenarios:
           (json['penetrationScenarios'] as List<dynamic>? ?? [])
               .whereType<Map<String, dynamic>>()
-              .map(
-                (m) => PenetrationScenarioDescriptor.fromJson(
-                  m,
-                ),
-              )
+              .map((m) => PenetrationScenarioDescriptor.fromJson(m))
               .toList(),
     );
   }
