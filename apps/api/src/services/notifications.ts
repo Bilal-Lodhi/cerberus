@@ -23,12 +23,33 @@ import type { RiskAssessmentPayload } from "../types.js";
  */
 export const NOTIFICATION_TIMEOUT_MS = 5_000;
 
+/**
+ * `fetch` under a deadline.
+ *
+ * An explicit `AbortController` rather than `AbortSignal.timeout()`: that helper
+ * schedules an **unref'd** timer, so a deadline that happens to be the only
+ * pending work never fires and the promise stays pending forever. This timer is
+ * ref'd, so the deadline is guaranteed to fire, and it is always cleared.
+ *
+ * There is no caller-supplied signal here, so any `AbortError` is this deadline.
+ */
+async function fetchWithDeadline(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Distinguishes a deadline from a transport failure in the logs. */
 function describeFailure(error: unknown, channel: string, timeoutMs: number): string {
-  if (
-    error instanceof Error &&
-    (error.name === "TimeoutError" || error.name === "AbortError")
-  ) {
+  if (error instanceof Error && error.name === "AbortError") {
     return `${channel} notification timed out after ${timeoutMs}ms`;
   }
   return `${channel} notification failed: ${
@@ -51,16 +72,19 @@ export async function notifySlack(
       .map((flag) => `${flag.severity}: ${flag.description}`)
       .join("; ");
 
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text:
-          `Cerberus high-risk alert: ${payload.employeeId} scored ` +
-          `${payload.overallRiskScore}/100. Flags: ${flags || "none"}`,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    const response = await fetchWithDeadline(
+      webhookUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text:
+            `Cerberus high-risk alert: ${payload.employeeId} scored ` +
+            `${payload.overallRiskScore}/100. Flags: ${flags || "none"}`,
+        }),
+      },
+      timeoutMs,
+    );
 
     if (!response.ok) {
       console.error(`[notifications] Slack returned HTTP ${response.status}`);
@@ -83,29 +107,32 @@ export async function sendEmail(
   }
 
   try {
-    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+    const response = await fetchWithDeadline(
+      "https://api.sendgrid.com/v3/mail/send",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: from },
+          subject: `Cerberus high-risk incident: ${payload.employeeId}`,
+          content: [
+            {
+              type: "text/plain",
+              value:
+                `Risk score: ${payload.overallRiskScore}/100\n` +
+                `Session: ${payload.sessionId}\n` +
+                `Summary: ${payload.incidentSummary ?? "n/a"}\n` +
+                `Flags: ${payload.flags.map((f) => f.flagType).join(", ") || "none"}\n`,
+            },
+          ],
+        }),
       },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: from },
-        subject: `Cerberus high-risk incident: ${payload.employeeId}`,
-        content: [
-          {
-            type: "text/plain",
-            value:
-              `Risk score: ${payload.overallRiskScore}/100\n` +
-              `Session: ${payload.sessionId}\n` +
-              `Summary: ${payload.incidentSummary ?? "n/a"}\n` +
-              `Flags: ${payload.flags.map((f) => f.flagType).join(", ") || "none"}\n`,
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+      timeoutMs,
+    );
 
     if (!response.ok) {
       console.error(`[notifications] Email provider returned HTTP ${response.status}`);

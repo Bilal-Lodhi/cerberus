@@ -64,7 +64,8 @@ function installHangingFetch(): {
       state.signalPassed = true;
       signal.addEventListener("abort", () => {
         state.aborted = true;
-        reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+        // What Node's fetch rejects with when a caller aborts the signal.
+        reject(new DOMException("The operation was aborted.", "AbortError"));
       });
     });
   }) as typeof fetch;
@@ -156,6 +157,29 @@ describe("notification deadline", () => {
     await assert.doesNotReject(() =>
       notifySlack("https://hooks.slack.test/hang", payload, 20),
     );
+  });
+
+  test("a deadline is logged as a timeout, naming the deadline applied", async () => {
+    const stub = installHangingFetch();
+    restore = stub.restore;
+
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map((arg) => String(arg)).join(" "));
+    };
+    try {
+      await notifySlack("https://hooks.slack.test/hang", payload, 25);
+    } finally {
+      console.error = originalError;
+    }
+
+    assert.equal(logged.length, 1, `expected one log line, saw: ${logged.join(" | ")}`);
+    // Both halves matter: a timeout must be distinguishable from a transport
+    // failure, and the number must be the deadline actually used rather than
+    // the module default.
+    assert.match(logged[0], /timed out after 25ms/);
+    assert.doesNotMatch(logged[0], /5000ms/);
   });
 
   test("an unconfigured channel makes no request at all", async () => {
