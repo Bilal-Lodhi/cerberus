@@ -21,6 +21,7 @@ export interface MongoCollections {
   sessions: string;
   microEvents: string;
   riskAssessments: string;
+  referenceDocuments: string;
 }
 
 export interface MongoConfig {
@@ -112,6 +113,7 @@ export class MongoStore {
     const microEvents = this.collection("microEvents");
     const riskAssessments = this.collection("riskAssessments");
     const threatScenarios = this.collection("threatScenarios");
+    const referenceDocuments = this.collection("referenceDocuments");
 
     await sessions.createIndex({ sessionId: 1 }, { unique: true });
     await sessions.createIndex({ employeeId: 1, auditId: 1 });
@@ -125,6 +127,11 @@ export class MongoStore {
 
     await threatScenarios.createIndex({ "metadata.matrixId": 1 }, { unique: true });
     await threatScenarios.createIndex({ "metadata.generatedAt": -1 });
+
+    // The reference corpus is read in full on every risk analysis, so it is
+    // indexed by its own id and by recency.
+    await referenceDocuments.createIndex({ referenceId: 1 }, { unique: true });
+    await referenceDocuments.createIndex({ updatedAt: -1 });
   }
 
   // ─── Threat Scenario Operations ────────────────────────────────
@@ -298,6 +305,57 @@ export class MongoStore {
       .find({ employeeId })
       .sort({ generatedAt: -1 })
       .toArray();
+  }
+
+  // ─── Reference Corpus Operations ───────────────────────────────
+
+  /**
+   * Upserts one operator-managed reference document.
+   *
+   * Idempotent on `referenceId`, so re-submitting the same document updates it
+   * rather than creating a duplicate that would double-count in similarity
+   * scoring.
+   */
+  async storeReferenceDocument(document: Document): Promise<string> {
+    const now = new Date();
+    await this.collection("referenceDocuments").updateOne(
+      { referenceId: document["referenceId"] },
+      {
+        $set: { ...compact(document), updatedAt: now },
+        $setOnInsert: { createdAt: now },
+      },
+      { upsert: true },
+    );
+    return document["referenceId"] as string;
+  }
+
+  /** Lists reference documents, newest first. */
+  async listReferenceDocuments(limit: number): Promise<Document[]> {
+    return this.collection("referenceDocuments")
+      .find(
+        {},
+        {
+          projection: {
+            referenceId: 1,
+            label: 1,
+            content: 1,
+            tags: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            _id: 0,
+          },
+        },
+      )
+      .sort({ updatedAt: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
+  async deleteReferenceDocument(referenceId: string): Promise<boolean> {
+    const result = await this.collection("referenceDocuments").deleteOne({
+      referenceId,
+    });
+    return result.deletedCount > 0;
   }
 
   // ─── Health Check ──────────────────────────────────────────────

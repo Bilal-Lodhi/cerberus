@@ -149,6 +149,7 @@ describe("server identity", () => {
       sessions: "monitored_sessions",
       microEvents: "micro_events",
       riskAssessments: "risk_assessments",
+      referenceDocuments: "reference_documents",
     });
   });
 });
