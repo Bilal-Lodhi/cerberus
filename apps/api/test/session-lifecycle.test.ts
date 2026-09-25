@@ -27,6 +27,8 @@ function statefulMcp() {
   const sessions = new Map<string, Record<string, unknown>>();
   const events = new Map<string, Array<Record<string, unknown>>>();
   const assessments = new Map<string, Array<Record<string, unknown>>>();
+  /** Durable event identity, as the `(sessionId, eventId)` unique index gives. */
+  const storedEventKeys = new Set<string>();
 
   return {
     sessions,
@@ -53,13 +55,35 @@ function statefulMcp() {
         }
         case "ingest_micro_events": {
           const batch = (body["events"] ?? []) as Array<Record<string, unknown>>;
+          const acceptedEventIds: string[] = [];
+          const duplicateEventIds: string[] = [];
+
           for (const event of batch) {
             const sessionId = String(event["sessionId"]);
+            const eventId = String(event["eventId"] ?? "");
+            const key = `${sessionId}::${eventId}`;
+
+            // The real store upserts on `(sessionId, eventId)`, so an event
+            // already stored is not inserted again — and the API relies on that
+            // report to avoid re-applying a replay.
+            if (storedEventKeys.has(key)) {
+              duplicateEventIds.push(eventId);
+              continue;
+            }
+
+            storedEventKeys.add(key);
+            acceptedEventIds.push(eventId);
             const list = events.get(sessionId) ?? [];
             list.push(event);
             events.set(sessionId, list);
           }
-          return { success: true, processedCount: batch.length };
+
+          return {
+            success: true,
+            processedCount: batch.length,
+            acceptedEventIds,
+            duplicateEventIds,
+          };
         }
         case "update_session_counts": {
           const sessionId = String(body["sessionId"]);

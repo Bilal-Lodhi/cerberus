@@ -159,6 +159,12 @@ export class MongoStore {
 
     await microEvents.createIndex({ sessionId: 1, timestamp: -1 });
     await microEvents.createIndex({ eventType: 1 });
+    // Durable idempotency: one document per (session, event). A retried batch —
+    // including one retried after a restart, when the in-process dedup ring is
+    // empty — is stored once. This is the only dedup layer that survives a
+    // restart, and it is why the ingest path applies only the events the store
+    // reports as newly inserted.
+    await microEvents.createIndex({ sessionId: 1, eventId: 1 }, { unique: true });
 
     await riskAssessments.createIndex({ sessionId: 1, generatedAt: -1 });
     await riskAssessments.createIndex({ employeeId: 1 });
@@ -299,11 +305,54 @@ export class MongoStore {
 
   // ─── Micro-Event Operations ────────────────────────────────────
 
-  async ingestMicroEvents(events: Document[]): Promise<number> {
-    if (events.length === 0) return 0;
-    const enriched = events.map((event) => ({ ...event, _ingestedAt: new Date() }));
-    const result = await this.collection("microEvents").insertMany(enriched);
-    return result.insertedCount;
+  /**
+   * Stores a batch of micro-events idempotently, keyed on `(sessionId, eventId)`.
+   *
+   * Each event is an upsert with `$setOnInsert`, so re-sending a batch inserts
+   * nothing the second time and the driver reports exactly which events were new
+   * via `upsertedIds`. That report is the point: the API applies **only** the
+   * accepted events to its in-memory counters, so a retry cannot inflate them —
+   * including a retry after a restart, when the in-process dedup ring is empty.
+   *
+   * `ordered: false` so one failure does not abandon the rest of the batch. An
+   * upsert with `$setOnInsert` does not raise a duplicate-key error, so the
+   * ordinary replay case is not an error path at all.
+   *
+   * An event with no `eventId` cannot be deduplicated and is always accepted; the
+   * route validates `eventId` as required, so this is a fallback rather than a
+   * supported shape.
+   */
+  async ingestMicroEvents(
+    events: Document[],
+  ): Promise<{ acceptedEventIds: string[]; duplicateEventIds: string[] }> {
+    if (events.length === 0) return { acceptedEventIds: [], duplicateEventIds: [] };
+
+    const ingestedAt = new Date();
+    const operations = events.map((event) => {
+      const eventId = typeof event["eventId"] === "string" ? event["eventId"] : "";
+      return {
+        updateOne: {
+          filter: { sessionId: event["sessionId"], eventId },
+          update: { $setOnInsert: { ...event, eventId, _ingestedAt: ingestedAt } },
+          upsert: true,
+        },
+      };
+    });
+
+    const result = await this.collection("microEvents").bulkWrite(operations, {
+      ordered: false,
+    });
+
+    const acceptedEventIds: string[] = [];
+    const duplicateEventIds: string[] = [];
+
+    events.forEach((event, index) => {
+      const eventId = String(event["eventId"] ?? "");
+      if (result.upsertedIds?.[index] !== undefined) acceptedEventIds.push(eventId);
+      else duplicateEventIds.push(eventId);
+    });
+
+    return { acceptedEventIds, duplicateEventIds };
   }
 
   async getSessionEvents(

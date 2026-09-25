@@ -214,6 +214,28 @@ export function createGuardianRouter(
       );
     }
 
+    // `MicroEvent.eventId` is required by the contract and is the durable
+    // idempotency key, so an event without one cannot be deduplicated. Rejecting
+    // it is validating the declared shape rather than tightening it.
+    const malformed = body.events.find(
+      (event) =>
+        event === null ||
+        typeof event !== "object" ||
+        typeof event.eventId !== "string" ||
+        event.eventId.trim().length === 0,
+    );
+    if (malformed !== undefined) {
+      return c.json(
+        {
+          success: false,
+          error: "Each event must contain a non-empty 'eventId'",
+          code: "MISSING_EVENT_ID",
+          correlationId: requestId,
+        },
+        400,
+      );
+    }
+
     const processedCount = body.events.length;
     let riskPayload: RiskAssessmentPayload | null = null;
     let alertTriggered = false;
@@ -246,20 +268,46 @@ export function createGuardianRouter(
         );
       }
 
-      // 3. Persist the raw telemetry.
-      await callMcpTool(
+      // 3. Persist the raw telemetry. The store reports which events were newly
+      //    inserted, and that report is the durable idempotency signal.
+      const persisted = await callMcpTool<{
+        success?: boolean;
+        acceptedEventIds?: string[];
+        duplicateEventIds?: string[];
+      }>(
         config,
         MCP_TOOL_NAMES.INGEST_MICRO_EVENTS,
         { events: body.events },
         { requestId, timeoutMs: MCP_TIMEOUT_MS },
       );
 
+      const acceptedIds = persisted.ok ? persisted.data?.acceptedEventIds : undefined;
+      const duplicateIds = persisted.ok ? persisted.data?.duplicateEventIds : undefined;
+      const acceptedSet = Array.isArray(acceptedIds) ? new Set(acceptedIds) : null;
+
+      if (duplicateIds && duplicateIds.length > 0) {
+        console.log(
+          `[guardian] [${requestId}] ${duplicateIds.length}/${processedCount} event(s) ` +
+            `already stored — not re-applied`,
+        );
+      }
+
       // 4. Apply events to in-memory state, hydrating from the durable document
       //    first when this process has not seen the session — otherwise the
       //    counters below would start at zero and be written back over the
       //    durable totals.
+      //
+      //    Only events the store reports as newly inserted are applied. The
+      //    in-process fingerprint ring is now a cache in front of a durable
+      //    guarantee, not the guarantee itself: a retry after a restart used to
+      //    re-inflate the counters that were just hydrated.
+      //
+      //    When persistence is unavailable there is no report. Every event is
+      //    then applied in memory, because dropping telemetry is worse than a
+      //    possible over-count in a session whose events were never stored.
       hydrateSessionFromDurable(sessionId, primaryEvent, durableSession);
       for (const event of body.events) {
+        if (acceptedSet && !acceptedSet.has(event.eventId)) continue;
         processEvent(event);
       }
 
@@ -494,6 +542,11 @@ export function createGuardianRouter(
       const response: IngestMicroEventResponse = {
         success: true,
         processedCount,
+        // Additive: `processedCount` keeps its meaning (the batch size), and these
+        // say how much of it was new. A caller retrying after a network ambiguity
+        // can see that its events were already stored.
+        acceptedCount: acceptedIds?.length ?? processedCount,
+        duplicateCount: duplicateIds?.length ?? 0,
         riskPayload,
         alertTriggered,
         anomalyRiskIndex: riskPayload?.overallRiskScore ?? 0,
@@ -1250,9 +1303,22 @@ export function createGuardianRouter(
       );
   }
 
-  /** Dedup layer 3: fingerprint ring suppresses replayed micro-event batches. */
+  /**
+   * Dedup layer 3: the content fingerprint ring suppresses replayed
+   * content-bearing events.
+   *
+   * Scoped to content-bearing types (see {@link isContentBearingEvent}): a signal
+   * event is deduplicated by `eventId` alone, at the storage layer, because two
+   * signals with identical payloads are two events.
+   *
+   * This ring is a best-effort *cache* in front of that durable guarantee. It does
+   * not survive a restart, and it is not a security control — the monitored client
+   * supplies `eventId`, so it can defeat either layer by sending a fresh one.
+   */
   function processEvent(event: MicroEvent): void {
     const existing = sessionStore.get(event.sessionId);
+    const contentBearing = isContentBearingEvent(event.eventType);
+    const fingerprint = contentBearing ? computeEventFingerprint(event) : "";
 
     if (!existing) {
       const created: SessionState = {
@@ -1274,19 +1340,18 @@ export function createGuardianRouter(
       };
       sessionStore.set(event.sessionId, created);
       applyEventToSession(created, event);
-      created.recentEventFingerprints.add(computeEventFingerprint(event));
+      if (contentBearing) created.recentEventFingerprints.add(fingerprint);
       created.eventCount++;
       touchSession(created);
       return;
     }
 
-    const fingerprint = computeEventFingerprint(event);
     // A suppressed replay is not activity: a replayed batch must not be able to
     // hold a session open past its TTL.
-    if (existing.recentEventFingerprints.has(fingerprint)) return;
+    if (contentBearing && existing.recentEventFingerprints.has(fingerprint)) return;
 
     applyEventToSession(existing, event);
-    existing.recentEventFingerprints.add(fingerprint);
+    if (contentBearing) existing.recentEventFingerprints.add(fingerprint);
     // Counted only on accept, so a suppressed replay does not inflate the
     // lifetime total either.
     existing.eventCount++;
@@ -1376,6 +1441,29 @@ export function computeEventFingerprint(event: MicroEvent): string {
     slim["dm"] = Math.round(event.payload.deltaMs / 10) * 10; // bucket to 10ms
   }
   return JSON.stringify(slim);
+}
+
+/**
+ * Event types whose payload is content that can legitimately repeat, and whose
+ * repeat is more likely a replay than a second real event.
+ *
+ * Everything else is a *signal*: a keystroke, a focus change, a copy attempt.
+ * Two signals with identical payloads are two events, not one — two keystrokes
+ * with the same inter-key delay are two keystrokes. Deduplicating those by
+ * content silently loses telemetry, which is why content dedup is scoped to the
+ * types below and every other type is deduplicated by `eventId` alone.
+ */
+const CONTENT_BEARING_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "PASTE",
+  "PASTE_TRIGGER",
+  "EDIT",
+  "CODE_DELTA",
+  "SUBMIT",
+]);
+
+/** True when content dedup applies to this event type. */
+export function isContentBearingEvent(eventType: string): boolean {
+  return CONTENT_BEARING_EVENT_TYPES.has(eventType);
 }
 
 /** Mutates session state in place for a single micro-event. */

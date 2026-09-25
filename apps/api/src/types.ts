@@ -312,6 +312,16 @@ export interface IngestMicroEventRequest {
 export interface IngestMicroEventResponse {
   success: boolean;
   processedCount: number;
+  /**
+   * How many events in the batch were newly persisted.
+   *
+   * Additive: `processedCount` remains the batch size. `acceptedCount` is how much
+   * of it was new, so a caller retrying after a network ambiguity can tell that
+   * its events were already stored.
+   */
+  acceptedCount?: number;
+  /** How many events were already present — a retry or a replay. */
+  duplicateCount?: number;
   riskPayload: RiskAssessmentPayload | null;
   /** Whether the exfiltration threshold was breached */
   alertTriggered: boolean;
