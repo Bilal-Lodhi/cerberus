@@ -18,8 +18,14 @@ import { timingSafeEqual } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppConfig, AuthConfig } from "../config.js";
 
-/** Routes that are always reachable without a credential. */
-const PUBLIC_PATHS = new Set<string>(["/health", "/"]);
+/**
+ * Routes that are always reachable without a credential.
+ *
+ * `/ready` is public for the same reason `/health` is: a load balancer probing it
+ * does not hold the operator API key. It reports dependency state, not telemetry
+ * or configuration values.
+ */
+const PUBLIC_PATHS = new Set<string>(["/health", "/ready", "/"]);
 
 /**
  * Constant-time string comparison that never short-circuits on length.

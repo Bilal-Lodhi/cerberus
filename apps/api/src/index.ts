@@ -43,9 +43,11 @@ import { createGuardianRouter } from "./routes/guardian.js";
 import { createReviewRouter } from "./routes/review.js";
 import { createAuditorRouter } from "./routes/auditor.js";
 import { createReferenceRouter } from "./routes/reference.js";
-import { healthRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
+import { healthRouter, createReadyRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
 import { identityRouter } from "./routes/identity.js";
 import { createRateLimiter, type RateLimiter } from "./services/rate-limit.js";
+import { createReadinessProbe, type ReadinessProbe } from "./services/readiness.js";
+import { callMcpTool, MCP_TOOL_NAMES } from "./services/mcp-client.js";
 import { systemClock, type Clock } from "./services/session-liveness.js";
 
 export interface AppOptions {
@@ -60,6 +62,40 @@ export interface AppOptions {
    * so a test can assert the limiter's boundary exactly rather than by waiting.
    */
   rateLimiter?: RateLimiter;
+  /**
+   * Overrides the readiness probe. Defaults to one that asks the persistence layer
+   * whether it is up; tests inject a probe so both the ready and the not-ready path
+   * are deterministic and no network is involved.
+   */
+  readinessProbe?: ReadinessProbe;
+}
+
+/**
+ * The default readiness probe: can the persistence layer answer?
+ *
+ * Uses the MCP adapter's own `health_check`, which pings MongoDB. A failure is
+ * reported rather than thrown, so a readiness request always produces an answer.
+ */
+function defaultReadinessProbe(config: AppConfig, clock: Clock): ReadinessProbe {
+  return createReadinessProbe({
+    name: "mcp-persistence",
+    clock,
+    check: async () => {
+      const response = await callMcpTool<{ connected?: boolean; healthy?: boolean }>(
+        config,
+        MCP_TOOL_NAMES.HEALTH_CHECK,
+        {},
+        { requestId: "readiness", timeoutMs: 1_500 },
+      );
+
+      if (!response.ok) {
+        throw new Error(response.error ?? "the persistence layer did not respond");
+      }
+      if (response.data?.connected === false) {
+        throw new Error("the persistence layer is reachable but not connected to MongoDB");
+      }
+    },
+  });
 }
 
 /** Builds the fully-wired Hono application. */
@@ -153,6 +189,7 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
 
   app.route("/", healthRouter);
   app.route("/health", healthRouter);
+  app.route("/", createReadyRouter(options.readinessProbe ?? defaultReadinessProbe(config, clock)));
   app.route("/api/v1/identity", identityRouter);
   app.route("/api/v1/scenarios", createScenariosRouter(config));
   app.route("/api/v1/guardian", guardian.router);

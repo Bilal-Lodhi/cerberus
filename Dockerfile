@@ -74,8 +74,16 @@ ENV NODE_ENV=production
 
 EXPOSE 8080
 
+# Readiness, not liveness. This container serves both the API and the MCP adapter,
+# so "the process is up" says nothing about whether it can persist anything:
+# /health would report healthy while MongoDB was unreachable. /ready answers the
+# question a container probe is actually asking — can this container serve? — and
+# it is also the endpoint a load balancer should use.
+#
+# Docker does not restart a container merely for being unhealthy, so this cannot
+# cause a restart loop; it makes `docker ps` and any orchestrator honest.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD curl -sf "http://localhost:${PORT}/health" || exit 1
+    CMD curl -sf "http://localhost:${PORT}/ready" || exit 1
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["/bin/sh", "./scripts/entrypoint.sh"]
