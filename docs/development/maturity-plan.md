@@ -16,8 +16,8 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the `SESSION_TTL_SECONDS` enforcement work
-(see `CHANGELOG.md` `[Unreleased]`).
+Last updated for the console `severityMix` work (see `CHANGELOG.md`
+`[Unreleased]`).
 
 ## Current state
 
@@ -95,30 +95,56 @@ Implemented and published:
   - Tests use an injected manual clock, so the boundary is asserted exactly and
     nothing sleeps.
 
+### Console / API contract coherence
+
+- **Issue #4** — the console now sends a structured `severityMix`. **Implemented.**
+  The scenario panel exposed three risk-distribution sliders whose values were
+  interpolated into the prompt text, while the request body carried only
+  `prompt`, `roleContext` and `vectorCount`. The API already accepted and
+  normalised a `severityMix` object, so the sliders were a UI control whose value
+  never reached the contract that was supposed to consume it.
+  - The slider → severity mapping lives in exactly one place,
+    `apps/console/lib/models/severity_mix.dart`: `routine → low`,
+    `elevated → medium`, and the third slider is a budget split
+    `60% high / 40% critical` by named constants.
+  - The third slider is labelled **"Severe"**, not "Critical", and the panel
+    prints the resulting four percentages beneath the sliders. Only 40% of that
+    budget becomes `critical`, so calling the whole slider "Critical" would have
+    misdescribed what the operator was choosing.
+  - The distribution is no longer folded into the prompt as prose. The server
+    states it to the model from the structured numbers, so there is one source of
+    truth rather than two that could disagree.
+  - The client normalises to sum 1.0 using the same rules as the server, so the
+    server never silently reinterprets what was sent. Non-finite and negative
+    slider values cannot put `NaN` into the request body.
+  - `ApiService` now accepts an injectable `http.Client`, so the generated request
+    body is asserted directly rather than inferred.
+
 ## Active work
 
-Nothing in flight. The next item selected is issue #4 (below).
+Nothing in flight. The next item selected is the P0 audit (below).
 
 ## Next queue
 
 Ordered by the value of the outcome, not by effort.
 
-1. **Issue #4 — the console never sends `severityMix`.** The scenario panel has
-   three risk-distribution sliders whose values are folded into prose in the
-   prompt; the request body carries only `prompt`, `roleContext` and
-   `vectorCount`, while the API already accepts and normalises a structured
-   `severityMix`. The three sliders must be mapped deterministically onto the
-   four severity keys and sent as structured data. **Planned.**
-2. **P0 security and correctness audit.** A route-by-route pass over auth, CORS,
+1. **P0 security and correctness audit.** A route-by-route pass over auth, CORS,
    body limits, the provider boundary, MongoDB query construction, session
    lifecycle, telemetry validation, the auditor whitelist, notifications and the
    console, answering the questions in the audit checklist rather than assuming
-   the answers. One confirmed finding already: the API has **no request body
-   size limit** — `@hono/node-server` exposes no `bodyLimit` option and none is
-   configured, so the architecture document's "8 MiB body cap" applies only to
-   the MCP sidecar downstream of a body the API has already buffered in full.
+   the answers. Confirmed findings so far, both unremediated:
+   - The API has **no request body size limit** — `@hono/node-server` exposes no
+     `bodyLimit` option and none is configured, so the architecture document's
+     "8 MiB body cap" applies only to the MCP sidecar downstream of a body the API
+     has already buffered in full. Hono ships a `body-limit` middleware, so the
+     fix needs no new dependency.
+   - Model-supplied numeric fields are **not clamped** by the parsers.
+     `parseRiskAssessment` accepts any finite number for `overallRiskScore`,
+     `dimensionScores.*` and `flags[].confidence`, and `guardian.ts` only caps the
+     blended score at the top. A negative or absurd model score flows through
+     unclamped.
    **Planned.**
-3. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
+2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
    completion source is a stub returning `[]`, so `ExfiltrationReport` matches
    are always empty while the threshold is still parsed and documented. Either
    give it a real, local, operator-managed reference corpus, or remove the
@@ -161,8 +187,7 @@ These cannot be resolved by engineering judgement alone.
    `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
    `CONTRIBUTING.md` that a single-maintainer project does not use one.
 
-Neither blocks the work above: issue #4 and the P0 audit are both independent of
-them.
+Neither blocks the work above: the P0 audit is independent of both.
 
 ## Release readiness
 

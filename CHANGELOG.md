@@ -34,12 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `createApp()` accepts an optional injected `clock`, and
   `apps/api/src/services/session-liveness.ts` exports a manual clock, so the TTL
   boundary is asserted exactly in tests instead of by sleeping.
+- The console sends the scenario panel's risk-distribution sliders as a
+  structured `severityMix` object. The mapping lives in
+  `apps/console/lib/models/severity_mix.dart`: `routine → low`,
+  `elevated → medium`, and the third slider is a budget split
+  `60% high / 40% critical`. `ApiService.authorScenario` accepts an injectable
+  `http.Client` so the generated request body is tested.
 
 ### Changed
 
 - `README.md` and `CONTRIBUTING.md` now state where `flutter build web --release`
   writes its output: `apps/console/build/web`. `CONTRIBUTING.md` previously
   stopped at `flutter run -d chrome` and had no build step at all.
+- The scenario panel's third risk slider is labelled **"Severe"** rather than
+  "Critical", because only 40% of its budget becomes `critical`. The panel prints
+  the resulting four percentages beneath the sliders, so the split is shown
+  rather than hidden.
+- The risk distribution is no longer folded into the scenario prompt as prose.
+  It travels only as the structured `severityMix` field, and the server states it
+  to the model from those exact numbers — one source of truth instead of two that
+  could disagree.
 - `SESSION_TTL_SECONDS` is validated at startup: it must be a positive whole
   number of seconds. `0`, `-1`, `1.5`, `1e3` and `7200abc` now raise a
   `ConfigError` and exit with code 1 instead of being silently parsed into a
