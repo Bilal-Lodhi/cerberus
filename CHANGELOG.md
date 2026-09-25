@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- In-process rate limiting: token buckets, one per route category, applied
+  **after** authentication. A refused request is `429` with code `RATE_LIMITED`, a
+  `Retry-After` header, and `X-RateLimit-Limit` / `X-RateLimit-Remaining` on every
+  response. `CERBERUS_AI_REQUESTS_PER_MINUTE` (default 10) caps the AI-backed
+  endpoints, which are the ones that spend money; `ingest`, `mutation` and `read`
+  have documented fixed ceilings, and `GET /health`, `GET /ready` and `GET /` are
+  exempt because a rate-limited probe looks like a dead service.
+  `CERBERUS_RATE_LIMIT_ENABLED` turns it off, and an unrecognised value for it is a
+  startup error rather than a silent `false`, so a typo cannot disable the control.
+  It is a backstop, not DDoS defence: it is per process, it does not key on the
+  caller, and it deliberately does not limit unauthenticated requests — a limiter
+  before auth would let an anonymous caller exhaust a bucket and deny service to
+  the operator. Per-caller and unauthenticated throttling belong at the reverse
+  proxy; see `docs/operations/reverse-proxy.md`.
+- `docs/operations/reverse-proxy.md` records what a proxy in front of Cerberus must
+  own, why `X-Forwarded-For` is deliberately not trusted, a minimal nginx
+  configuration, and what happens with more than one replica.
 - `CERBERUS_API_KEY_PREVIOUS` and `CERBERUS_MCP_TOKEN_PREVIOUS` support rotating
   either shared secret without a hard cutover: set the new value, put the old one
   in the previous slot, restart, move every client across, then unset it and

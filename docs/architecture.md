@@ -242,6 +242,12 @@ details:
   from its durable document — counters and identity only, never evidence. The
   storage layer also applies counters with `$max`, so neither the caller's
   bookkeeping nor a missed hydration can lower a durable total.
+- **Rate limiting runs after authentication.** `services/rate-limit.ts` holds one
+  token bucket per route category, keyed by category rather than by caller because
+  there is one shared key and therefore no caller to key on. Placing it before auth
+  would let an anonymous caller exhaust a bucket and deny service to the operator,
+  so unauthenticated throttling is left to the reverse proxy — see
+  [operations/reverse-proxy.md](operations/reverse-proxy.md).
 
 Every session field, its class and its fate across a restart is inventoried in
 [development/session-state-model.md](development/session-state-model.md).
