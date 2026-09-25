@@ -96,6 +96,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-finite value to 0 rather than `NaN`. `NaN >= AUTO_LOCK_THRESHOLD` is false,
   so a `NaN` score would have silently disabled the auto-lock instead of failing
   loudly.
+- Outbound Slack and SendGrid notifications are bounded by a 5 000 ms deadline.
+  Ingestion awaits both channels before returning, so a webhook that accepted a
+  connection and never answered previously stalled the ingest request for as long
+  as the socket stayed open — the notification path could block telemetry
+  collection. A timed-out notification is logged as a timeout and otherwise
+  ignored, so the failure semantics are unchanged.
+- The operator identity registry is bounded in size and time. It was a `Map` that
+  grew by one entry per `POST /api/v1/identity/set` and never evicted anything,
+  while `GET /me` already described an unknown handle as "unknown or expired"
+  although nothing expired it. Handles now expire after 12 hours and the registry
+  reclaims expired entries, then the oldest, at a ceiling of 100.
 
 ### Fixed
 

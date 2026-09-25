@@ -225,7 +225,11 @@ Security notes:
 ## 7. Notifications
 
 All four are optional. Both channels are no-ops when unconfigured, and both
-swallow failures so a notification outage cannot fail telemetry ingestion.
+swallow failures so a notification outage cannot fail telemetry ingestion. Each
+call is bounded by a 5 000 ms deadline, because ingestion awaits both channels
+before returning: without it, a hung webhook would stall the ingest request for
+as long as the socket stayed open. A timed-out notification is logged as a
+timeout and otherwise ignored.
 
 | Variable | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |

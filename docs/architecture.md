@@ -423,7 +423,11 @@ Boundary by boundary:
 - **Outbound notifications.** Slack webhook and SendGrid email are optional and
   unauthenticated-by-default no-ops when unconfigured. They carry the employee
   id, risk score, session id, summary and flag types to a third party. Failures
-  never fail ingestion.
+  never fail ingestion. Every call is bounded by a 5 000 ms deadline
+  (`NOTIFICATION_TIMEOUT_MS` in `apps/api/src/services/notifications.ts`):
+  ingestion awaits both channels before returning, so without a deadline a hung
+  webhook would stall the ingest request for as long as the socket stayed open,
+  turning the notification path into a way to block telemetry collection.
 
 What the boundaries do **not** provide is enumerated in
 [security/threat-model.md](security/threat-model.md).
