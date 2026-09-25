@@ -207,6 +207,7 @@ export class MongoStore {
             eventCount: 1,
             pasteCount: 1,
             tabSwitchCount: 1,
+            fullscreenExitCount: 1,
             copyAttemptCount: 1,
             peakRiskScore: 1,
             overallRiskScore: 1,
@@ -232,6 +233,7 @@ export class MongoStore {
       eventCount: number;
       pasteCount?: number;
       tabSwitchCount?: number;
+      fullscreenExitCount?: number;
       copyAttemptCount?: number;
       peakRiskScore?: number;
       status?: string;
