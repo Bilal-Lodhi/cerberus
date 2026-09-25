@@ -18,6 +18,8 @@
     "build:mcp": "npm run build --workspace @cerberus/mcp-mongodb",
     "typecheck": "npm run typecheck --workspace @cerberus/api && npm run typecheck --workspace @cerberus/mcp-mongodb",
     "test": "npm run test --workspace @cerberus/api && npm run test --workspace @cerberus/mcp-mongodb",
+    "migrate": "npm run migrate --workspace @cerberus/mcp-mongodb",
+    "migrate:dry-run": "npm run migrate:dry-run --workspace @cerberus/mcp-mongodb",
     "dev": "node scripts/dev-services.js",
     "start": "node scripts/start-services.js",
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1"

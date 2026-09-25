@@ -96,8 +96,23 @@ describe("index creation", () => {
     );
   });
 
-  test("ensureIndexes is invoked on connect", () => {
-    assert.match(source, /async connect\(\)[\s\S]*?await this\.ensureIndexes\(\)/);
+  test("connect migrates before creating indexes", () => {
+    // The order is load-bearing, not cosmetic: the unique index on
+    // (sessionId, eventId) cannot be created while duplicates exist, and
+    // duplicates are exactly what a database that ran the pre-fix ingestion path
+    // holds. Creating indexes first would make that deployment fail to start with
+    // an opaque duplicate-key error instead of being repaired.
+    assert.match(
+      source,
+      /async connect\([\s\S]*?await this\.runMigrations\(\)[\s\S]*?await this\.ensureIndexes\(\)/,
+    );
+  });
+
+  test("connect can skip migrating, for the migration CLI", () => {
+    // The CLI needs the plan from *before* anything is applied, and connect()
+    // applying migrations would destroy exactly what the operator came to see.
+    assert.match(source, /async connect\(options: \{ migrate\?: boolean \} = \{\}\)/);
+    assert.match(source, /if \(options\.migrate === false\) return;/);
   });
 });
 

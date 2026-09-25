@@ -15,6 +15,7 @@ import {
   COLLECTION_NAMES,
   DEFAULT_DATABASE_NAME,
 } from "./tool-names.js";
+import { runMigrations, type MigrationRunResult } from "./migrations.js";
 
 export interface MongoCollections {
   threatScenarios: string;
@@ -111,10 +112,58 @@ export class MongoStore {
     this.client = new MongoClient(uri);
   }
 
-  async connect(): Promise<void> {
+  /**
+   * Connects, then brings the database up to date.
+   *
+   * `migrate: false` connects without applying anything, which is what the
+   * migration CLI needs: `connect()` would apply the migrations and the plan an
+   * operator wants to inspect would already be gone. Nothing else should pass it.
+   */
+  async connect(options: { migrate?: boolean } = {}): Promise<void> {
     await this.client.connect();
     this.db = this.client.db(this.config.databaseName);
+
+    if (options.migrate === false) return;
+
+    // ── Migrations run BEFORE indexes, and the order is load-bearing ──
+    //
+    // The unique index on `(sessionId, eventId)` cannot be created while
+    // duplicates exist, and duplicates are exactly what a database that ran the
+    // pre-fix ingestion path holds. Creating indexes first would make that
+    // deployment fail to start with an opaque duplicate-key error instead of
+    // being repaired. Migration 0001 removes those duplicates; the index then
+    // succeeds.
+    await this.runMigrations();
+
     await this.ensureIndexes();
+  }
+
+  /**
+   * Applies pending migrations, logging the outcome.
+   *
+   * Called by {@link connect}. Exposed so a CLI can run a dry run, and so a test
+   * can drive the runner against a disposable database.
+   */
+  async runMigrations(options: { dryRun?: boolean } = {}): Promise<MigrationRunResult> {
+    const db = this.dbOrThrow();
+    const result = await runMigrations(db, {
+      ...options,
+      log: (message) => console.log(`[migrations] ${message}`),
+    });
+
+    if (result.dryRun) {
+      const pending = result.plan.filter((entry) => entry.state === "pending");
+      console.log(
+        `[migrations] dry run: ${pending.length} pending, ` +
+          `${result.plan.length - pending.length} already applied`,
+      );
+    } else if (result.applied.length > 0) {
+      console.log(`[migrations] applied ${result.applied.join(", ")}`);
+    } else {
+      console.log(`[migrations] up to date (${result.plan.length} migration(s) known)`);
+    }
+
+    return result;
   }
 
   async disconnect(): Promise<void> {

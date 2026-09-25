@@ -11,6 +11,8 @@
     "test": "node --import tsx --test test/*.test.ts",
     "dev": "tsx watch src/http-adapter.ts",
     "start": "node dist/http-adapter.js",
+    "migrate": "node dist/migrate-cli.js",
+    "migrate:dry-run": "node dist/migrate-cli.js --dry-run",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
