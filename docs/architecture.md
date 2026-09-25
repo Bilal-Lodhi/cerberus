@@ -248,6 +248,12 @@ details:
   would let an anonymous caller exhaust a bucket and deny service to the operator,
   so unauthenticated throttling is left to the reverse proxy — see
   [operations/reverse-proxy.md](operations/reverse-proxy.md).
+- **Liveness and readiness are separate, and must not be conflated.** `/health`
+  checks nothing and always answers `200`, so a dependency outage cannot cause an
+  orchestrator to restart a healthy process in a loop. `/ready` checks the
+  persistence layer and answers `503` when it is unreachable, so a load balancer
+  stops routing traffic without killing the instance. See
+  [operations/health-probes.md](operations/health-probes.md).
 
 Every session field, its class and its fate across a restart is inventoried in
 [development/session-state-model.md](development/session-state-model.md).

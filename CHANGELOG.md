@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /ready`, and a real split between liveness and readiness. `/health` is
+  **liveness**: it checks nothing and always answers `200`, so a dependency outage
+  cannot make an orchestrator restart a healthy process in a loop. `/ready` is
+  **readiness**: it asks the persistence layer, answers `200` or `503`, and is what a
+  load balancer should use to stop routing traffic without killing the instance.
+  The MCP adapter exposes the same pair, where `/ready` pings MongoDB. Before this,
+  `/health` returned `healthy` unconditionally — a deployment whose sidecar was down
+  reported itself healthy and kept accepting telemetry it could not persist.
+  The readiness probe is cached for two seconds and concurrent probes share one
+  in-flight check, so being watched closely does not add load in proportion to how
+  closely it is watched. It always answers: a dependency that throws, hangs or
+  returns nonsense is reported as `down`, never as a `500`, and each check has its
+  own deadline. `docs/operations/health-probes.md` records which endpoint belongs in
+  each probe slot, and the `Dockerfile` and `docker-compose.yml` now probe `/ready`.
 - A schema and data migration framework
   (`packages/mcp-mongodb/src/migrations.ts`): ordered and append-only, idempotent,
   failing **before** it mutates, and recording what it did in a `schema_migrations`
