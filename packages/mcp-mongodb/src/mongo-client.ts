@@ -48,6 +48,44 @@ export function compact<T extends Record<string, unknown>>(input: T): Partial<T>
   return output;
 }
 
+/** The aggregate counters one ingestion may update on a session document. */
+export interface SessionCountsUpdate {
+  eventCount: number;
+  pasteCount?: number;
+  tabSwitchCount?: number;
+  fullscreenExitCount?: number;
+  copyAttemptCount?: number;
+  peakRiskScore?: number;
+  status?: string;
+}
+
+/**
+ * Builds the update document for an aggregate-counter write.
+ *
+ * Extracted and exported so its shape can be asserted directly rather than by
+ * reading the source text. Two properties matter, and both come from a real
+ * incident:
+ *
+ *   - **Counters are monotonic.** They are applied with `$max`, never `$set`.
+ *     None of them can legitimately decrease, and `$set` made them depend on what
+ *     the API happened to hold in memory — a process that had just restarted held
+ *     counters starting at zero, so its first write replaced the durable totals
+ *     with the post-restart ones.
+ *   - **`status` is set only when supplied.** The MongoDB driver serialises
+ *     `undefined` as BSON `null`, so spreading the whole `counts` object into
+ *     `$set` clobbered a stored status whenever the caller omitted it. That was
+ *     observed live: a session's status became `null` after a counter update.
+ */
+export function buildSessionCountsUpdate(counts: SessionCountsUpdate): Document {
+  const { status, ...counterFields } = counts;
+  const counters = compact(counterFields);
+
+  const update: Document = { $set: { updatedAt: new Date() } };
+  if (Object.keys(counters).length > 0) update["$max"] = counters;
+  if (status !== undefined) (update["$set"] as Document)["status"] = status;
+  return update;
+}
+
 export class MongoStore {
   private client: MongoClient;
   private db: Db | null = null;
@@ -224,24 +262,25 @@ export class MongoStore {
   }
 
   /**
-   * Updates live aggregate counts on the session document after micro-event
-   * ingestion so the console session list stays accurate after a restart.
+   * Updates the aggregate counters on a session document after micro-event
+   * ingestion.
+   *
+   * Counters are applied with `$max`, not `$set`. They are monotonic: none of
+   * them can legitimately decrease, and `$set` made them depend on what the API
+   * happened to have in memory. A process that had just restarted held counters
+   * starting at zero, so its first write replaced the durable totals with the
+   * post-restart ones — the comment below used to claim the opposite. `$max` makes
+   * the storage layer the guarantee rather than the caller's bookkeeping.
+   *
+   * `status` is a state, not a counter, so it stays `$set`.
    */
   async updateSessionCounts(
     sessionId: string,
-    counts: {
-      eventCount: number;
-      pasteCount?: number;
-      tabSwitchCount?: number;
-      fullscreenExitCount?: number;
-      copyAttemptCount?: number;
-      peakRiskScore?: number;
-      status?: string;
-    },
+    counts: SessionCountsUpdate,
   ): Promise<void> {
     await this.collection("sessions").updateOne(
       { sessionId },
-      { $set: { ...compact(counts), updatedAt: new Date() } },
+      buildSessionCountsUpdate(counts),
     );
   }
 

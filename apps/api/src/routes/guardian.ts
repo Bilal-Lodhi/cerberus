@@ -104,6 +104,15 @@ export interface SessionState {
   fullscreenExitCount: number;
   copyAttemptCount: number;
   lastRiskPayload: RiskAssessmentPayload | null;
+  /**
+   * Total events accepted for this session, **including events accepted before
+   * this process started**.
+   *
+   * Hydrated from the durable document and incremented once per accepted event,
+   * so it is the session's lifetime total rather than a post-restart count. This
+   * is what the durable `eventCount` is written from; `events.length` is only
+   * what this process has seen.
+   */
   eventCount: number;
   status: string;
   /** SHA-256 of currentCode at the time of the last AI analysis. */
@@ -245,7 +254,11 @@ export function createGuardianRouter(
         { requestId, timeoutMs: MCP_TIMEOUT_MS },
       );
 
-      // 4. Apply events to in-memory state.
+      // 4. Apply events to in-memory state, hydrating from the durable document
+      //    first when this process has not seen the session — otherwise the
+      //    counters below would start at zero and be written back over the
+      //    durable totals.
+      hydrateSessionFromDurable(sessionId, primaryEvent, durableSession);
       for (const event of body.events) {
         processEvent(event);
       }
@@ -265,7 +278,9 @@ export function createGuardianRouter(
         {
           sessionId,
           counts: {
-            eventCount: session.events.length,
+            // The hydrated lifetime total, not `events.length` — which is only
+            // what this process has seen since it started.
+            eventCount: session.eventCount,
             pasteCount: session.pasteCount,
             tabSwitchCount: session.tabSwitchCount,
             // Previously omitted, so MongoDB never learned this counter and a
@@ -516,7 +531,8 @@ export function createGuardianRouter(
           employeeId: session.employeeId,
           auditId: session.auditId,
           matrixId: activeSession?.matrixId ?? session.auditId,
-          eventCount: session.events.length,
+          // The hydrated lifetime total, not just what this process has seen.
+          eventCount: Math.max(session.events.length, session.eventCount),
           pasteCount: session.pasteCount,
           tabSwitchCount: session.tabSwitchCount,
           fullscreenExitCount: session.fullscreenExitCount,
@@ -708,7 +724,7 @@ export function createGuardianRouter(
           createdAt: deployedAt,
           riskIndex: state.lastRiskPayload?.overallRiskScore ?? 0,
           peakRiskScore: state.lastRiskPayload?.overallRiskScore ?? 0,
-          eventCount: state.events.length,
+          eventCount: Math.max(state.events.length, state.eventCount),
           pasteCount: state.pasteCount,
           tabSwitchCount: state.tabSwitchCount,
           fullscreenExitCount: state.fullscreenExitCount,
@@ -1125,6 +1141,67 @@ export function createGuardianRouter(
     session.lastActivityAt = toISOStringLocal(new Date(clock.now()));
   }
 
+  /** Reads a finite, non-negative counter from an untyped durable document. */
+  function readDurableCounter(
+    durable: Record<string, unknown> | null,
+    key: string,
+  ): number {
+    const value = durable?.[key];
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+
+  /**
+   * Seeds in-memory session state from its durable document.
+   *
+   * A restart empties `sessionStore`, so without this the first batch after a
+   * restart is applied to counters starting at zero — and then written back,
+   * replacing the durable totals with the post-restart ones. Counters must be
+   * *hydrated* before any event is applied, not merely initialised. The storage
+   * layer also applies counters with `$max`, so a missed hydration cannot lose a
+   * total either; together, neither the caller nor the database is a single point
+   * of failure for this.
+   *
+   * Only counters and identity are seeded. The event array, the reconstructed
+   * workspace and the risk payload are deliberately left empty: they are
+   * reconstructed on read from where they actually live (`micro_events` and
+   * `risk_assessments`), so copying them here would create a second, staler copy.
+   */
+  function hydrateSessionFromDurable(
+    sessionId: string,
+    primaryEvent: MicroEvent,
+    durable: Record<string, unknown> | null,
+  ): void {
+    if (sessionStore.has(sessionId) || !durable) return;
+
+    const eventCount = readDurableCounter(durable, "eventCount");
+    const pasteCount = readDurableCounter(durable, "pasteCount");
+
+    sessionStore.set(sessionId, {
+      sessionId,
+      employeeId:
+        primaryEvent.employeeId || readDurableString(durable, "employeeId") || "unknown",
+      auditId: primaryEvent.auditId || readDurableString(durable, "auditId") || "unknown",
+      events: [],
+      currentCode: "",
+      pasteCount,
+      keystrokeDeltas: [],
+      tabSwitchCount: readDurableCounter(durable, "tabSwitchCount"),
+      fullscreenExitCount: readDurableCounter(durable, "fullscreenExitCount"),
+      copyAttemptCount: readDurableCounter(durable, "copyAttemptCount"),
+      lastRiskPayload: null,
+      eventCount,
+      status: normalizeStatus(String(durable["status"] ?? "active")),
+      lastAnalyzedCodeHash: "",
+      recentEventFingerprints: new Set(),
+      lastActivityAt: readDurableString(durable, "updatedAt") ?? undefined,
+    });
+
+    console.log(
+      `[guardian] hydrated session '${sessionId}' from durable state — ` +
+        `eventCount=${eventCount} pasteCount=${pasteCount}`,
+    );
+  }
+
   /**
    * Loads the operator-managed reference corpus for similarity comparison.
    *
@@ -1198,6 +1275,7 @@ export function createGuardianRouter(
       sessionStore.set(event.sessionId, created);
       applyEventToSession(created, event);
       created.recentEventFingerprints.add(computeEventFingerprint(event));
+      created.eventCount++;
       touchSession(created);
       return;
     }
@@ -1209,6 +1287,9 @@ export function createGuardianRouter(
 
     applyEventToSession(existing, event);
     existing.recentEventFingerprints.add(fingerprint);
+    // Counted only on accept, so a suppressed replay does not inflate the
+    // lifetime total either.
+    existing.eventCount++;
 
     if (existing.recentEventFingerprints.size > 128) {
       const entries = [...existing.recentEventFingerprints];

@@ -312,7 +312,13 @@ export function createReviewRouter(
         const memSession = sessionStore.get(entry.sessionId);
         const active = activeSessions.get(entry.sessionId);
 
-        let eventCount = memSession?.events.length ?? entry.eventCount ?? 0;
+        // `eventCount` is the hydrated lifetime total, so it can exceed the events
+        // this process has seen. `events.length` alone would under-report after a
+        // restart.
+        let eventCount =
+          memSession === undefined
+            ? (entry.eventCount ?? 0)
+            : Math.max(memSession.events.length, memSession.eventCount);
         let pasteCount = memSession?.pasteCount ?? entry.pasteCount ?? 0;
         let tabSwitchCount = memSession?.tabSwitchCount ?? entry.tabSwitchCount ?? 0;
         let fullscreenExitCount =
