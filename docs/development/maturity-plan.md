@@ -75,9 +75,51 @@ this cycle are all remediated.
 | Public API breakage policy documented | Done; [compatibility.md](../compatibility.md) |
 | Backlog is bounded future work, not correctness debt | Done — one open decision, below |
 
-**The single remaining open decision is `CODEOWNERS`**, which needs the maintainer
-to name real owners. Everything else on the queue is either complete or an
-accepted limitation.
+**That checkpoint is complete.** The one item it left open — `CODEOWNERS` — was
+decided by the maintainer; see [Owner decisions](#owner-decisions). Nothing on
+the checkpoint list is unresolved.
+
+## Current phase: operational durability
+
+The checkpoint produced software with strong correctness and security boundaries.
+What it did not produce is software that survives a restart predictably, bounds
+abuse of its expensive paths, or can be upgraded by someone who did not write it.
+This phase closes that gap.
+
+**Goal.** Advance Cerberus to operationally credible self-hosted research
+software: core state survives restart predictably, the request surface has
+bounded abuse controls, the upgrade path is understandable, and behaviour under
+degraded dependencies is explicitly tested.
+
+**Explicitly out of scope.** New surveillance scope, an endpoint agent, accounts
+or RBAC, tenancy, a second AI provider, public deployment, and publishing a
+release.
+
+**Exit condition.** All of the following true, or explicitly rejected with a
+strong engineering rationale recorded here:
+
+| # | Criterion | State |
+| --- | --- | --- |
+| A | Durable session truth materially improved | Not started |
+| B | Restart recovery deterministic and documented | Not started |
+| C | Rate limiting exists for expensive and high-risk paths | Not started |
+| D | Replay handling explicit and tested | Not started |
+| E | API-key rotation has a safe documented path | Not started |
+| F | Schema and data migration strategy exists and is testable | Not started |
+| G | Local performance baseline exists | Not started |
+| H | Health and readiness semantics are coherent | Not started |
+| I | Backup, restore and upgrade documentation exists | Not started |
+| J | Corpus-management workflow usable without hand-writing raw HTTP | Not started |
+| K | No new P0/P1 correctness or security defects remain | Not started |
+| L | CI stays green | Not started |
+| M | Threat model and documentation match reality | Not started |
+| N | A coherent `v0.2.0` release candidate can be described without hand-waving | Not started |
+
+Work is ordered P0 first: durable session truth and restart consistency, replay
+and idempotency, key rotation, rate limiting, migration safety. Then P1:
+health and readiness, degraded-mode behaviour, backup/restore/upgrade docs,
+performance baseline, corpus-management usability. P2 — observability,
+contributor tooling, console consistency, documentation cleanup — is last.
 
 ## Completed milestones
 
@@ -161,33 +203,41 @@ Implemented and published:
 
 ## Active work
 
-Nothing in flight. The four original issues, the P0 audit pass and the
-reference-corpus work are all complete and merged. What remains is the bounded
-queue below — one open decision and one scope decision.
+The operational-durability phase. Work is selected from the phase exit condition
+above, P0 before P1 before P2, one coherent change per pull request.
+
+The queue is not a checklist to be cleared for its own sake: each item is either
+delivered, or rejected here with the engineering rationale for rejecting it.
 
 ## Next queue
 
 Ordered by the value of the outcome, not by effort.
 
-1. **`CODEOWNERS`.** The only open maintainer decision. Either name owners for
-   `apps/api/`, `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
-   `CONTRIBUTING.md` that a single-maintainer project does not use one.
-   **Needs decision.**
-2. **Endpoint agent scope.** The largest remaining gap between what Cerberus is
-   and what an operator would need: no process emits telemetry from a real
-   workstation. Building one materially expands what is monitored, so it is a
-   product and privacy decision rather than an engineering task, and it is
-   explicitly reserved. **Needs decision.**
-3. **Durable session truth.** Live session state is in memory and lost on
-   restart, with MongoDB as the durable fallback. Making persisted state
-   authoritative is a larger change with a consistency model to define; it is
-   deferred rather than blocked. **Planned.**
-4. **Console corpus management.** The reference corpus is managed over the API.
-   A console surface for it would be a convenience, not a capability.
+1. **Durable session truth and restart consistency.** The largest remaining
+   engineering limitation. Inventory every in-memory session field, classify it,
+   and move lifecycle-affecting state to MongoDB as the durable authority through
+   one central transition path. **In progress.**
+2. **Replay and idempotency.** Deduplication currently lives in a per-process
+   fingerprint ring, so a replay after a restart is re-ingested. Define the dedup
+   window, make it survive restart where feasible, and make retry after a network
+   ambiguity safe. **Planned.**
+3. **API-key rotation.** A `CERBERUS_API_KEY_PREVIOUS` overlap so a key can be
+   changed without a hard cutover, compared timing-safely, with no key identity
+   logged. **Planned.**
+4. **Rate limiting.** A dependency-light in-process limiter on the expensive and
+   high-risk paths, documented as a backstop rather than DDoS defence.
    **Planned.**
-5. **Local performance baseline.** A bounded harness for ingest throughput,
-   review query latency and long-session memory growth. No benchmark ships today,
-   and no performance claim is made. **Planned.**
+5. **Migration tooling.** An explicit schema version, ordered and idempotent
+   migrations, and tests against a disposable MongoDB. **Planned.**
+6. **Health and readiness.** Split liveness from readiness, with optional
+   dependencies never blocking readiness. **Planned.**
+7. **Backup, restore and upgrade documentation.** With at least one local
+   roundtrip verified. **Planned.**
+8. **Performance baseline.** A bounded local harness and one recorded summary. No
+   universal performance claims. **Planned.**
+9. **Corpus-management usability.** A small console surface if it materially
+   improves the workflow; otherwise an improved documented API path.
+   **Planned.**
 
 ## Completed: the P0 audit pass
 
@@ -304,30 +354,50 @@ so the maturity picture is in one place.
 | Console API key is embedded in the built web bundle | Accepted limitation | A consequence of `--dart-define` at build time. Mitigation is to serve the console only to trusted operators or front it with a credential-injecting proxy. |
 | No migration tooling for the historical schema | Accepted limitation | The mapping is documented in [migration.md](../migration.md); no script ships. |
 | Session status vocabulary is narrower in the durable store than in the review contract | Accepted limitation | Only `active`, `locked` and `terminated` are persisted; `flagged` and `investigating` are derived at read time. |
-| No `CODEOWNERS` file | Needs decision | Requires the maintainer to name real owners. A single-maintainer project may reasonably record that decision instead. |
+| No `CODEOWNERS` file | Decided | Recorded: not used while Cerberus is single-maintainer. See [CONTRIBUTING.md](../../CONTRIBUTING.md#maintainership-and-review). |
 
-## Decisions requiring the owner
+## Owner decisions
 
-These cannot be resolved by engineering judgement alone.
+These were decided by the maintainer and are **not open questions**. Do not
+re-raise them.
 
-1. **`CODEOWNERS`.** Either name owners for `apps/api/`,
-   `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
-   `CONTRIBUTING.md` that a single-maintainer project does not use one.
+1. **`CODEOWNERS` — not used while Cerberus is single-maintainer.** Adding one
+   now would route no review to anyone who is not already the author of every
+   change, and every handle in it would have to be a real owner. Recorded in
+   [CONTRIBUTING.md](../../CONTRIBUTING.md#maintainership-and-review), with the
+   condition for revisiting it: a second real owner relationship.
 
-The reference-corpus decision that used to sit here was resolved by implementing
-the local design: an operator-managed collection compared with a transparent
-deterministic algorithm, no external service and no spend. Nothing that would
-require web crawling, a paid embedding provider or a vector-database service was
-introduced.
+2. **Endpoint agent — deferred.** No OS-wide keystroke capture, clipboard
+   monitoring beyond the existing explicit browser-console semantics,
+   screenshots, webcam or microphone, browser history, filesystem scanning,
+   packet or network interception, global process monitoring, stealth collection
+   or background workstation surveillance. It remains a future product and
+   privacy decision, not an engineering backlog item.
 
-Neither blocks the work above: the P0 audit is independent of both.
+3. **`v0.2.0` — prepared, not published.** Release notes, migration notes, a
+   checklist and a candidate branch may be prepared. Pushing a `v0.2.0` tag,
+   creating a GitHub Release, marking anything stable or latest, and publishing
+   npm or registry artifacts all remain separate human authorisations.
+
+4. **Next maturity focus — operational durability and self-hosting
+   correctness.** Durable session truth, restart and recovery correctness,
+   bounded rate limiting, replay resistance appropriate to the stated threat
+   model, a safer key-rotation path without an identity redesign, migration
+   tooling, a local performance baseline, corpus-management usability,
+   health and readiness semantics, and backup, restore and upgrade
+   documentation. Explicitly *not* new surveillance scope, and not a redesign
+   around accounts.
 
 ## Release readiness
 
-**No new release is proposed.** `v0.1.0` remains the only published baseline and
-its tag is immutable.
+**No release is published.** `v0.1.0` remains the only published baseline, still
+a pre-release, and its annotated tag is immutable.
 
 `main` accumulates changes under `[Unreleased]` in `CHANGELOG.md`. A release
 candidate report is prepared when a coherent milestone has accumulated — not
 because a number of commits have passed. Publishing a release, moving a tag or
 declaring production readiness requires explicit maintainer authorisation.
+
+The current milestone under construction is the operational-durability phase
+described in owner decision 4. Its exit condition is recorded at the top of this
+document.

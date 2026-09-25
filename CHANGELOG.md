@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CONTRIBUTING.md` records that Cerberus is single-maintainer and does not use
+  `CODEOWNERS`, why a file of invented or wildcard entries would be worse than
+  none, and the condition for revisiting it: a second real owner relationship.
+- `docs/development/maturity-plan.md` records the maintainer's decisions —
+  `CODEOWNERS` not used while single-maintainer, the endpoint agent deferred,
+  `v0.2.0` prepared but not published, and operational durability as the next
+  focus — and states the current phase's exit condition as a tracked table.
 - `docs/index.md` — an entry point for the documentation set. It lists every
   document under `docs/` with the audience it is written for, and is linked from
   the `README.md` documentation section.
