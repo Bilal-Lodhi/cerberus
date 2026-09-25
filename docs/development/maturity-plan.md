@@ -392,13 +392,15 @@ so the maturity picture is in one place.
 | Request body size limit | Implemented | `CERBERUS_MAX_BODY_BYTES`, default 8 MiB, enforced before buffering on both the API and the MCP adapter. |
 | Model-output numeric bounds | Implemented | Every documented range is clamped at the parser boundary; arrays, strings and recursion depth are bounded. |
 | Exfiltration similarity matching | Implemented | Local deterministic comparison against an operator-managed corpus, gated by `DATA_LEAKAGE_SIMILARITY_THRESHOLD`. |
-| Session state is in memory and lost on restart | Accepted limitation | MongoDB is the durable fallback; the review router merges both and takes the larger count per counter. Durable session truth is a larger change and is deferred. |
+| Session state is not fully durable | Accepted limitation | MongoDB is the durable authority for counters, lifecycle and identity, and those survive a restart. The in-memory event window, the reconstructed workspace, `lastAnalyzedCodeHash` and the dedup fingerprint ring are not persisted and are rebuilt on read. See [session-state-model.md](session-state-model.md). |
 | No endpoint agent | Accepted limitation | All telemetry originates from the browser console. Building one is a scope decision, not an engineering task. |
 | Single shared API key, no per-user attribution | Accepted limitation | Accounts, roles, OAuth/SSO and multi-tenancy are explicitly out of scope for the OSS baseline. |
-| No rate limiting, no replay protection beyond TLS, no automated key rotation | Accepted limitation | Documented in the threat model. The ingestion fingerprint ring is a data-quality mechanism, not a security control. |
+| Rate limiting is a per-process backstop; no replay protection beyond TLS; no automated key rotation | Accepted limitation | Rate limiting deliberately does not limit unauthenticated requests, and N replicas enforce up to N times the limit. Telemetry has retry idempotency, not replay protection — the client supplies the key. Rotation has an overlap but no identity or revocation list. Documented in the threat model. |
 | Console API key is embedded in the built web bundle | Accepted limitation | A consequence of `--dart-define` at build time. Mitigation is to serve the console only to trusted operators or front it with a credential-injecting proxy. |
-| No migration tooling for the historical schema | Accepted limitation | The mapping is documented in [migration.md](../migration.md); no script ships. |
+| No script for the historical schema rename | Accepted limitation | The mapping is documented in [migration.md](../migration.md). Cerberus does ship a schema and data migration framework, but it does not rewrite historical names. |
+| No backup automation | Accepted limitation | Backup and restore scripts exist and are verified, but nothing schedules them, stores them off-host, or provides point-in-time recovery. See [operations/backup-restore.md](../operations/backup-restore.md). |
 | Session status vocabulary is narrower in the durable store than in the review contract | Accepted limitation | Only `active`, `locked` and `terminated` are persisted; `flagged` and `investigating` are derived at read time. |
+| No central session transition path; no partial-failure semantics | Accepted limitation | Status can still diverge between the two in-memory maps and MongoDB, and an operation whose persistence succeeds but whose cache update does not is not modelled. Recorded in [session-state-model.md](session-state-model.md). |
 | No `CODEOWNERS` file | Decided | Recorded: not used while Cerberus is single-maintainer. See [CONTRIBUTING.md](../../CONTRIBUTING.md#maintainership-and-review). |
 
 ## Owner decisions
@@ -419,10 +421,15 @@ re-raise them.
    or background workstation surveillance. It remains a future product and
    privacy decision, not an engineering backlog item.
 
-3. **`v0.2.0` — prepared, not published.** Release notes, migration notes, a
-   checklist and a candidate branch may be prepared. Pushing a `v0.2.0` tag,
-   creating a GitHub Release, marking anything stable or latest, and publishing
-   npm or registry artifacts all remain separate human authorisations.
+3. **`v0.2.0` — published as a pre-release, with explicit authorisation.** The
+   maintainer authorised the final verification, an annotated `v0.2.0` tag, and a
+   GitHub **pre-release**, and explicitly withheld: marking it stable or latest,
+   publishing npm or registry artifacts, deploying a hosted instance, and moving the
+   tag after publication. `v0.1.0` was not to be moved or rewritten. The release
+   remains experimental and not production ready. Details of what was published, and
+   the evidence behind it, are in
+   [release/v0.2.0-release-notes.md](../release/v0.2.0-release-notes.md) and
+   [release/v0.2.0-checklist.md](../release/v0.2.0-checklist.md).
 
 4. **Next maturity focus — operational durability and self-hosting
    correctness.** Durable session truth, restart and recovery correctness,
@@ -435,15 +442,18 @@ re-raise them.
 
 ## Release readiness
 
-**No release is published.** `v0.1.0` remains the only published baseline, still
-a pre-release, and its annotated tag is immutable — verified after every merge:
-tag object `55329b5e378cb890c9b9775647396ea57fd7bdc7`, commit
+**`v0.2.0` is published as a GitHub pre-release.** It is an operational-durability
+release and remains experimental: not production ready, no compliance claim, no
+endpoint agent, no accounts or tenancy.
+
+`v0.1.0` remains published and is still a pre-release, and its annotated tag is
+immutable — re-verified after every merge: tag object
+`55329b5e378cb890c9b9775647396ea57fd7bdc7`, commit
 `ef98f962530fb62340cf213b408f1cd715755c01`.
 
-`main` accumulates changes under `[Unreleased]` in `CHANGELOG.md`. Publishing a
-release, moving a tag or declaring production readiness requires explicit
-maintainer authorisation; none has been given.
+`main` accumulates further changes under `[Unreleased]` in `CHANGELOG.md`. Publishing
+anything beyond `v0.2.0` — another tag, a stable/latest marker, an npm package or a
+registry image — remains a separate human authorisation, and none has been given.
 
-The operational-durability phase is complete: every exit condition at the top of
-this document is met. Release-candidate material is prepared under
-`docs/release/` and is **not** published.
+The operational-durability phase is complete: every exit condition at the top of this
+document is met.

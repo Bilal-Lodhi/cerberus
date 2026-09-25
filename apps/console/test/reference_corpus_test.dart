@@ -273,92 +273,98 @@ void main() {
     expect(await harness.corpus.add(label: '   ', content: 'text'), isFalse);
     expect(harness.corpus.error, 'Label is required');
 
-    expect(
-      await harness.corpus.add(label: 'label', content: '   '),
-      isFalse,
-    );
+    expect(await harness.corpus.add(label: 'label', content: '   '), isFalse);
     expect(harness.corpus.error, 'Content is required');
     expect(harness.requests, isEmpty);
   });
 
   // ── Deleting ────────────────────────────────────────────────────────────────
 
-  test('deleting calls DELETE on the reference id and re-reads the list', () async {
-    var lists = 0;
-    final harness = build(
-      handler: (request) async {
-        if (request.method == 'DELETE') {
+  test(
+    'deleting calls DELETE on the reference id and re-reads the list',
+    () async {
+      var lists = 0;
+      final harness = build(
+        handler: (request) async {
+          if (request.method == 'DELETE') {
+            return json({
+              'success': true,
+              'referenceId': 'ref-1',
+              'deleted': true,
+            }, 200);
+          }
+          lists++;
           return json({
             'success': true,
-            'referenceId': 'ref-1',
-            'deleted': true,
+            'total': lists == 1 ? 1 : 0,
+            'data': lists == 1 ? [row()] : <dynamic>[],
           }, 200);
-        }
-        lists++;
-        return json({
-          'success': true,
-          'total': lists == 1 ? 1 : 0,
-          'data': lists == 1 ? [row()] : <dynamic>[],
-        }, 200);
-      },
-    );
+        },
+      );
 
-    await harness.corpus.load();
-    expect(harness.corpus.documents, hasLength(1));
+      await harness.corpus.load();
+      expect(harness.corpus.documents, hasLength(1));
 
-    final removed = await harness.corpus.remove('ref-1');
+      final removed = await harness.corpus.remove('ref-1');
 
-    expect(removed, isTrue);
-    expect(harness.corpus.error, isNull);
+      expect(removed, isTrue);
+      expect(harness.corpus.error, isNull);
 
-    final delete = harness.requests.firstWhere(
-      (request) => request.method == 'DELETE',
-    );
-    expect(delete.url.path, '/api/v1/reference-documents/ref-1');
-    expect(harness.corpus.documents, isEmpty);
-  });
+      final delete = harness.requests.firstWhere(
+        (request) => request.method == 'DELETE',
+      );
+      expect(delete.url.path, '/api/v1/reference-documents/ref-1');
+      expect(harness.corpus.documents, isEmpty);
+    },
+  );
 
   // ── Failures ────────────────────────────────────────────────────────────────
 
-  test('an unavailable corpus surfaces as an error, not an exception', () async {
-    final harness = build(
-      handler: (_) async => json({
-        'success': false,
-        'error': 'The reference corpus is currently unavailable.',
-        'code': 'REFERENCE_STORE_UNAVAILABLE',
-      }, 503),
-    );
+  test(
+    'an unavailable corpus surfaces as an error, not an exception',
+    () async {
+      final harness = build(
+        handler: (_) async => json({
+          'success': false,
+          'error': 'The reference corpus is currently unavailable.',
+          'code': 'REFERENCE_STORE_UNAVAILABLE',
+        }, 503),
+      );
 
-    // Must complete rather than throw: the panel renders `error`, and an
-    // unhandled exception would take the whole dashboard down with it.
-    await harness.corpus.load();
+      // Must complete rather than throw: the panel renders `error`, and an
+      // unhandled exception would take the whole dashboard down with it.
+      await harness.corpus.load();
 
-    expect(
-      harness.corpus.error,
-      'The reference corpus is currently unavailable.',
-    );
-    expect(harness.corpus.isLoading, isFalse);
-    expect(harness.corpus.documents, isEmpty);
-  });
+      expect(
+        harness.corpus.error,
+        'The reference corpus is currently unavailable.',
+      );
+      expect(harness.corpus.isLoading, isFalse);
+      expect(harness.corpus.documents, isEmpty);
+    },
+  );
 
-  test('a rejected add surfaces the server message and keeps the corpus', () async {
-    final harness = build(
-      handler: (_) async => json({
-        'success': false,
-        'error': "Field 'label' must not be empty",
-        'code': 'INVALID_REFERENCE_DOCUMENT',
-      }, 400),
-    );
+  test(
+    'a rejected add surfaces the server message and keeps the corpus',
+    () async {
+      final harness = build(
+        handler: (_) async => json({
+          'success': false,
+          'error': "Field 'label' must not be empty",
+          'code': 'INVALID_REFERENCE_DOCUMENT',
+        }, 400),
+      );
 
-    final added = await harness.corpus.add(
-      label: 'ledger-snippet',
-      content: 'ledger text',
-    );
+      final added = await harness.corpus.add(
+        label: 'ledger-snippet',
+        content: 'ledger text',
+      );
 
-    expect(added, isFalse);
-    expect(harness.corpus.error, "Field 'label' must not be empty");
-    expect(harness.corpus.documents, isEmpty);
-  });
+      expect(added, isFalse);
+      expect(harness.corpus.error, "Field 'label' must not be empty");
+      expect(harness.corpus.documents, isEmpty);
+    },
+  );
 
   test('a rejected delete surfaces as an error, not an exception', () async {
     final harness = build(
