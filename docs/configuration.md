@@ -106,6 +106,46 @@ Security notes:
 | `CERBERUS_MCP_TOKEN` | string (secret) | — | **Yes**, unless `CERBERUS_DEV_MODE=true` | Bearer token the API presents to the MCP adapter. |
 | `CERBERUS_MCP_TOKEN_PREVIOUS` | string (secret) | unset | No | The MCP token being retired, accepted during a rotation. Read by both the API and the adapter. |
 | `CERBERUS_DEV_MODE` | boolean | `false` | No | `true`, `1`, `yes` or `on` enable it. |
+| `CERBERUS_RATE_LIMIT_ENABLED` | boolean | `true` | No | In-process token-bucket limiting. An unrecognised value is a startup error rather than a silent `false`, so a typo cannot turn the control off. |
+| `CERBERUS_AI_REQUESTS_PER_MINUTE` | positive integer | `10` | No | Ceiling on the AI-backed endpoints (`POST /api/v1/scenarios`, `POST /api/v1/auditor/query`). |
+
+### Rate limiting
+
+Token buckets, one per **route category**, applied **after** authentication.
+
+| Category | Default | Routes |
+| --- | --- | --- |
+| `ai` | `CERBERUS_AI_REQUESTS_PER_MINUTE` (10/min) | `POST /api/v1/scenarios`, `POST /api/v1/auditor/query` |
+| `ingest` | 600/min | `POST /api/v1/guardian/ingest` |
+| `mutation` | 60/min | State changes: corpus mutation, identity registration, session lifecycle |
+| `read` | 300/min | Reads |
+| — | exempt | `GET /health`, `GET /ready`, `GET /` |
+
+A refused request is `429` with code `RATE_LIMITED`, a `Retry-After` header, and
+`X-RateLimit-Limit` / `X-RateLimit-Remaining` on every response.
+
+Only the `ai` ceiling is configurable. Every request there spends money, so it is a
+cost control as much as an abuse control; the others are backstops whose values are
+constants with a stated rationale rather than five more variables to get wrong.
+
+Four properties are deliberate, and each is a decision rather than an omission:
+
+- **After authentication.** A limiter placed before auth would let an unauthenticated
+  caller exhaust a category's bucket and deny service to the legitimate operator —
+  a backstop turned into a denial-of-service amplifier. Unauthenticated throttling
+  belongs at the reverse proxy; see
+  [operations/reverse-proxy.md](operations/reverse-proxy.md).
+- **Keyed by category, not by caller.** There is one shared key and no per-caller
+  identity, so there is no caller to key on. The limiter bounds the **total** rate
+  per category. Per-caller limits need the proxy.
+- **`X-Forwarded-For` is never read.** Behind a proxy it is caller-controlled unless
+  the proxy overwrites it; trusting it would let a caller mint a fresh bucket per
+  request.
+- **Per process.** N replicas enforce up to N times the limit. A global ceiling needs
+  a shared store, which means Redis, which the baseline does not require.
+
+Memory is bounded by construction: one bucket per category, so nothing grows with
+traffic and there is nothing to evict.
 
 Security notes:
 

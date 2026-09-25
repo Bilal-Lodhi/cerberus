@@ -28,6 +28,7 @@ phase progresses — backing up, restoring and upgrading.
 | Document | Audience | What it covers |
 | --- | --- | --- |
 | [operations/key-rotation.md](operations/key-rotation.md) | Operators | The four-step overlap procedure for `CERBERUS_API_KEY` and `CERBERUS_MCP_TOKEN`, why an overlap is used instead of a hard cutover, what Cerberus refuses to do, and what an overlap does not do. |
+| [operations/reverse-proxy.md](operations/reverse-proxy.md) | Operators exposing Cerberus | What the proxy must own (TLS, per-caller limiting, unauthenticated throttling), why `X-Forwarded-For` is deliberately not trusted, a minimal nginx configuration, and what happens when you run more than one replica. |
 
 ## Release preparation (`docs/release/`)
 

@@ -135,11 +135,18 @@ so container orchestrators can probe it.
   identity, no revocation list and no rotation tooling**: ending the overlap is the
   revocation, and there is no way to revoke one key without revoking the others.
   See [operations/key-rotation.md](../operations/key-rotation.md).
-- **No rate limiting.** Nothing throttles authentication attempts or ingestion
-  volume at the application level. `scripts/stress-telemetry.ps1` exists
-  precisely because bursts are expected. `CERBERUS_MAX_BODY_BYTES` bounds how
-  large one request may be, not how many requests arrive: a caller can still
-  issue an unlimited number of requests within that size.
+- **Rate limiting is a backstop, not DDoS defence.** In-process token buckets bound
+  the total request rate per route category, applied **after** authentication. The
+  AI-backed endpoints are the tightest (`CERBERUS_AI_REQUESTS_PER_MINUTE`, default
+  10/min) because every request there spends money. Three things it deliberately
+  does not do: it does **not** limit unauthenticated requests — a limiter before
+  auth would let an anonymous caller exhaust a bucket and deny service to the
+  operator, turning a backstop into a denial-of-service amplifier; it does **not**
+  key on the caller, because there is one shared key and therefore no caller to key
+  on; and it does **not** share state, so N replicas enforce up to N times the
+  limit. It also never reads `X-Forwarded-For`, which is caller-controlled behind a
+  proxy. Per-caller and unauthenticated limiting belong at the reverse proxy — see
+  [operations/reverse-proxy.md](../operations/reverse-proxy.md).
 - **No brute-force lockout or alerting.** Failed authentications are not counted
   or surfaced.
 - **No authorization.** Any authenticated caller can read every session, delete
