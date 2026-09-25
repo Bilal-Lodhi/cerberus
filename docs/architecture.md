@@ -156,11 +156,12 @@ call and shared with the review router:
 - `sessionStore: Map<string, SessionState>` — authoritative for sessions that
   have ingested events. Holds the full event array, reconstructed
   `currentCode`, paste/tab/fullscreen/copy counters, keystroke deltas, the last
-  risk payload, the last analysed code hash and the fingerprint ring.
+  risk payload, the last analysed code hash, the fingerprint ring and
+  `lastActivityAt`.
 - `activeSessions: Map<string, ActiveSession>` — the deployment registry, so a
   freshly deployed session appears in listings before any event arrives. Holds
-  `sessionId`, `employeeId`, `matrixId`, `targetSystem`, `status`, `deployedAt`
-  and `riskIndex`.
+  `sessionId`, `employeeId`, `matrixId`, `targetSystem`, `status`, `deployedAt`,
+  `riskIndex` and `lastActivityAt`.
 
 `SessionState` fields are defined in `apps/api/src/routes/guardian.ts`. Notable
 details:
@@ -171,6 +172,10 @@ details:
   replaces it with `pasteContent`; `EDIT` replaces it with `newText`; `PASTE`
   replaces it with `newText`.
 - `endedAt` is set only by terminate, never by delete.
+- `lastActivityAt` is stamped from the injected clock — not from the request
+  body — when a telemetry batch survives deduplication, and on every lifecycle
+  transition (deploy, lock, unlock, terminate, reactivate). It is the in-memory
+  half of the `SESSION_TTL_SECONDS` activity signal.
 - Status values written durably by the API are `active`, `locked` and
   `terminated`. Sessions are created as `active`
   (`guardian.ts` passes `status: "active"` to `create_session`, and
@@ -185,7 +190,16 @@ details:
 - **State is lost on restart.** MongoDB is the durable fallback. The guardian
   session list falls back to `list_sessions` only when the in-memory result is
   empty; the review router always merges both and takes the larger count for
-  each counter, so a restart does not under-report activity.
+  each counter, so a restart does not under-report activity. Recovery is
+  expiry-aware: a session whose monitoring window closed while the process was
+  down is not restored into the live registry.
+- **Liveness is derived, never persisted.** `SESSION_TTL_SECONDS` is interpreted
+  in one place, `apps/api/src/services/session-liveness.ts`, which both the
+  guardian and review routers consult. There is no `expired` session status, no
+  TTL index and no expiry sweep: expiry is computed from the activity timestamp
+  on every read. The review endpoints deliberately still list expired sessions,
+  each carrying a derived `liveness` field. The full contract is in
+  [configuration.md](configuration.md#session-lifetime-session_ttl_seconds).
 - The identity registry (`apps/api/src/routes/identity.ts`) is a separate
   per-process `Map` and also resets on restart.
 
@@ -346,8 +360,13 @@ deliberate or unresolved gaps rather than defects.
   `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is read from configuration, but the
   reference-completion source returns an empty set, so `ExfiltrationReport`
   matches are always empty. The mechanism and its contract are retained.
-- **`SESSION_TTL_SECONDS` is parsed but not enforced.** There is no TTL index and
-  no expiry sweep; sessions live until terminated or deleted.
+- **Session expiry is computed, not swept.** `SESSION_TTL_SECONDS` bounds
+  active-liveness only. There is no TTL index in MongoDB and no background expiry
+  job: an expired session is excluded from the live list, is not restored by a
+  restart, and refuses new telemetry until it is explicitly reactivated, but its
+  documents are retained indefinitely. Cleanup of historical data is a separate
+  retention policy that is not implemented. The full contract is in
+  [configuration.md](configuration.md#session-lifetime-session_ttl_seconds).
 - **Session status vocabulary is narrow.** `ActiveSession` in
   `apps/api/src/types.ts` permits `active | flagged | investigating | cleared |
   locked`, while the MCP adapter's `SESSION_STATUSES` permits only

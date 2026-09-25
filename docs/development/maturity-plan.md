@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the documentation-index and console-build-output work
+Last updated for the `SESSION_TTL_SECONDS` enforcement work
 (see `CHANGELOG.md` `[Unreleased]`).
 
 ## Current state
@@ -67,40 +67,63 @@ Implemented and published:
   `README.md` and `CONTRIBUTING.md`, and the documented command was verified to
   write `apps/console/build/web`. **Implemented.**
 
+### Configuration honesty and session lifetime
+
+- **Issue #3** — `SESSION_TTL_SECONDS` is enforced. **Implemented.**
+  The setting was parsed into `SecurityConfig.sessionTTLSeconds` and read by
+  nothing, so a session lived until it was terminated or deleted regardless of
+  the documented value.
+  - Expiry is interpreted in exactly one place,
+    `apps/api/src/services/session-liveness.ts`, and consulted by both the
+    guardian and the review routers. It is **computed on every read, not
+    persisted**: no `expired` status, no TTL index and no background sweep.
+  - The TTL bounds **active-liveness, not evidence retention**. An expired
+    session leaves the live list, is not restored as live by a restart, and
+    refuses new telemetry with `409 SESSION_EXPIRED` — but every document is
+    retained and the review endpoints still serve it, each entry carrying a
+    derived `liveness` field.
+  - A monitoring window cannot be extended as a side effect of emitting events.
+    Reopening one is explicit:
+    `POST /api/v1/guardian/sessions/:sessionId/reactivate`. A `terminated`
+    session cannot be reactivated.
+  - Activity is measured only from server-generated timestamps. The
+    client-supplied `MicroEvent.timestamp` is not an expiry input, and a
+    deduplicated replay does not refresh the activity stamp, so neither a forged
+    future timestamp nor a replayed batch can hold a session open.
+  - A misconfigured value fails closed: `SESSION_TTL_SECONDS` must be a positive
+    whole number of seconds or the process exits with a `ConfigError`.
+  - Tests use an injected manual clock, so the boundary is asserted exactly and
+    nothing sleeps.
+
 ## Active work
 
-Nothing in flight. The next item selected is issue #3 (below).
+Nothing in flight. The next item selected is issue #4 (below).
 
 ## Next queue
 
 Ordered by the value of the outcome, not by effort.
 
-1. **Issue #3 — enforce `SESSION_TTL_SECONDS`.** The variable is parsed into
-   `SecurityConfig.sessionTTLSeconds` and read by nothing, so a session lives
-   until it is terminated or deleted regardless of the setting. This is a
-   configuration-honesty defect: the documented behaviour does not exist.
-   The default decision is to implement expiry rather than delete the setting,
-   with expiry defined as **liveness, not evidence retention** — an expired
-   session stops being reported as live but its review data is preserved, and
-   cleanup of historical evidence stays a separate retention policy.
-   **Planned.**
-2. **Issue #4 — the console never sends `severityMix`.** The scenario panel has
+1. **Issue #4 — the console never sends `severityMix`.** The scenario panel has
    three risk-distribution sliders whose values are folded into prose in the
    prompt; the request body carries only `prompt`, `roleContext` and
    `vectorCount`, while the API already accepts and normalises a structured
    `severityMix`. The three sliders must be mapped deterministically onto the
    four severity keys and sent as structured data. **Planned.**
+2. **P0 security and correctness audit.** A route-by-route pass over auth, CORS,
+   body limits, the provider boundary, MongoDB query construction, session
+   lifecycle, telemetry validation, the auditor whitelist, notifications and the
+   console, answering the questions in the audit checklist rather than assuming
+   the answers. One confirmed finding already: the API has **no request body
+   size limit** — `@hono/node-server` exposes no `bodyLimit` option and none is
+   configured, so the architecture document's "8 MiB body cap" applies only to
+   the MCP sidecar downstream of a body the API has already buffered in full.
+   **Planned.**
 3. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
    completion source is a stub returning `[]`, so `ExfiltrationReport` matches
    are always empty while the threshold is still parsed and documented. Either
    give it a real, local, operator-managed reference corpus, or remove the
    setting and stop advertising similarity matching. **Needs decision** — see
    below.
-4. **P0 security and correctness audit.** A route-by-route pass over auth, CORS,
-   body limits, the provider boundary, MongoDB query construction, session
-   lifecycle, telemetry validation, the auditor whitelist, notifications and the
-   console, answering the questions in the audit checklist rather than assuming
-   the answers. **Planned.**
 
 ## Known gaps in this release
 
@@ -111,7 +134,7 @@ so the maturity picture is in one place.
 
 | Gap | Status | Note |
 | --- | --- | --- |
-| `SESSION_TTL_SECONDS` parsed but not enforced | Planned | Issue #3. |
+| `SESSION_TTL_SECONDS` enforcement | Implemented | Issue #3. Expiry bounds liveness only; historical documents are retained. |
 | Exfiltration similarity matching inert | Needs decision | Below. |
 | Session state is in memory and lost on restart | Accepted limitation | MongoDB is the durable fallback; the review router merges both and takes the larger count per counter. Durable session truth is a larger change and is deferred. |
 | No endpoint agent | Accepted limitation | All telemetry originates from the browser console. Building one is a scope decision, not an engineering task. |
@@ -138,8 +161,8 @@ These cannot be resolved by engineering judgement alone.
    `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
    `CONTRIBUTING.md` that a single-maintainer project does not use one.
 
-Neither blocks the work above: issue #3, issue #4 and the P0 audit are all
-independent of both.
+Neither blocks the work above: issue #4 and the P0 audit are both independent of
+them.
 
 ## Release readiness
 

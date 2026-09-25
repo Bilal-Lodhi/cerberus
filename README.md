@@ -250,10 +250,10 @@ refuses to boot when a mandatory secret is missing.
 | `CERBERUS_CORS_ORIGINS` | — | Comma-separated allow-list. Empty means no cross-origin access. |
 | `CERBERUS_MCP_CORS_ORIGINS` | — | Comma-separated allow-list for the MCP adapter. Empty means no CORS headers at all. |
 | **Detection thresholds** | | |
-| `SESSION_TTL_SECONDS` | `7200` | |
+| `SESSION_TTL_SECONDS` | `7200` | Enforced session lifetime. Expiry stops monitoring; it never deletes evidence. Must be a positive whole number of seconds. |
 | `MAX_PASTE_EVENTS` | `5` | Paste count above which analysis is forced. |
 | `MIN_HUMAN_KEYSTROKE_MS` | `80` | Inter-key delay treated as the human floor. |
-| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | `0.75` | |
+| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | `0.75` | Currently inert; see [Roadmap](#roadmap). |
 | **Notifications (optional)** | | |
 | `SLACK_WEBHOOK_URL` | — | Unset = Slack notification is skipped. |
 | `SENDGRID_API_KEY` | — | Email requires all three of key, from and to. |

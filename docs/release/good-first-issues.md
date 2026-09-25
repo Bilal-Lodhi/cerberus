@@ -24,11 +24,16 @@ Four are being filed. The status line on each section says which:
 | 9 | Add a `CODEOWNERS` file | Deferred | — |
 
 The statuses above describe the triage as it stood when the issues were filed.
-Candidates 6 and 8 were subsequently resolved on `main`: `docs/index.md` now
-exists and is linked from `README.md`, and the console web build output
-directory (`apps/console/build/web`) is documented in `README.md` and
-`CONTRIBUTING.md`. The section bodies below are kept as the historical record of
-the triage and are not updated in place.
+Three of the filed candidates were subsequently resolved on `main`:
+
+- **1** — `SESSION_TTL_SECONDS` is now enforced, with expiry defined as
+  active-liveness rather than evidence retention.
+- **6** — `docs/index.md` exists and is linked from `README.md`.
+- **8** — the console web build output directory (`apps/console/build/web`) is
+  documented in `README.md` and `CONTRIBUTING.md`.
+
+The section bodies below are kept as the historical record of the triage and are
+not updated in place. Candidate 4 remains open.
 
 Candidates 2 and 9 are real and still open, but each needs a maintainer decision
 before a contributor can start: 2 needs a choice between building a reference
