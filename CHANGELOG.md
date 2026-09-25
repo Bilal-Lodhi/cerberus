@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/development/maturity-plan.md` — the current maturity state, completed
   milestones, the next work queue, accepted limitations and the decisions that
   need a maintainer.
+- `docs/compatibility.md` — what counts as a public contract, the breaking-change
+  and deprecation policies, versioning, supported runtimes, and the dependency and
+  license policy with the current audit results. Linked from the documentation
+  index, `README.md` and `CONTRIBUTING.md`.
 - `SESSION_TTL_SECONDS` is now enforced. A session is live while its most recent
   activity is younger than the configured lifetime; once the window closes the
   session is excluded from `GET /api/v1/guardian/sessions`, is not restored as

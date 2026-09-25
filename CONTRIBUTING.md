@@ -56,7 +56,9 @@ a local development machine. The process refuses to start in dev mode when
 `NODE_ENV=production`. `.env.example` ships with dev mode on and no secrets.
 
 `docs/configuration.md` is the full variable reference. Do not duplicate it
-here.
+here. `docs/compatibility.md` states what counts as a public contract, so read it
+before changing a route, an environment variable, a JSON field, an MCP tool name
+or a collection name.
 
 Common commands, all run from the repository root:
 
