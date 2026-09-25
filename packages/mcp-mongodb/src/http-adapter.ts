@@ -16,6 +16,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { MongoStore } from "./mongo-client.js";
+import { DEFAULT_MAX_BODY_BYTES, parseBody } from "./body.js";
 import {
   ToolArgumentError,
   createToolRegistry,
@@ -34,6 +35,22 @@ const CORS_ORIGINS = (process.env["CERBERUS_MCP_CORS_ORIGINS"] ?? "")
   .split(",")
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
+
+/**
+ * Maximum accepted request body size, in bytes.
+ *
+ * Reads the same variable the API does so the two ceilings cannot drift apart:
+ * a body the API admits must not be rejected here for size. The API validates
+ * this value fail-closed at startup, so an unusable value here can only come from
+ * running the adapter standalone; the default applies and the effective value is
+ * logged below.
+ */
+const MAX_BODY_BYTES = ((): number => {
+  const raw = (process.env["CERBERUS_MAX_BODY_BYTES"] ?? "").trim();
+  if (!/^\d+$/.test(raw)) return DEFAULT_MAX_BODY_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_BODY_BYTES;
+})();
 
 if (!DEV_MODE && MCP_TOKEN.length === 0) {
   console.error(
@@ -88,38 +105,14 @@ function sendJson(
   res: ServerResponse,
   statusCode: number,
   payload: unknown,
+  extraHeaders: Record<string, string> = {},
 ): void {
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
     ...corsHeaders(req),
+    ...extraHeaders,
   });
   res.end(JSON.stringify(payload));
-}
-
-async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    const MAX_BYTES = 8 * 1024 * 1024; // 8 MiB — telemetry batches, not files
-
-    req.on("data", (chunk: Uint8Array) => {
-      size += chunk.length;
-      if (size > MAX_BYTES) {
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf-8");
-      try {
-        resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
-      } catch {
-        resolve({});
-      }
-    });
-    req.on("error", () => resolve({}));
-  });
 }
 
 // ─── Request handling ────────────────────────────────────────────────
@@ -167,8 +160,21 @@ async function handleRequest(
     }
 
     try {
-      const body = await parseBody(req);
-      const result = await handler(body);
+      const parsed = await parseBody(req, MAX_BODY_BYTES);
+      if (!parsed.ok) {
+        sendJson(
+          req,
+          res,
+          parsed.status,
+          { success: false, error: parsed.message, code: parsed.code },
+          // An oversized body was not drained, so the connection cannot be
+          // reused. Saying so closes it rather than leaving the client waiting.
+          parsed.status === 413 ? { Connection: "close" } : {},
+        );
+        return;
+      }
+
+      const result = await handler(parsed.body);
       sendJson(req, res, 200, {
         ...(result as Record<string, unknown>),
         correlationId: randomUUID(),
@@ -221,7 +227,8 @@ async function main(): Promise<void> {
   server.listen(PORT, BIND_HOST, () => {
     console.error(
       `[MCP-HTTP] listening on ${BIND_HOST}:${PORT} ` +
-        `(auth=${DEV_MODE ? "DISABLED (dev mode)" : "bearer token"})`,
+        `(auth=${DEV_MODE ? "DISABLED (dev mode)" : "bearer token"}, ` +
+        `maxBody=${MAX_BODY_BYTES}B)`,
     );
     console.error(`[MCP-HTTP] tools: ${Object.keys(tools).join(", ")}`);
     if (process.send) process.send({ ready: true, port: PORT });

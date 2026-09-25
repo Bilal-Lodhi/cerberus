@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
     "dev": "tsx watch src/http-adapter.ts",
     "start": "node dist/http-adapter.js",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
