@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A schema and data migration framework
+  (`packages/mcp-mongodb/src/migrations.ts`): ordered and append-only, idempotent,
+  failing **before** it mutates, and recording what it did in a `schema_migrations`
+  ledger. There are no down-migrations — reversing a data migration would be a
+  fiction, since the removed documents are gone.
+- `npm run migrate` and `npm run migrate:dry-run`. The dry run prints the plan,
+  marking migrations that rewrite data, and changes nothing — it does not even read
+  the telemetry collections.
+- Migration `0001-dedupe-micro-event-identity`. The pre-fix ingestion path wrote
+  every event in a retried batch, so a database that ran it holds duplicate
+  `micro_events` documents — and the unique index on `(sessionId, eventId)` cannot
+  be created over duplicates. Without this migration such a deployment would fail to
+  start with an opaque duplicate-key error. The migration removes only copies that
+  are otherwise **identical**, and refuses — having written nothing — when a pair's
+  copies disagree, naming the pairs, because removing either version would destroy
+  data.
+- Migrations run **before** index creation, and the order is load-bearing: the
+  unique identity index cannot be built over duplicates, so creating indexes first
+  would turn a repairable database into one that will not start.
+  `MongoStore.connect()` now applies migrations then indexes, and accepts
+  `{ migrate: false }` for the CLI.
+- `docs/operations/upgrade.md`: back up, read the plan, apply, restart, confirm —
+  plus what to do when a migration refuses to run, why there are no
+  down-migrations, and why the MCP adapter starts before the API.
 - In-process rate limiting: token buckets, one per route category, applied
   **after** authentication. A refused request is `429` with code `RATE_LIMITED`, a
   `Retry-After` header, and `X-RateLimit-Limit` / `X-RateLimit-Remaining` on every
