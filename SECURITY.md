@@ -93,30 +93,50 @@ Cerberus is a **self-hosted, single-tenant** service. The full threat model is i
 - The API key is a shared secret, not a user identity. Cerberus cannot tell two
   operators apart, and revoking one operator's access means rotating the key for
   everyone.
-- There is no rate limiting and no replay protection beyond TLS.
-- Session state lives in process memory and is lost on restart.
+- Rate limiting is an in-process backstop, not DDoS defence. It is per process, it
+  does not key on the caller, and it deliberately does **not** limit unauthenticated
+  requests — a limiter before authentication would let an anonymous caller exhaust a
+  bucket and deny service to the operator. Per-caller and unauthenticated throttling
+  belong at your reverse proxy; see
+  [docs/operations/reverse-proxy.md](docs/operations/reverse-proxy.md).
+- Telemetry ingestion has **retry idempotency, not replay protection**. A retried
+  batch is stored and counted once, including across a restart, but the monitored
+  client supplies the `eventId` that makes that work — a client that wants to re-send
+  content sends a fresh one. There is no request signing, nonce or timestamp window
+  on the API surface.
+- Session state is not durable authority. Counters and lifecycle are written to
+  MongoDB and survive a restart; the in-memory event window, the reconstructed
+  workspace and the dedup fingerprint ring do not, and are rebuilt on read. See
+  [docs/development/session-state-model.md](docs/development/session-state-model.md).
 - Deploy behind TLS. Cerberus does not terminate TLS itself.
 - Telemetry can contain sensitive content — pasted text, source code, and typed
   characters. Treat the MongoDB volume as sensitive data at rest.
 
 ## Operator key rotation
 
-Rotation is manual. There is no automated rotation mechanism.
+Rotation is manual, but it supports an **overlap** so it does not have to be a hard
+cutover.
 
 1. Generate a new key:
    ```
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
-2. Update `CERBERUS_API_KEY` in your secret store and redeploy or restart the API.
-3. Generate and set a new `CERBERUS_MCP_TOKEN` at the same time, since the API and
-   the adapter must agree on it.
-4. Update every client, including the console's build-time
+2. Set `CERBERUS_API_KEY` to the new value and `CERBERUS_API_KEY_PREVIOUS` to the old
+   one, then restart. Both are now accepted.
+3. Update every client, including the console's build-time
    `--dart-define=CERBERUS_API_KEY=...` value.
-5. Revoke the old value everywhere it was stored.
+4. Remove `CERBERUS_API_KEY_PREVIOUS` and restart. That unset **is** the revocation.
 
-There is no overlap window: the API accepts exactly one key at a time, so rotation
-is a brief outage for clients that have not yet been updated. If you need an
-overlap, run a second instance behind a proxy.
+Do the same for `CERBERUS_MCP_TOKEN` with `CERBERUS_MCP_TOKEN_PREVIOUS`, on both the
+API and the adapter.
+
+Setting a previous key **without** a current key is a startup error: an overlap is not
+a replacement. Both comparisons always run, so response time does not reveal which key
+matched, and neither key is ever logged.
+
+There is still no key identity and no revocation list — you cannot revoke one key
+without revoking the others. The full procedure is in
+[docs/operations/key-rotation.md](docs/operations/key-rotation.md).
 
 ## Deployment guidance
 

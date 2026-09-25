@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.2.0] - 2026-09-26
+
 ### Added
 
 - **The console can manage the reference corpus.** It had no surface for it at all —
@@ -24,11 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes require action (the unique index needing a migration, and events without an
   `eventId` now being rejected), and how to verify the upgrade.
 - `docs/release/v0.2.0-release-notes.md` and `docs/release/v0.2.0-checklist.md`.
-  **Both are drafts and nothing in them has been executed or published.** The notes
-  state the theme, the breaking changes, the upgrade path, and — plainly — what the
-  release does not claim. The checklist has every box unchecked on purpose: it is what
-  a maintainer works through when authorising a release, and pre-ticking it would
-  defeat the purpose.
+  The notes state the theme, the breaking changes, the upgrade path, and — plainly —
+  what the release does not claim. The checklist records the gates that were run for
+  the release and their results.
 - `npm run bench`, and `docs/development/performance-baseline.md`. The benchmark
   drives the compiled API in process through `app.request()` with the persistence
   layer and AI provider stubbed, so it is reproducible anywhere with no MongoDB, no
@@ -155,7 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none, and the condition for revisiting it: a second real owner relationship.
 - `docs/development/maturity-plan.md` records the maintainer's decisions —
   `CODEOWNERS` not used while single-maintainer, the endpoint agent deferred,
-  `v0.2.0` prepared but not published, and operational durability as the next
+  `v0.2.0` published as a pre-release under explicit authorisation, and operational durability as the next
   focus — and states the current phase's exit condition as a tracked table.
 - `docs/index.md` — an entry point for the documentation set. It lists every
   document under `docs/` with the audience it is written for, and is linked from
@@ -449,10 +451,9 @@ repository at extraction.
 <!--
 Comparison links for the real repository.
 
-`v0.1.0` is tagged, so the `[Unreleased]` compare link resolves. It is the only
-compare link: 0.1.0 is the first release, so there is no earlier tag to compare
-it against.
+Both `v0.1.0` and `v0.2.0` are tagged, so the compare links resolve.
 -->
 
-[Unreleased]: https://github.com/Bilal-Lodhi/cerberus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Bilal-Lodhi/cerberus/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Bilal-Lodhi/cerberus/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Bilal-Lodhi/cerberus/releases/tag/v0.1.0

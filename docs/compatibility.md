@@ -9,8 +9,8 @@ and the verification is stated.
 
 ## 1. What counts as public
 
-`v0.1.0` is published, so the following are contracts. Changing one is a breaking
-change, not a refactor:
+`v0.1.0` and `v0.2.0` are published, so the following are contracts. Changing one is
+a breaking change, not a refactor:
 
 | Surface | Where it is defined |
 | --- | --- |
@@ -94,10 +94,10 @@ What that does *not* license:
 
 ## 5. Release authority
 
-`v0.1.0` is the only published release, and its tag is immutable. Publishing a new
-release, marking one stable or latest, or declaring production readiness requires
-an explicit human decision. Preparing a release candidate — version plan,
-changelog, notes, a local tag — does not.
+`v0.1.0` and `v0.2.0` are published, and their tags are immutable. Both are
+pre-releases. Publishing anything further, marking a release stable or latest, or
+declaring production readiness requires an explicit human decision. Preparing a
+release candidate — version plan, changelog, notes, a local tag — does not.
 
 ## 6. Supported runtimes
 

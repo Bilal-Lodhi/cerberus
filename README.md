@@ -5,7 +5,7 @@ activity from a browser-based operator console, scores it with an LLM for
 insider-threat and data-exfiltration indicators, and persists sessions, events
 and risk assessments in MongoDB.
 
-> **Status: 0.1.0 — first independent open-source release, published as a
+> **Status: 0.2.0 — an operational-durability release, published as a
 > pre-release.** This is an experimental research system. It is not production
 > ready, and it makes no guarantee that it will detect or prevent anything. Read
 > the [Security & privacy warning](#security--privacy-warning) before running it.
@@ -315,7 +315,7 @@ Repository-level documents:
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [SUPPORT.md](SUPPORT.md) — community expectations and where to ask for help.
-- [docs/release/](docs/release/) — the `v0.1.0` release notes, release checklist, community-health checklist and repository metadata, kept as a record of that release.
+- [docs/release/](docs/release/) — the `v0.1.0` and `v0.2.0` release notes and checklists, plus the community-health checklist and repository metadata.
 
 ## Contributing
 
@@ -334,10 +334,27 @@ what this repository does and what an operator would need is explicit.
   browser-based console.
 - **Multi-user identity and authorization.** Accounts, roles, OAuth/SSO.
 - **Multi-tenancy.** The service is single-tenant with one shared key.
-- **Durable session state.** Live state is in memory and is lost on restart.
-- **Replay protection** beyond TLS, and automated key rotation.
-- **Migration tooling** for the historical schema (see
-  [docs/migration.md](docs/migration.md)).
+- **Replay protection** beyond TLS. Telemetry has retry idempotency — a retried
+  batch is stored and counted once, including across a restart — but the client
+  supplies the `eventId` that makes it work, and there is no request signing, nonce
+  or timestamp window.
+- **Automated key rotation.** Rotation is manual, with an overlap so it does not
+  have to be a hard cutover, but nothing rotates on a schedule and there is no
+  revocation list. See [docs/operations/key-rotation.md](docs/operations/key-rotation.md).
+- **Migration tooling for the historical schema.** Cerberus ships a schema and data
+  migration framework, but the historical rename itself is documented rather than
+  scripted — see [docs/migration.md](docs/migration.md).
+- **Backup automation.** Backup and restore scripts exist and are verified, but
+  nothing schedules them, nothing stores a backup off-host, and there is no
+  point-in-time recovery. See
+  [docs/operations/backup-restore.md](docs/operations/backup-restore.md).
+- **Distributed rate limiting.** The limiter is per process, so N replicas enforce
+  up to N times the limit. A global ceiling needs a shared store, which Cerberus
+  does not require.
+- **A central session transition path.** Session status can still diverge between
+  the two in-memory maps and MongoDB; partial-failure semantics are not modelled.
+  See
+  [docs/development/session-state-model.md](docs/development/session-state-model.md).
 
 ## Project provenance
 
