@@ -1,0 +1,399 @@
+/**
+ * Schema and data migrations.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────
+ *
+ * Cerberus previously had no migration concept at all: `docs/migration.md`
+ * documented a one-off rename and nothing else, and the storage layer's only
+ * startup work was `ensureIndexes()`. That is fine until a change is not a pure
+ * addition — and the very first durable-identity change was one. Creating a unique
+ * index on `(sessionId, eventId)` **fails** on a database that already contains
+ * duplicates, and those duplicates are exactly what the pre-fix ingestion path
+ * produced. Without a migration, that deployment cannot start.
+ *
+ * ── Rules every migration here follows ────────────────────────────────
+ *
+ * 1. **Ordered and append-only.** The registry is a list, and each entry has a
+ *    stable `id` that is never renamed or reused. Order comes from position, so
+ *    there is no numeric prefix to get wrong.
+ * 2. **Idempotent.** Applying a migration twice must be a no-op. The runner
+ *    records what it applied, but a migration must not *rely* on that record —
+ *    a crash between the work and the ledger write must be recoverable.
+ * 3. **Fail before mutating.** A migration that discovers it cannot complete
+ *    safely throws *before* writing anything, so a failure leaves the database
+ *    as it was rather than half-changed.
+ * 4. **Never silently destructive.** A migration that removes documents must say
+ *    how many, and must refuse rather than guess when the documents disagree.
+ *
+ * ── What is deliberately absent ───────────────────────────────────────
+ *
+ * No down-migrations. Reversing a data migration is usually impossible to do
+ * honestly — the removed rows are gone — and a `down` that pretends otherwise is
+ * worse than none. The registry's type has no `down` member, so this is a
+ * property of the code rather than a convention.
+ *
+ * No automatic rollback on failure. A partially applied migration is a state an
+ * operator needs to see, not one to hide.
+ */
+
+import type { Db, ObjectId } from "mongodb";
+
+/** Collection holding the migration ledger. */
+export const MIGRATIONS_COLLECTION = "schema_migrations";
+
+export interface MigrationContext {
+  db: Db;
+  /** Records a line in the migration report. Never used for secrets. */
+  log(message: string): void;
+}
+
+export interface Migration {
+  /** Stable identifier. Never renamed, never reused. */
+  id: string;
+  /** One line describing what it does. */
+  description: string;
+  /**
+   * Whether this migration removes or rewrites existing documents.
+   *
+   * Informational: it is surfaced in the dry-run plan so an operator can see what
+   * is about to happen before it happens.
+   */
+  rewritesData: boolean;
+  /** Applies the migration. Must be idempotent and must fail before mutating. */
+  up(context: MigrationContext): Promise<void>;
+}
+
+/** A migration the database has recorded as applied. */
+export interface AppliedMigration {
+  migrationId: string;
+  appliedAt: Date;
+  description: string;
+  /** Free-form result detail, e.g. how many documents were removed. */
+  detail?: string;
+}
+
+export interface MigrationPlanEntry {
+  id: string;
+  description: string;
+  rewritesData: boolean;
+  state: "applied" | "pending";
+}
+
+export interface MigrationRunResult {
+  plan: MigrationPlanEntry[];
+  applied: string[];
+  /** Applied ids that this build of the code does not know about. */
+  unknown: string[];
+  dryRun: boolean;
+}
+
+/**
+ * Thrown when the database records a migration this build does not know about.
+ *
+ * That means the code is older than the data, which is the one direction that is
+ * never safe to guess about.
+ */
+export class UnknownMigrationError extends Error {
+  constructor(readonly migrationIds: string[]) {
+    super(
+      `The database has migrations this build does not know about: ` +
+        `${migrationIds.join(", ")}. The running code is older than the data. ` +
+        `Deploy the newer build, or restore from a backup taken before those ` +
+        `migrations were applied.`,
+    );
+    this.name = "UnknownMigrationError";
+  }
+}
+
+/**
+ * Thrown when a migration cannot complete without losing information.
+ *
+ * Nothing is written when this is raised: the migration classifies the whole
+ * database first and only then mutates.
+ */
+export class MigrationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MigrationConflictError";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 0001 — durable micro-event identity
+// ═══════════════════════════════════════════════════════════════════
+
+/** The fields that make up an event's identity. */
+const EVENT_IDENTITY = ["sessionId", "eventId"] as const;
+
+/** Fields that legitimately differ between two copies of the same event. */
+const IGNORED_WHEN_COMPARING = ["_id", "_ingestedAt"] as const;
+
+/** How many conflicting pairs to name in an error before truncating. */
+const MAX_REPORTED_CONFLICTS = 10;
+
+/** One set of documents that claim the same event identity. */
+export interface DuplicateGroup {
+  /** Human-readable identity, for reporting. */
+  key: string;
+  docs: Array<Record<string, unknown>>;
+}
+
+export interface DuplicateClassification {
+  /** `_id` values safe to remove: every copy in their group is identical. */
+  removableIds: unknown[];
+  /** Group keys whose copies disagree, so nothing in them may be removed. */
+  conflictKeys: string[];
+}
+
+/**
+ * Decides which duplicate documents may be removed.
+ *
+ * Pure, so the decision is testable without a database — and the decision is the
+ * part worth testing, because it is the part that can destroy data.
+ *
+ * A group is removable only when **every** copy is identical apart from `_id` and
+ * `_ingestedAt`. Copies that disagree are not duplicates: they are a data
+ * integrity problem with more than one possible resolution, and picking one would
+ * destroy whichever version the operator wanted.
+ *
+ * The earliest `_id` is kept, chosen by sorted order rather than by the server's
+ * return order, so the outcome does not depend on how the documents came back.
+ */
+export function classifyDuplicateGroups(
+  groups: DuplicateGroup[],
+): DuplicateClassification {
+  const removableIds: unknown[] = [];
+  const conflictKeys: string[] = [];
+
+  for (const group of groups) {
+    if (group.docs.length < 2) continue;
+
+    const sorted = [...group.docs].sort((a, b) =>
+      String(a["_id"]).localeCompare(String(b["_id"])),
+    );
+
+    const [first, ...rest] = sorted;
+    const firstShape = comparableShape(first);
+
+    if (rest.some((doc) => comparableShape(doc) !== firstShape)) {
+      conflictKeys.push(group.key);
+      continue;
+    }
+
+    removableIds.push(...rest.map((doc) => doc["_id"]));
+  }
+
+  return { removableIds, conflictKeys };
+}
+
+/**
+ * Removes duplicate `micro_events` documents so the unique identity index can be
+ * created.
+ *
+ * The pre-fix ingestion path wrote every event in a retried batch, so a database
+ * that ran it can hold several copies of the same event. Two copies written by a
+ * retry are byte-identical apart from `_id` and `_ingestedAt`, which is what makes
+ * removing them information-preserving rather than lossy.
+ *
+ * One aggregate call, grouping in the database and pushing the full documents for
+ * only the groups that have duplicates. That keeps the transfer proportional to
+ * the number of *duplicates* rather than to the size of the collection.
+ */
+const dedupeMicroEventIdentity: Migration = {
+  id: "0001-dedupe-micro-event-identity",
+  description:
+    "Remove duplicate micro_events documents that share (sessionId, eventId), so the unique identity index can be created.",
+  rewritesData: true,
+
+  async up({ db, log }) {
+    const collection = db.collection("micro_events");
+
+    const groups = await collection
+      .aggregate<{
+        _id: { sessionId?: unknown; eventId?: unknown };
+        count: number;
+        docs: Array<Record<string, unknown>>;
+      }>([
+        { $match: { eventId: { $exists: true, $ne: null } } },
+        {
+          $group: {
+            _id: { sessionId: "$sessionId", eventId: "$eventId" },
+            count: { $sum: 1 },
+            docs: { $push: "$$ROOT" },
+          },
+        },
+        { $match: { count: { $gt: 1 } } },
+      ])
+      .toArray();
+
+    if (groups.length === 0) {
+      log("no duplicate event identities found");
+      return;
+    }
+
+    log(`${groups.length} duplicated event identity/identities found`);
+
+    const { removableIds, conflictKeys } = classifyDuplicateGroups(
+      groups.map((group) => ({
+        key: `${String(group._id.sessionId)}/${String(group._id.eventId)}`,
+        docs: group.docs,
+      })),
+    );
+
+    // Fail before mutating: a conflict means this migration cannot complete, and
+    // a half-applied migration is worse than an unapplied one.
+    if (conflictKeys.length > 0) {
+      const shown = conflictKeys.slice(0, MAX_REPORTED_CONFLICTS);
+      const more = conflictKeys.length - shown.length;
+      throw new MigrationConflictError(
+        `${conflictKeys.length} (sessionId, eventId) pair(s) have copies that are ` +
+          `NOT identical, so they are not duplicates and removing either version ` +
+          `would lose data. Resolve them before re-running this migration. ` +
+          `Pairs: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}. ` +
+          `Nothing has been deleted.`,
+      );
+    }
+
+    if (removableIds.length === 0) {
+      log("no removable duplicates found");
+      return;
+    }
+
+    const result = await collection.deleteMany({
+      _id: { $in: removableIds as ObjectId[] },
+    });
+    log(`removed ${result.deletedCount} duplicate document(s)`);
+  },
+};
+
+/**
+ * The shape used to decide whether two copies of one event are identical.
+ *
+ * `_id` and `_ingestedAt` are excluded: the first is the storage identity and the
+ * second is when the copy arrived, and neither is part of the event. Every other
+ * field is included, so a copy with a different payload is *not* treated as a
+ * duplicate.
+ */
+function comparableShape(doc: Record<string, unknown>): string {
+  const entries = Object.entries(doc)
+    .filter(([key]) => !(IGNORED_WHEN_COMPARING as readonly string[]).includes(key))
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  return JSON.stringify(entries, (_key, value) => {
+    // Object key order is not stable across BSON round trips, so nested objects
+    // are sorted too; otherwise identical payloads could compare unequal.
+    if (value && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date)) {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+      );
+    }
+    return value;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Registry
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Every migration, in application order.
+ *
+ * Append only. Reordering this array changes what a database has already applied,
+ * and the runner will refuse to proceed if the ledger names an id that is not
+ * here.
+ */
+export const MIGRATIONS: readonly Migration[] = [dedupeMicroEventIdentity];
+
+// ═══════════════════════════════════════════════════════════════════
+// Runner
+// ═══════════════════════════════════════════════════════════════════
+
+export async function readAppliedMigrations(db: Db): Promise<AppliedMigration[]> {
+  const docs = await db
+    .collection(MIGRATIONS_COLLECTION)
+    .find({})
+    .sort({ appliedAt: 1 })
+    .toArray();
+
+  return docs.map((doc) => ({
+    migrationId: String(doc["migrationId"]),
+    appliedAt: (doc["appliedAt"] as Date) ?? new Date(0),
+    description: String(doc["description"] ?? ""),
+    ...(doc["detail"] ? { detail: String(doc["detail"]) } : {}),
+  }));
+}
+
+/**
+ * Works out what would happen, without changing anything.
+ *
+ * Throws {@link UnknownMigrationError} when the ledger names an id this build does
+ * not have — the code is older than the data, and proceeding would be a guess.
+ */
+export async function planMigrations(db: Db): Promise<MigrationPlanEntry[]> {
+  const applied = await readAppliedMigrations(db);
+  const appliedIds = new Set(applied.map((entry) => entry.migrationId));
+
+  const knownIds = new Set(MIGRATIONS.map((migration) => migration.id));
+  const unknown = [...appliedIds].filter((id) => !knownIds.has(id));
+  if (unknown.length > 0) throw new UnknownMigrationError(unknown);
+
+  return MIGRATIONS.map((migration) => ({
+    id: migration.id,
+    description: migration.description,
+    rewritesData: migration.rewritesData,
+    state: appliedIds.has(migration.id) ? "applied" : "pending",
+  }));
+}
+
+/**
+ * Applies every pending migration, in order.
+ *
+ * Stops at the first failure. A migration that throws is **not** recorded as
+ * applied, so the next run retries it — and because every migration here is
+ * idempotent and fails before mutating, a retry is safe.
+ */
+export async function runMigrations(
+  db: Db,
+  options: { dryRun?: boolean; log?: (message: string) => void } = {},
+): Promise<MigrationRunResult> {
+  const log = options.log ?? (() => {});
+  const plan = await planMigrations(db);
+  const applied: string[] = [];
+
+  if (options.dryRun) {
+    for (const entry of plan) {
+      if (entry.state === "pending") {
+        log(`would apply ${entry.id}${entry.rewritesData ? " (rewrites data)" : ""}`);
+      }
+    }
+    return { plan, applied, unknown: [], dryRun: true };
+  }
+
+  const ledger = db.collection(MIGRATIONS_COLLECTION);
+
+  for (const migration of MIGRATIONS) {
+    const entry = plan.find((candidate) => candidate.id === migration.id);
+    if (entry?.state === "applied") continue;
+
+    log(`applying ${migration.id}`);
+    const detailLines: string[] = [];
+    await migration.up({
+      db,
+      log: (message) => {
+        detailLines.push(message);
+        log(`  ${message}`);
+      },
+    });
+
+    await ledger.insertOne({
+      migrationId: migration.id,
+      description: migration.description,
+      appliedAt: new Date(),
+      ...(detailLines.length > 0 ? { detail: detailLines.join("; ") } : {}),
+    });
+
+    applied.push(migration.id);
+  }
+
+  return { plan, applied, unknown: [], dryRun: false };
+}

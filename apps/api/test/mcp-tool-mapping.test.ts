@@ -150,6 +150,9 @@ describe("server identity", () => {
       microEvents: "micro_events",
       riskAssessments: "risk_assessments",
       referenceDocuments: "reference_documents",
+      // The migration ledger. Not domain data: it records which migrations this
+      // database has had applied, and is written only by runMigrations().
+      schemaMigrations: "schema_migrations",
     });
   });
 });

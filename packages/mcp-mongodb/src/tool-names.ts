@@ -48,6 +48,11 @@ export const COLLECTION_NAMES = {
   microEvents: "micro_events",
   riskAssessments: "risk_assessments",
   referenceDocuments: "reference_documents",
+  /**
+   * The migration ledger: which migrations this database has had applied, and
+   * when. Written only by `runMigrations()`.
+   */
+  schemaMigrations: "schema_migrations",
 } as const;
 
 /** Default database name. */
