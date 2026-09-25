@@ -17,7 +17,7 @@
     "build:api": "npm run build --workspace @cerberus/api",
     "build:mcp": "npm run build --workspace @cerberus/mcp-mongodb",
     "typecheck": "npm run typecheck --workspace @cerberus/api && npm run typecheck --workspace @cerberus/mcp-mongodb",
-    "test": "npm run test --workspace @cerberus/api",
+    "test": "npm run test --workspace @cerberus/api && npm run test --workspace @cerberus/mcp-mongodb",
     "dev": "node scripts/dev-services.js",
     "start": "node scripts/start-services.js",
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1"
