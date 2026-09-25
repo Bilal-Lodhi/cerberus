@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the model-output bounds work (see `CHANGELOG.md`
+Last updated for the notification and identity bounds work (see `CHANGELOG.md`
 `[Unreleased]`).
 
 ## Current state
@@ -162,16 +162,20 @@ Ordered by the value of the outcome, not by effort.
      fieldless records. See
      [architecture.md](../architecture.md#6-score-composition-and-model-output-bounds).
 
+   - Outbound notifications had **no timeout**. `notifySlack` and `sendEmail`
+     called `fetch` with no `AbortSignal`, and ingestion awaits both before
+     returning, so a hung webhook stalled the ingest request for as long as the
+     socket stayed open — the notification path could block telemetry
+     collection. Both now carry a 5 000 ms deadline, verified against a real
+     server that accepts and never answers.
+   - The identity registry was an unbounded in-memory `Map`. Every
+     `POST /api/v1/identity/set` added an entry that was never evicted, while the
+     `GET /me` handler already described an unknown handle as "unknown or
+     expired" although nothing expired it. Handles now expire after 12 hours and
+     the registry evicts expired entries, then the oldest, at a ceiling of 100.
+
    **Open:**
 
-   - Outbound notifications have **no timeout**. `notifySlack` and `sendEmail`
-     call `fetch` with no `AbortSignal`, and ingestion awaits both before
-     returning, so a hung webhook stalls the ingest request for as long as the
-     socket stays open.
-   - The identity registry is an unbounded in-memory `Map`. Every
-     `POST /api/v1/identity/set` adds an entry that is never evicted, and the
-     `GET /me` handler describes its handle as "unknown or expired" although
-     nothing expires it.
    - The MCP adapter's `parseBody` destroys an oversized request without
      resolving its promise and without returning a distinct status, so an
      oversized body surfaces as a confusing missing-argument 400 rather than a

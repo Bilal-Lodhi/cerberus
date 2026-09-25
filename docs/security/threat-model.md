@@ -186,6 +186,9 @@ These are the places where the code chooses to refuse rather than proceed:
 | Model-supplied score or confidence out of range | `parseRiskAssessment()` / `parseRiskDimensions()` / `parseRiskFlag()` in `apps/api/src/ai/parsers.ts` | Clamped to the documented range (0-100 for scores, 0-1 for confidences) rather than accepted as-is. A well-formed but absurd value cannot corrupt a threshold comparison. |
 | Model-supplied array or text field oversized | `boundedArray()` / `bounded()` in `apps/api/src/ai/parsers.ts` | Arrays capped at 50 entries, free text at 2 000 characters, identifiers at 200, `subMandates` recursion depth-limited to 5. Non-object entries are dropped rather than coerced. |
 | Non-finite composed risk score | `clampScore()` in `apps/api/src/routes/guardian.ts` | Coerced to 0 rather than `NaN`, so a bad blend cannot silently disable the auto-lock by making every comparison false. |
+| Outbound notification that never answers | `notifySlack()` / `sendEmail()` in `apps/api/src/services/notifications.ts` | Abandoned after 5 000 ms and logged as a timeout. Ingestion awaits both, so the deadline is what bounds the ingest request's latency. |
+| Operator handle past its lifetime | `GET /api/v1/identity/me` in `apps/api/src/routes/identity.ts` | HTTP 401 "Unknown or expired operator handle", and the entry is dropped. Handles expire after 12 hours. |
+| Operator identity registry at its ceiling | `evictIdentities()` in `apps/api/src/routes/identity.ts` | Expired handles are reclaimed, then the oldest handle is evicted, so the in-memory registry cannot grow without bound. |
 
 Deliberate **fail-open** behaviours, for completeness:
 
@@ -195,7 +198,9 @@ Deliberate **fail-open** behaviours, for completeness:
   without risk scoring.
 - MCP persistence failures in the scenario route are logged and swallowed; the
   matrix is returned to the caller with `persisted: false`.
-- Notification failures are logged and swallowed.
+- Notification failures are logged and swallowed, and every call carries a
+  5 000 ms deadline. Ingestion awaits both channels before returning, so the
+  deadline is what keeps a hung webhook from stalling telemetry collection.
 - All MCP calls from the API resolve `{ ok: false }` rather than throwing, and
   callers degrade rather than fail.
 
