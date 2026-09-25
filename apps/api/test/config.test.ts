@@ -16,6 +16,7 @@ import { ConfigError, loadConfig } from "../src/config.js";
 const MANAGED_VARS = [
   "OPENAI_API_KEY",
   "CERBERUS_API_KEY",
+  "CERBERUS_API_KEY_PREVIOUS",
   "CERBERUS_MCP_TOKEN",
   "CERBERUS_DEV_MODE",
   "NODE_ENV",
@@ -34,6 +35,7 @@ function installMinimalEnv(saved: Map<string, string | undefined>): void {
   delete process.env["NODE_ENV"];
   delete process.env["SESSION_TTL_SECONDS"];
   delete process.env["CERBERUS_MAX_BODY_BYTES"];
+  delete process.env["CERBERUS_API_KEY_PREVIOUS"];
 }
 
 function restoreEnv(saved: Map<string, string | undefined>): void {
@@ -130,3 +132,47 @@ describe("loadConfig — CERBERUS_MAX_BODY_BYTES", () => {
     }
   });
 });
+
+describe("loadConfig — CERBERUS_API_KEY_PREVIOUS", () => {
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => installMinimalEnv(saved));
+  afterEach(() => restoreEnv(saved));
+
+  test("is absent when unset", () => {
+    assert.equal(loadConfig().auth.previousApiKey, undefined);
+  });
+
+  test("is carried through when set alongside a current key", () => {
+    process.env["CERBERUS_API_KEY"] = "current-key";
+    process.env["CERBERUS_API_KEY_PREVIOUS"] = "retired-key";
+
+    const config = loadConfig();
+    assert.equal(config.auth.apiKey, "current-key");
+    assert.equal(config.auth.previousApiKey, "retired-key");
+  });
+
+  test("refuses to be the only key", () => {
+    // Accepting a "previous" key with no current key would leave a deployment
+    // authenticating against the credential it is trying to retire.
+    process.env["CERBERUS_API_KEY_PREVIOUS"] = "retired-key";
+
+    assert.throws(
+      () => loadConfig(),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        error.message.includes("CERBERUS_API_KEY_PREVIOUS"),
+    );
+  });
+
+  test("an overlap equal to the current key is accepted but warned about", () => {
+    // Not an error: it is a no-op rather than a misconfiguration. The warning is
+    // what tells an operator the rotation is already finished.
+    process.env["CERBERUS_API_KEY"] = "same-key";
+    process.env["CERBERUS_API_KEY_PREVIOUS"] = "same-key";
+
+    const config = loadConfig();
+    assert.equal(config.auth.previousApiKey, "same-key");
+  });
+});
+

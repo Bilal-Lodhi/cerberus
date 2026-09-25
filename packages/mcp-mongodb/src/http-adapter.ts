@@ -31,6 +31,15 @@ const BIND_HOST = process.env["MCP_BIND_HOST"] ?? "127.0.0.1";
 const DEV_MODE =
   (process.env["CERBERUS_DEV_MODE"] ?? "").toLowerCase() === "true";
 const MCP_TOKEN = (process.env["CERBERUS_MCP_TOKEN"] ?? "").trim();
+/**
+ * The MCP token being retired, accepted during a rotation overlap.
+ *
+ * Same model as the API's `CERBERUS_API_KEY_PREVIOUS`: set the new token, keep the
+ * old one here, move the API across, then unset this and restart. It exists so the
+ * sidecar and the API can be rotated without a moment where one accepts a token
+ * the other has already stopped sending.
+ */
+const MCP_TOKEN_PREVIOUS = (process.env["CERBERUS_MCP_TOKEN_PREVIOUS"] ?? "").trim();
 const CORS_ORIGINS = (process.env["CERBERUS_MCP_CORS_ORIGINS"] ?? "")
   .split(",")
   .map((origin) => origin.trim())
@@ -82,7 +91,17 @@ function isAuthorized(req: IncomingMessage): boolean {
   const raw = Array.isArray(header) ? header[0] : header;
   if (!raw) return false;
   const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
-  return constantTimeEquals(match?.[1]?.trim() ?? "", MCP_TOKEN);
+  const presented = match?.[1]?.trim() ?? "";
+
+  // Both comparisons always run, so the response time does not reveal which token
+  // matched. Neither token is ever logged or echoed.
+  const matchesCurrent = constantTimeEquals(presented, MCP_TOKEN);
+  const matchesPrevious =
+    MCP_TOKEN_PREVIOUS.length > 0
+      ? constantTimeEquals(presented, MCP_TOKEN_PREVIOUS)
+      : false;
+
+  return matchesCurrent || matchesPrevious;
 }
 
 // ─── HTTP helpers ────────────────────────────────────────────────────
@@ -228,6 +247,7 @@ async function main(): Promise<void> {
     console.error(
       `[MCP-HTTP] listening on ${BIND_HOST}:${PORT} ` +
         `(auth=${DEV_MODE ? "DISABLED (dev mode)" : "bearer token"}, ` +
+        `previousToken=${MCP_TOKEN_PREVIOUS ? "accepted" : "none"}, ` +
         `maxBody=${MAX_BODY_BYTES}B)`,
     );
     console.error(`[MCP-HTTP] tools: ${Object.keys(tools).join(", ")}`);
