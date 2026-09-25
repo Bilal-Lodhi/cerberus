@@ -8,15 +8,42 @@
  *
  * The handle returned here is an opaque per-process token that is meaningless
  * outside this server process and is deliberately not accepted as a
- * credential anywhere else.
+ * credential anywhere else. The only route that reads it back is `GET /me`.
+ *
+ * The registry is bounded in both size and time. It is a `Map` in process
+ * memory, and an unbounded one that every `POST /set` appended to would grow for
+ * the lifetime of the process.
  */
 
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { IdentityPayload, IdentityResponse } from "../types.js";
 
+interface StoredIdentity {
+  identity: IdentityPayload;
+  issuedAtMs: number;
+}
+
 /** In-memory identity store (per-process, resets on restart). */
-const identityStore = new Map<string, IdentityPayload>();
+const identityStore = new Map<string, StoredIdentity>();
+
+/**
+ * Maximum number of operator handles held in memory at once.
+ *
+ * Reaching it evicts the oldest handle. A console registers one identity per
+ * launch, so this is far above real usage; it exists so a client that registers
+ * in a loop cannot grow the process without bound.
+ */
+export const MAX_IDENTITY_HANDLES = 100;
+
+/**
+ * How long an operator handle stays resolvable, in milliseconds (12 hours).
+ *
+ * The handle is not a credential and nothing authorises against it, so this
+ * bounds memory rather than access. It is what the `GET /me` handler has always
+ * meant by "unknown or expired operator handle".
+ */
+export const IDENTITY_HANDLE_TTL_MS = 12 * 60 * 60 * 1000;
 
 /**
  * Maximum accepted length of any identity field, in characters.
@@ -27,6 +54,28 @@ const identityStore = new Map<string, IdentityPayload>();
 export const MAX_IDENTITY_FIELD_CHARS = 200;
 
 const identityRouter = new Hono();
+
+/** True when a stored handle has passed its lifetime. */
+function isExpired(entry: StoredIdentity, nowMs: number): boolean {
+  return nowMs - entry.issuedAtMs >= IDENTITY_HANDLE_TTL_MS;
+}
+
+/**
+ * Drops expired handles, then the oldest, until there is room for one more.
+ *
+ * `Map` preserves insertion order, so the first key is the oldest handle.
+ */
+function evictIdentities(nowMs: number): void {
+  for (const [handle, entry] of identityStore) {
+    if (isExpired(entry, nowMs)) identityStore.delete(handle);
+  }
+
+  while (identityStore.size >= MAX_IDENTITY_HANDLES) {
+    const oldest = identityStore.keys().next();
+    if (oldest.done) break;
+    identityStore.delete(oldest.value);
+  }
+}
 
 /**
  * Reads an optional trimmed string field.
@@ -117,14 +166,17 @@ identityRouter.post("/set", async (c) => {
     department: department.value,
   };
 
+  const nowMs = Date.now();
+  evictIdentities(nowMs);
+
   const sessionToken = randomUUID();
-  identityStore.set(sessionToken, identity);
+  identityStore.set(sessionToken, { identity, issuedAtMs: nowMs });
 
   const response: IdentityResponse = { success: true, identity, sessionToken };
 
   console.log(
     `[identity] registered operator "${identity.displayName}" (${identity.employeeId}) ` +
-      `handle=${sessionToken.slice(0, 8)}…`,
+      `handle=${sessionToken.slice(0, 8)}… registrySize=${identityStore.size}`,
   );
 
   return c.json(response, 201);
@@ -141,12 +193,14 @@ identityRouter.get("/me", (c) => {
     return c.json({ success: false, error: "X-Session-Token header is required" }, 401);
   }
 
-  const identity = identityStore.get(token);
-  if (!identity) {
+  const entry = identityStore.get(token);
+  if (!entry || isExpired(entry, Date.now())) {
+    // Drop it while we are here, so an expired handle does not linger.
+    if (entry) identityStore.delete(token);
     return c.json({ success: false, error: "Unknown or expired operator handle" }, 401);
   }
 
-  return c.json({ success: true, identity });
+  return c.json({ success: true, identity: entry.identity });
 });
 
 export { identityRouter, identityStore };
