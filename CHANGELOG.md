@@ -9,7 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
-## [0.2.0] - 2026-09-26
+## [0.2.0] - 2026-09-25
+
+**Published as a GitHub pre-release.** Annotated tag `v0.2.0`, tag object
+`c987767494f4d1c624005f6f498334e658d2c1bc`, peeling to release target
+`a355f310eefb5345ddafe8af53cfec805eb21c64`. No npm package, no container image and no
+hosted deployment were published, and nothing was marked stable or latest. This is an
+experimental research system and is not production ready — see
+[docs/release/v0.2.0-release-notes.md](docs/release/v0.2.0-release-notes.md) for what
+the release does and does not claim.
 
 ### Added
 
