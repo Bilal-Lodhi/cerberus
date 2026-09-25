@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CERBERUS_API_KEY_PREVIOUS` and `CERBERUS_MCP_TOKEN_PREVIOUS` support rotating
+  either shared secret without a hard cutover: set the new value, put the old one
+  in the previous slot, restart, move every client across, then unset it and
+  restart again. **Both comparisons always run**, so the response time does not
+  reveal which key matched, and neither key is ever logged. Setting a previous key
+  without a current one is a startup `ConfigError` — an overlap is not a
+  replacement. `docs/operations/key-rotation.md` documents the procedure and what
+  an overlap does not do. There is still no key identity and no revocation list:
+  ending the overlap is the revocation.
 - `POST /api/v1/guardian/ingest` reports `acceptedCount` and `duplicateCount`
   alongside `processedCount`, which keeps its meaning (the batch size). A caller
   retrying after a network ambiguity can see that its events were already stored.

@@ -104,7 +104,7 @@ strong engineering rationale recorded here:
 | B | Restart recovery deterministic and documented | Done — [session-state-model.md](session-state-model.md) documents every field; restart behaviour is covered by tests and verified against a real process restart |
 | C | Rate limiting exists for expensive and high-risk paths | Not started |
 | D | Replay handling explicit and tested | Done — durable `(sessionId, eventId)` identity; the store reports what was new and only that is applied. Content dedup scoped to content-bearing events. What this is *not* is stated in the threat model |
-| E | API-key rotation has a safe documented path | Not started |
+| E | API-key rotation has a safe documented path | Done — `CERBERUS_API_KEY_PREVIOUS` and `CERBERUS_MCP_TOKEN_PREVIOUS` overlap, both compared without short-circuiting, with the procedure in [operations/key-rotation.md](../operations/key-rotation.md) |
 | F | Schema and data migration strategy exists and is testable | Not started |
 | G | Local performance baseline exists | Not started |
 | H | Health and readiness semantics are coherent | Not started |
