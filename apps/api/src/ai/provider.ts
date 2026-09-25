@@ -14,7 +14,7 @@
  *   - No secret material is ever logged.
  */
 
-import OpenAI from "openai";
+import OpenAI, { APIError } from "openai";
 import type { AppConfig, OpenAIConfig } from "../config.js";
 import { toISOStringLocal } from "../utils/time.js";
 import type {
@@ -23,6 +23,7 @@ import type {
   ThreatScenarioMatrix,
 } from "../types.js";
 import {
+  parseJsonLoose,
   parseRecommendedActions,
   parseRiskAssessment,
   parseScenarioClassifierVerdict,
@@ -46,14 +47,25 @@ export class AIProviderError extends Error {
   }
 }
 
-/** Errors that must never be retried — retrying cannot fix them. */
-function isFatal(message: string): boolean {
-  return (
-    message.includes("401") ||
-    message.includes("403") ||
-    message.includes("invalid_api_key") ||
-    message.includes("insufficient_quota")
-  );
+/**
+ * Errors that must never be retried — retrying cannot fix them.
+ *
+ * Classified from the SDK error's HTTP status and machine-readable error code
+ * rather than by searching the message. The previous version looked for the
+ * substrings `"401"` and `"403"` anywhere in the message, so any error whose text
+ * happened to contain those digits — a token count, a request id, a URL — was
+ * treated as an authentication failure and skipped the retry budget entirely.
+ *
+ * `AuthenticationError` and `PermissionDeniedError` carry status 401 and 403, so
+ * the status check covers them. The `code` check catches the quota and key codes,
+ * which can arrive with a different status.
+ */
+export function isFatal(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false;
+
+  if (error.status === 401 || error.status === 403) return true;
+
+  return error.code === "invalid_api_key" || error.code === "insufficient_quota";
 }
 
 export class OpenAIProvider {
@@ -176,7 +188,7 @@ export class OpenAIProvider {
         lastError = error instanceof Error ? error : new AIProviderError(message);
         console.error(`[ai] attempt ${attempt}/${MAX_ATTEMPTS} failed: ${message}`);
 
-        if (isFatal(message)) throw lastError;
+        if (isFatal(error)) throw lastError;
       }
 
       if (attempt < MAX_ATTEMPTS) {
@@ -310,9 +322,16 @@ export class OpenAIProvider {
       { maxTokens: 2000 },
     );
     try {
-      const parsed = JSON.parse(raw) as { pipeline?: unknown };
-      return parsed.pipeline;
+      // The same recovery ladder the rest of this boundary uses. A raw
+      // JSON.parse discarded an otherwise usable pipeline whenever the model
+      // wrapped it in a markdown fence or a sentence, which is exactly the
+      // output shape the other parsers exist to tolerate.
+      const parsed = parseJsonLoose(raw);
+      return parsed["pipeline"];
     } catch {
+      // A pipeline the auditor cannot read is a query that matches nothing,
+      // which is the safe degradation: applySafePipeline passes records through
+      // and the result ceiling still applies.
       return [];
     }
   }
