@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the notification and identity bounds work (see `CHANGELOG.md`
+Last updated for the MCP oversized-body work (see `CHANGELOG.md`
 `[Unreleased]`).
 
 ## Current state
@@ -183,15 +183,19 @@ Ordered by the value of the outcome, not by effort.
      a markdown fence or a sentence was discarded even though the rest of the
      boundary exists to tolerate exactly that. It now uses the same recovery
      ladder as every other model-reading path.
+   - The MCP adapter's `parseBody` destroyed an oversized request without
+     resolving its promise, so the handler hung and the client saw a connection
+     reset instead of a status; and a malformed body was indistinguishable from a
+     missing one, surfacing as a misleading "Missing required parameter". The
+     parser is extracted into `packages/mcp-mongodb/src/body.ts`, always settles,
+     and returns `413 PAYLOAD_TOO_LARGE`, `400 INVALID_JSON` or
+     `400 INVALID_BODY` explicitly. The adapter reads the same
+     `CERBERUS_MAX_BODY_BYTES` variable as the API so the two ceilings cannot
+     drift. Verified against a real MongoDB and a real socket.
 
-   **Open:**
+   **No open items.** Every finding from this audit pass is remediated, and the
+   MCP package now has its own test suite wired into `npm test`. **Complete.**
 
-   - The MCP adapter's `parseBody` destroys an oversized request without
-     resolving its promise and without returning a distinct status, so an
-     oversized body surfaces as a confusing missing-argument 400 rather than a
-     413.
-
-   **In progress.**
 2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
    completion source is a stub returning `[]`, so `ExfiltrationReport` matches
    are always empty while the threshold is still parsed and documented. Either

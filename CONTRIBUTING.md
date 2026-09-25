@@ -63,7 +63,7 @@ Common commands, all run from the repository root:
 ```bash
 npm run build       # compile @cerberus/api and @cerberus/mcp-mongodb
 npm run typecheck   # tsc --noEmit across both TypeScript workspaces
-npm test            # node:test suite for the API workspace
+npm test            # node:test suites for the API and MCP workspaces
 npm run dev         # MCP adapter on :3001 and API on :8080, watch-reloading
 npm run start       # the same two services from compiled output
 npm run verify      # PowerShell smoke/verification runner (Windows)
@@ -116,6 +116,8 @@ apps/console/             Flutter web operator console
 packages/mcp-mongodb/     TypeScript MCP server for MongoDB (persistence sidecar)
   src/tool-names.ts       canonical MCP tool and collection names
   src/http-adapter.ts     HTTP transport used by the API
+  src/body.ts             request body parsing and the size bound, testable in isolation
+  test/                   node:test suites, run by `npm test`
 scripts/                  local service launchers, smoke/stress and verification runners
 docs/                     architecture and configuration documentation
 ```

@@ -171,7 +171,8 @@ These are the places where the code chooses to refuse rather than proceed:
 | Unlisted CORS origin | `apps/api/src/index.ts` | No `Access-Control-Allow-Origin` header returned. |
 | Unknown MCP tool name | `packages/mcp-mongodb/src/http-adapter.ts` | HTTP 404 with the list of tools that do exist. |
 | Invalid `set_session_status` value | `packages/mcp-mongodb/src/tools.ts` | `ToolArgumentError`, HTTP 400. |
-| Oversized MCP request body | `parseBody()` in `http-adapter.ts` | Request destroyed above 8 MiB. Note: the parser resolves with `{}` rather than an explicit error, so an oversized body surfaces as a missing-argument 400. |
+| Oversized MCP request body | `parseBody()` in `packages/mcp-mongodb/src/body.ts` | HTTP 413 `PAYLOAD_TOO_LARGE` with `Connection: close`. The parser always settles, so the handler answers instead of hanging, and an oversized body is distinguishable from a missing one. |
+| Malformed MCP request body | `parseBody()` in `packages/mcp-mongodb/src/body.ts` | HTTP 400 `INVALID_JSON` for unparseable input, `INVALID_BODY` for a JSON value that is not an object. Both previously resolved to `{}` and surfaced as a misleading "Missing required parameter". |
 | Unhandled API error | `app.onError` in `apps/api/src/index.ts` | Generic HTTP 500 with a correlation id. Framework and provider internals are logged server-side, never returned. |
 | Missing/invalid credential | `apps/api/src/middleware/auth.ts` | HTTP 401, identical for both cases. |
 | Invalid `SESSION_TTL_SECONDS` | `loadConfig()` in `apps/api/src/config.ts` | `ConfigError`, process exits 1. Must be a positive whole number of seconds, so a misconfigured monitoring window cannot be silently replaced by a default. |

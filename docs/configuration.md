@@ -30,9 +30,14 @@ runtime, firewall or reverse proxy.
 an oversized request is refused with HTTP 413 and code `PAYLOAD_TOO_LARGE`, and
 nothing is truncated. It is applied before the authentication middleware, so an
 oversized body is rejected without being read into memory whether or not the
-caller holds a credential. The default deliberately matches the 8 MiB ceiling the
-MCP adapter applies to its own bodies, so a request the API admits cannot be
-rejected downstream for size.
+caller holds a credential.
+
+**Both the API and the MCP adapter read this same variable**, so the two ceilings
+cannot drift apart: a request the API admits cannot be rejected by the adapter for
+size. The API validates it fail-closed at startup; the adapter, which can be run
+standalone, falls back to the 8 MiB default for an unusable value and logs the
+value it is actually using. Both refuse an oversized body with HTTP 413 and close
+the connection, because the unread remainder cannot be drained.
 
 Per-field caps sit below this and are not configurable, because they bound what
 reaches a paid provider rather than what the process buffers:

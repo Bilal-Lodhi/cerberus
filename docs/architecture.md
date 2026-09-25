@@ -58,6 +58,7 @@ Supporting files:
 | `packages/mcp-mongodb/src/tools.ts` | Tool registry and input validation. Typed as `Record<McpToolName, ToolHandler>`, so a missing handler fails the TypeScript build. |
 | `packages/mcp-mongodb/src/server.ts` | stdio transport for MCP-capable agent hosts, plus a `mongo://health` resource. |
 | `packages/mcp-mongodb/src/http-adapter.ts` | HTTP transport used by the API. `GET /health`, `GET /tools`, `POST /tools/:toolName`. |
+| `packages/mcp-mongodb/src/body.ts` | Request body parsing and the size bound. Extracted so it can be tested over a real socket without importing `http-adapter.ts`, which connects to MongoDB and exits on failure at module load. |
 
 The API deliberately keeps its own copy of the tool-name set rather than
 importing the MCP package, so the two services remain independently

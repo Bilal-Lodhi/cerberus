@@ -116,6 +116,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as every other model-reading path. A raw `JSON.parse` discarded an otherwise
   usable pipeline whenever the model wrapped it in a markdown fence or a
   sentence.
+- The MCP adapter refuses an oversized request body with `413 PAYLOAD_TOO_LARGE`
+  and `Connection: close`, and a malformed body with `400 INVALID_JSON` or
+  `400 INVALID_BODY`. It previously destroyed the request without settling its
+  promise — so the handler hung and the client saw a connection reset instead of a
+  status — and collapsed both an oversized and a malformed body into `{}`, which
+  surfaced as a misleading "Missing required parameter". The adapter now reads the
+  same `CERBERUS_MAX_BODY_BYTES` variable as the API, so the two ceilings cannot
+  drift apart.
+- `npm test` runs the MCP workspace's suite as well as the API's. The MCP package
+  had no tests at all; request body parsing now has integration tests over a real
+  socket.
 
 ### Fixed
 
