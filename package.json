@@ -22,6 +22,8 @@
     "migrate:dry-run": "npm run migrate:dry-run --workspace @cerberus/mcp-mongodb",
     "dev": "node scripts/dev-services.js",
     "start": "node scripts/start-services.js",
-    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1"
+    "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1",
+    "backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup-cerberus.ps1",
+    "restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-cerberus.ps1"
   }
 }

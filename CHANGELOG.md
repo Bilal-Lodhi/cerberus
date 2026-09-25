@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/backup-cerberus.ps1` and `scripts/restore-cerberus.ps1`, plus
+  `npm run backup` and `npm run restore`. Cerberus still has no backup mechanism of
+  its own — it writes to MongoDB, so the mechanism is MongoDB's — but an unverified
+  backup is a guess, so the scripts make one verifiable. The backup dumps, counts
+  every collection, writes a manifest beside the dump, and **fails if any collection
+  dumped to 0 bytes**. The restore restores into a scratch database by default,
+  **refuses to restore over the source** without `-AllowSameDatabase`, **refuses a
+  non-empty target** without `-Drop`, and **compares the restored counts against the
+  manifest**.
+  That last check is the one that matters: `mongorestore` exits **0** when it
+  restores nothing — point it at the wrong directory level and it prints
+  `don't know what to do with file ..., skipping` for every collection, reports
+  `0 document(s) restored successfully`, and succeeds. An exit-code check would pass
+  while the deployment came back empty. Verified by tampering with a manifest to
+  claim 99 documents in a collection holding 3: the restore reports
+  `FAIL micro_events expected 99 got 3` and exits 1.
+- `docs/operations/backup-restore.md`: what to back up (including
+  `schema_migrations`, which is easy to overlook and makes the runner re-apply
+  migrations if omitted), what is deliberately **not** backed up (configuration and
+  secrets — the manifest records the source rather than the connection string,
+  which can carry a password), the end-to-end drill, and the gaps this does not
+  close: no scheduling, no point-in-time recovery, no off-host storage, no
+  encryption, no retention.
 - `GET /ready`, and a real split between liveness and readiness. `/health` is
   **liveness**: it checks nothing and always answers `200`, so a dependency outage
   cannot make an orchestrator restart a healthy process in a loop. `/ready` is
