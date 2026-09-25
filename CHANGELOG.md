@@ -77,6 +77,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client-supplied `MicroEvent.timestamp` is recorded and displayed but is
   deliberately not an expiry input, and a deduplicated replay does not refresh
   the activity stamp.
+- Model-supplied numbers are now clamped to the ranges their contracts document,
+  in `apps/api/src/ai/parsers.ts`: `overallRiskScore` and `dimensionScores.*` to
+  0-100, `flags[].confidence`, `exfiltrationReport` similarity fields and the
+  classifier `confidence` to 0-1, mandate `weight` to 0-1, vector `riskScore` to
+  0-100, and every `antiExfiltrationThresholds` field to its own range. Finiteness
+  was already checked; range was not, so a well-formed `-1e9` or `1e9` passed
+  through and would have corrupted threshold comparisons, sorting and the
+  auto-lock decision.
+- Model-supplied arrays and strings are bounded: at most 50 entries per array,
+  2 000 characters of free text, 200 per identifier, and `subMandates` recursion
+  is depth-limited to 5. Non-object array entries are dropped rather than
+  coerced into fieldless records that read like real evidence.
+- `exfiltrationReport` and `behavioralAnomalies` are now parsed field by field
+  instead of being cast to their contract types, so a malformed model structure
+  no longer reaches the console and the review timeline untouched.
+- The composed risk score is clamped through `clampScore()`, which maps a
+  non-finite value to 0 rather than `NaN`. `NaN >= AUTO_LOCK_THRESHOLD` is false,
+  so a `NaN` score would have silently disabled the auto-lock instead of failing
+  loudly.
 
 ### Fixed
 

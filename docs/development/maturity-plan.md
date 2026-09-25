@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the request-surface bounds work (see `CHANGELOG.md`
+Last updated for the model-output bounds work (see `CHANGELOG.md`
 `[Unreleased]`).
 
 ## Current state
@@ -151,15 +151,19 @@ Ordered by the value of the outcome, not by effort.
      it, so a numeric `displayName` threw inside the handler and surfaced as an
      unhandled 500. It now returns `400 INVALID_IDENTITY_FIELD`, and identity
      fields are length-capped.
+   - Model-supplied numerics were **not clamped**. `parseRiskAssessment` accepted
+     any finite number for `overallRiskScore`, `dimensionScores.*` and
+     `flags[].confidence`, and `guardian.ts` only capped the blended score at the
+     top, so a well-formed `-1e9` or `1e9` flowed through and would have corrupted
+     threshold comparisons, sorting and the auto-lock. Every documented range is
+     now clamped at the parser boundary, arrays and strings are bounded, and
+     `exfiltrationReport` / `behavioralAnomalies` are parsed field by field
+     instead of cast. Non-object array entries are dropped rather than becoming
+     fieldless records. See
+     [architecture.md](../architecture.md#6-score-composition-and-model-output-bounds).
 
    **Open:**
 
-   - Model-supplied numeric fields are **not clamped** by the parsers.
-     `parseRiskAssessment` accepts any finite number for `overallRiskScore`,
-     `dimensionScores.*` and `flags[].confidence`, and `guardian.ts` only caps the
-     blended score at the top. A negative or absurd model score flows through
-     unclamped. `behavioralAnomalies` and `exfiltrationReport` are cast to their
-     contract types without field-level validation.
    - Outbound notifications have **no timeout**. `notifySlack` and `sendEmail`
      call `fetch` with no `AbortSignal`, and ingestion awaits both before
      returning, so a hung webhook stalls the ingest request for as long as the
@@ -189,7 +193,7 @@ Ordered by the value of the outcome, not by effort.
 ## Known gaps in this release
 
 These are already documented as limitations in
-[architecture.md](../architecture.md#8-known-gaps-in-this-release) and
+[architecture.md](../architecture.md#9-known-gaps-in-this-release) and
 [security/threat-model.md](../security/threat-model.md). They are repeated here
 so the maturity picture is in one place.
 
@@ -197,6 +201,7 @@ so the maturity picture is in one place.
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` enforcement | Implemented | Issue #3. Expiry bounds liveness only; historical documents are retained. |
 | Request body size limit | Implemented | `CERBERUS_MAX_BODY_BYTES`, default 8 MiB, enforced before buffering. |
+| Model-output numeric bounds | Implemented | Every documented range is clamped at the parser boundary; arrays, strings and recursion depth are bounded. |
 | Exfiltration similarity matching inert | Needs decision | Below. |
 | Session state is in memory and lost on restart | Accepted limitation | MongoDB is the durable fallback; the review router merges both and takes the larger count per counter. Durable session truth is a larger change and is deferred. |
 | No endpoint agent | Accepted limitation | All telemetry originates from the browser console. Building one is a scope decision, not an engineering task. |
