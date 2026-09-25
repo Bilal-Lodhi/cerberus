@@ -131,8 +131,19 @@ function mongoOrderedMcp() {
   };
 }
 
-/** A KEYSTROKE event, so ingest has something to count. */
-function keystrokeEvent(sessionId: string, eventId: string): Record<string, unknown> {
+/**
+ * A KEYSTROKE event, so ingest has something to count.
+ *
+ * `deltaMs` is a parameter because the dedup fingerprint is built from the event
+ * type and payload only — **not** from `eventId` — so two events with identical
+ * payloads are treated as one. Varying the payload is what makes two events
+ * genuinely distinct here.
+ */
+function keystrokeEvent(
+  sessionId: string,
+  eventId: string,
+  deltaMs = 120,
+): Record<string, unknown> {
   return {
     eventId,
     sessionId,
@@ -141,7 +152,7 @@ function keystrokeEvent(sessionId: string, eventId: string): Record<string, unkn
     vectorId: "tv-1",
     eventType: "KEYSTROKE",
     timestamp: new Date().toISOString(),
-    payload: { deltaMs: 120 },
+    payload: { deltaMs },
     clientMetadata: {
       userAgent: "test",
       ipAddress: "127.0.0.1",
@@ -441,3 +452,209 @@ describe("fullscreenExitCount durability", () => {
     assert.equal(entry!["fullscreenExitCount"], 2);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// A restart must not reset durable totals
+// ═══════════════════════════════════════════════════════════════════
+
+describe("counter hydration across a restart", () => {
+  let stub: FetchStub;
+  let mcp: ReturnType<typeof mongoOrderedMcp>;
+
+  /** The counters a previous process left behind. */
+  const DURABLE = {
+    eventCount: 40,
+    pasteCount: 20,
+    tabSwitchCount: 8,
+    fullscreenExitCount: 3,
+    copyAttemptCount: 5,
+    peakRiskScore: 61,
+  };
+
+  beforeEach(() => {
+    resetAIProvider();
+    mcp = mongoOrderedMcp();
+    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+  });
+
+  afterEach(() => {
+    stub.restore();
+    resetAIProvider();
+  });
+
+  function seed(sessionId: string, overrides: Record<string, unknown> = {}): void {
+    mcp.seedSession({
+      sessionId,
+      status: "active",
+      employeeId: "op-trader-001",
+      auditId: "audit-2026-q1",
+      ...DURABLE,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      ...overrides,
+    });
+  }
+
+  async function ingest(
+    app: ReturnType<typeof createApp>,
+    sessionId: string,
+    eventId: string,
+    eventType = "KEYSTROKE",
+    deltaMs = 120,
+  ): Promise<void> {
+    const res = await app.request("/api/v1/guardian/ingest", {
+      method: "POST",
+      headers: authorizedHeaders(),
+      body: JSON.stringify({
+        events: [
+          {
+            ...keystrokeEvent(sessionId, eventId, deltaMs),
+            eventType,
+            payload: eventType === "KEYSTROKE" ? { deltaMs } : {},
+          },
+        ],
+      }),
+    });
+    assert.equal(res.status, 200);
+  }
+
+  /** The counts object the API sent to the persistence layer. */
+  function lastCountsPayload(): Record<string, unknown> {
+    const call = [...stub.calls]
+      .reverse()
+      .find((entry) => entry.url.endsWith("/tools/update_session_counts"));
+    assert.ok(call, "update_session_counts was never called");
+    return (call!.body as { counts: Record<string, unknown> }).counts;
+  }
+
+  test("the first batch after a restart does not reset the counters", async () => {
+    seed("ses-hydrate");
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    await ingest(fresh, "ses-hydrate", "e1");
+
+    const counts = lastCountsPayload();
+    assert.equal(
+      counts["eventCount"],
+      DURABLE.eventCount + 1,
+      "the durable event total was replaced by the post-restart count",
+    );
+    assert.equal(counts["pasteCount"], DURABLE.pasteCount);
+    assert.equal(counts["tabSwitchCount"], DURABLE.tabSwitchCount);
+    assert.equal(counts["fullscreenExitCount"], DURABLE.fullscreenExitCount);
+    assert.equal(counts["copyAttemptCount"], DURABLE.copyAttemptCount);
+  });
+
+  test("the counters accumulate on top of the durable totals", async () => {
+    seed("ses-accumulate");
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    // Distinct payloads, because the fingerprint does not include eventId.
+    await ingest(fresh, "ses-accumulate", "e1", "KEYSTROKE", 100);
+    await ingest(fresh, "ses-accumulate", "e2", "KEYSTROKE", 200);
+    await ingest(fresh, "ses-accumulate", "e3", "KEYSTROKE", 300);
+
+    assert.equal(lastCountsPayload()["eventCount"], DURABLE.eventCount + 3);
+  });
+
+  test("a hydrated session keeps its durable status", async () => {
+    // A locked session must not come back as `active` just because the process
+    // restarted; the durable document is the authority.
+    seed("ses-locked-hydrate", { status: "locked" });
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    await ingest(fresh, "ses-locked-hydrate", "e1");
+
+    const detail = await fresh.request("/api/v1/guardian/sessions/ses-locked-hydrate", {
+      headers: authorizedHeaders(),
+    });
+    const body = (await detail.json()) as { session: { status: string } };
+    assert.equal(body.session.status, "locked");
+  });
+
+  test("hydration seeds counters only, not evidence", async () => {
+    // The event array and reconstructed workspace are rebuilt from where they
+    // actually live, so hydration must not invent a staler copy.
+    seed("ses-hydrate-scope");
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    await ingest(fresh, "ses-hydrate-scope", "e1");
+
+    const detail = await fresh.request("/api/v1/guardian/sessions/ses-hydrate-scope", {
+      headers: authorizedHeaders(),
+    });
+    const body = (await detail.json()) as {
+      session: { eventCount: number; currentCode: string };
+    };
+
+    assert.equal(body.session.eventCount, DURABLE.eventCount + 1);
+    assert.equal(
+      body.session.currentCode,
+      "",
+      "hydration invented workspace content it did not have",
+    );
+  });
+
+  test("hydration does not re-seed over newer in-memory counters", async () => {
+    seed("ses-no-reseed");
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    await ingest(fresh, "ses-no-reseed", "e1", "KEYSTROKE", 100);
+    const afterFirst = lastCountsPayload()["eventCount"] as number;
+
+    // The stub merges counts into the document, so the durable value is now
+    // higher. A second hydration would re-read it and double-count.
+    await ingest(fresh, "ses-no-reseed", "e2", "KEYSTROKE", 200);
+
+    assert.equal(lastCountsPayload()["eventCount"], afterFirst + 1);
+  });
+
+  test("the durable counters are monotonic at the storage layer", async () => {
+    // Even without hydration, `$max` means a lower value cannot overwrite a
+    // higher one. The builder is asserted directly in persistence-naming.test.ts;
+    // this checks the API's payload never carries a value below the durable floor.
+    seed("ses-monotonic");
+    const fresh = createApp(makeConfigWithTtl(3600));
+
+    await ingest(fresh, "ses-monotonic", "e1");
+
+    const counts = lastCountsPayload();
+    for (const key of [
+      "eventCount",
+      "pasteCount",
+      "tabSwitchCount",
+      "fullscreenExitCount",
+      "copyAttemptCount",
+    ] as const) {
+      assert.ok(
+        (counts[key] as number) >= DURABLE[key],
+        `${key} was sent below its durable floor`,
+      );
+    }
+  });
+
+  test("ingestion still succeeds when the durable document cannot be read", async () => {
+    // Hydration is best-effort: the storage layer's `$max` is the backstop, so a
+    // failed read must degrade rather than fail the batch.
+    mcp.seedSession({ sessionId: "ses-no-hydrate", status: "active" });
+    stub.restore();
+    stub = installFetchStub({
+      mcpResponse: (tool, body) => {
+        if (tool === "get_session_review") throw new Error("mongo unreachable");
+        return mcp.handler(tool, body);
+      },
+    });
+
+    const fresh = createApp(makeConfigWithTtl(3600));
+    const res = await fresh.request("/api/v1/guardian/ingest", {
+      method: "POST",
+      headers: authorizedHeaders(),
+      body: JSON.stringify({ events: [keystrokeEvent("ses-no-hydrate", "e1")] }),
+    });
+
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { success: boolean };
+    assert.equal(body.success, true);
+  });
+});
+

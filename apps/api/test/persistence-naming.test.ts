@@ -15,7 +15,11 @@ import {
   COLLECTION_NAMES,
   DEFAULT_DATABASE_NAME,
 } from "../../../packages/mcp-mongodb/src/tool-names.js";
-import { DEFAULT_COLLECTIONS, compact } from "../../../packages/mcp-mongodb/src/mongo-client.js";
+import {
+  DEFAULT_COLLECTIONS,
+  buildSessionCountsUpdate,
+  compact,
+} from "../../../packages/mcp-mongodb/src/mongo-client.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MCP_SRC = join(here, "..", "..", "..", "packages", "mcp-mongodb", "src");
@@ -133,8 +137,98 @@ describe("partial updates never write BSON null", () => {
     assert.match(source, /async updateSession\([\s\S]{0,200}\$set: \{ \.\.\.compact\(update\)/);
     assert.match(
       source,
-      /async updateSessionCounts\([\s\S]{0,700}\$set: \{ \.\.\.compact\(counts\)/,
+      /async updateSessionCounts\([\s\S]{0,300}buildSessionCountsUpdate\(counts\)/,
+      "updateSessionCounts no longer routes through the shared builder",
     );
+  });
+});
+
+describe("the aggregate-counter update document", () => {
+  // Asserted on the built document rather than on the source text: this shape
+  // caused a real incident, and the behaviour is what matters.
+  test("counters are applied with $max, never $set", () => {
+    const update = buildSessionCountsUpdate({
+      eventCount: 3,
+      pasteCount: 2,
+      tabSwitchCount: 1,
+      fullscreenExitCount: 4,
+      copyAttemptCount: 0,
+      peakRiskScore: 88,
+    });
+
+    assert.deepEqual(update["$max"], {
+      eventCount: 3,
+      pasteCount: 2,
+      tabSwitchCount: 1,
+      fullscreenExitCount: 4,
+      copyAttemptCount: 0,
+      peakRiskScore: 88,
+    });
+
+    const set = update["$set"] as Record<string, unknown>;
+    for (const counter of [
+      "eventCount",
+      "pasteCount",
+      "tabSwitchCount",
+      "fullscreenExitCount",
+      "copyAttemptCount",
+      "peakRiskScore",
+    ]) {
+      assert.ok(!(counter in set), `${counter} was written with $set, so it can regress`);
+    }
+  });
+
+  test("an absent status is not written at all", () => {
+    // Spreading `undefined` into `$set` writes BSON null and clobbered a stored
+    // status. The field must be absent from the update document entirely.
+    const update = buildSessionCountsUpdate({ eventCount: 1 });
+    const set = update["$set"] as Record<string, unknown>;
+
+    assert.ok(!("status" in set), "an absent status was written into $set");
+  });
+
+  test("a supplied status is set", () => {
+    const update = buildSessionCountsUpdate({ eventCount: 1, status: "locked" });
+    assert.equal((update["$set"] as Record<string, unknown>)["status"], "locked");
+  });
+
+  test("counters and status can be updated in one write", () => {
+    // `$set` and `$max` must not name the same path, or MongoDB rejects the
+    // update outright.
+    const update = buildSessionCountsUpdate({
+      eventCount: 5,
+      pasteCount: 1,
+      status: "active",
+    });
+
+    const setPaths = Object.keys(update["$set"] as Record<string, unknown>);
+    const maxPaths = Object.keys(update["$max"] as Record<string, unknown>);
+    assert.equal(
+      setPaths.filter((path) => maxPaths.includes(path)).length,
+      0,
+      "a path is in both $set and $max",
+    );
+  });
+
+  test("an omitted optional counter is not written", () => {
+    const update = buildSessionCountsUpdate({ eventCount: 2 });
+    const max = update["$max"] as Record<string, unknown>;
+
+    assert.deepEqual(Object.keys(max), ["eventCount"]);
+  });
+
+  test("a zero counter is preserved, not dropped as falsy", () => {
+    // `compact` drops `undefined`, not `0`. A zeroed counter is a real value.
+    const update = buildSessionCountsUpdate({
+      eventCount: 0,
+      copyAttemptCount: 0,
+    });
+    assert.equal((update["$max"] as Record<string, unknown>)["copyAttemptCount"], 0);
+  });
+
+  test("every update carries an updatedAt", () => {
+    const update = buildSessionCountsUpdate({ eventCount: 1 });
+    assert.ok((update["$set"] as Record<string, unknown>)["updatedAt"] instanceof Date);
   });
 });
 
