@@ -1,3 +1,56 @@
+# Migration
+
+Two different things are called "migration" here, and they are unrelated:
+
+1. **Schema and data migrations** — Cerberus ships a migration framework that
+   brings an existing database up to date. See
+   [Schema and data migrations](#schema-and-data-migrations) below, and
+   [operations/upgrade.md](operations/upgrade.md) for the procedure.
+2. **The historical rename** — this repository is a fresh extraction that uses
+   Cerberus-native names throughout. There is no compatibility shim for the old
+   names. That is the rest of this document.
+
+## Schema and data migrations
+
+The framework is `packages/mcp-mongodb/src/migrations.ts`. It exists because the
+first durable-identity change was not a pure addition: creating a unique index on
+`(sessionId, eventId)` **fails** on a database that already holds duplicates, and
+those duplicates are exactly what the pre-fix ingestion path produced. Without a
+migration, that deployment could not start.
+
+What it guarantees:
+
+| Property | How |
+| --- | --- |
+| **Ordered, append-only** | `MIGRATIONS` is a list; order comes from position, so there is no numeric prefix to get wrong. |
+| **Idempotent** | Applying twice is a no-op, and the ledger is not what makes it so — a crash between the work and the ledger write must be recoverable. |
+| **Fails before mutating** | A migration that cannot complete safely throws *before* writing, so a failure leaves the database as it was. |
+| **Never silently destructive** | A migration that removes documents records how many, and refuses rather than guessing when documents disagree. |
+| **Never applied twice** | `schema_migrations` records each applied id; an id the build does not know about is refused, because the code would be older than the data. |
+| **Inspectable first** | `npm run migrate:dry-run` prints the plan, marking migrations that rewrite data, and changes nothing. |
+
+There are **no down-migrations**. Reversing a data migration is usually impossible
+to do honestly — the removed rows are gone — so the registry's type has no `down`
+member. Rolling back means restoring a backup.
+
+Migrations run **before** index creation, and the order is load-bearing: the unique
+identity index cannot be built over duplicates, so creating indexes first would
+turn a repairable database into one that will not start.
+
+### Current migrations
+
+| Id | Rewrites data | What it does |
+| --- | --- | --- |
+| `0001-dedupe-micro-event-identity` | yes | Removes `micro_events` documents that share `(sessionId, eventId)` **and are otherwise identical**, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
+
+### Collections
+
+| Collection | Holds |
+| --- | --- |
+| `schema_migrations` | The migration ledger: which migrations this database has had applied, when, and what each reported. |
+
+---
+
 # Migration from the historical schema
 
 This repository is a fresh extraction of the Cerberus codebase. It uses
