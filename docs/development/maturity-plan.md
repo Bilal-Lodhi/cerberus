@@ -109,11 +109,47 @@ strong engineering rationale recorded here:
 | G | Local performance baseline exists | Done — [performance-baseline.md](performance-baseline.md) with `npm run bench`, measured p50/p95/p99 per case. Its first finding (a quadratic ingest cost) was a benchmark artifact and is corrected in the document; its real finding — unbounded in-memory session state — is fixed and proved by a length assertion |
 | H | Health and readiness semantics are coherent | Done — `/health` is liveness and checks nothing; `/ready` checks persistence and answers 503. The MCP adapter exposes the same pair, and the Dockerfile and compose probe `/ready`. [operations/health-probes.md](../operations/health-probes.md) records which belongs in each slot |
 | I | Backup, restore and upgrade documentation exists | Done — [operations/backup-restore.md](../operations/backup-restore.md) with two verified scripts (the restore compares counts against a manifest), and [operations/upgrade.md](../operations/upgrade.md) for the migration procedure. The drill was run end to end against real MongoDB |
-| J | Corpus-management workflow usable without hand-writing raw HTTP | Not started |
-| K | No new P0/P1 correctness or security defects remain | Not started |
-| L | CI stays green | Not started |
-| M | Threat model and documentation match reality | Not started |
-| N | A coherent `v0.2.0` release candidate can be described without hand-waving | Not started |
+| J | Corpus-management workflow usable without hand-writing raw HTTP | Done — a dashboard panel lists, adds and removes corpus documents and validates against the API's limits before sending. The assessment, and what the corpus is *not*, are in [operations/corpus-management.md](../operations/corpus-management.md) |
+| K | No new P0/P1 correctness or security defects remain | Done — six real defects were found and fixed during the phase (see below). The known remaining items are all P2 or lower, and each is named rather than omitted |
+| L | CI stays green | Done — every required check passed on every pull request in this phase: TypeScript (build, typecheck, test), Flutter console (analyze, test), Docker build, Secret scan, and the advisory dependency audit |
+| M | Threat model and documentation match reality | Done — the threat model was rewritten where reality changed (retry idempotency is not replay protection; rate limiting is a per-process backstop; rotation has an overlap but still no key identity), and every relative link and anchor in every tracked `*.md` resolves |
+| N | A coherent `v0.2.0` release candidate can be described without hand-waving | Done — [release/v0.2.0-release-notes.md](../release/v0.2.0-release-notes.md) and [release/v0.2.0-checklist.md](../release/v0.2.0-checklist.md), both marked draft, plus [migration-v0.1-to-v0.2.md](../migration-v0.1-to-v0.2.md). **Nothing is published** |
+
+### Defects found and fixed during this phase
+
+Recorded here because criterion K is a claim about defects, and a claim without the
+list is not checkable. Four of these were invisible to the 319-test suite that existed
+at the start, for the same reason each time: **a test double that did not match the
+real store.**
+
+| Defect | Severity | How it was found |
+| --- | --- | --- |
+| A restart reset a session's durable counters — 40 events and 20 pastes came back as 1 and 1 | P0 | The session-state inventory |
+| A batch retried after a restart was stored and counted twice | P0 | The session-state inventory |
+| The session review reported the **oldest** risk assessment as `finalRiskScore`, and derived `flagged` from it | P0 | The inventory; a stub that returned assessments in insertion order while MongoDB sorts newest-first |
+| Content dedup applied to signal events, silently dropping legitimate telemetry | P1 | A test asserting two distinct `eventId`s with identical payloads are both accepted |
+| `fullscreenExitCount` was never persisted, so a restart reset it and disabled both its analysis trigger and its score penalty | P1 | The inventory |
+| `session.events` and `session.keystrokeDeltas` were unbounded, and `Math.max(...deltas)` threw `RangeError` past ~100 000 entries | P1 | The performance baseline |
+
+Two further defects were found in tooling rather than product code: `verify-all.ps1`
+could not run in its documented dev-mode form, and the backup script's `docker cp`
+nested the dump one level too deep.
+
+**One reported defect was withdrawn.** The performance baseline's headline finding — a
+quadratic ingest cost — was an artifact of the benchmark's own stub, and is corrected
+in the document rather than deleted. See
+[performance-baseline.md](performance-baseline.md#the-stubs-must-match-the-real-stores-bounds).
+
+### Known remaining items, all P2 or lower
+
+| Item | Why it is not P1 |
+| --- | --- |
+| No central session transition path; status can still diverge between the two in-memory maps and MongoDB | A design gap, not a defect that manifests in the tested paths. Recorded in the session-state model |
+| No partial-failure semantics for a persistence-succeeds-cache-fails operation | Same |
+| The 200-document corpus ceiling is a read ceiling, not a store rejection — a 201st document is stored and then invisible | A rough edge, documented; the console prevents reaching it |
+| `update_session_terminal_content` is a published MCP capability the API never calls | Not dead code — the MCP server is a public interface — but the API does not use it, and the review path recovers the workspace from the newest assessment's `codeSnapshot` |
+| `WINDOW_BLUR` increments the fullscreen-exit counter, so the counter means "focus was lost" | Renaming it changes scoring and console wording; a contract change, not a defect |
+| Ingest carries up to 500 events from the review fetch on every request | A bounded optimisation opportunity, measured and recorded |
 
 Work is ordered P0 first: durable session truth and restart consistency, replay
 and idempotency, key rotation, rate limiting, migration safety. Then P1:
