@@ -22,7 +22,7 @@ import {
   createToolRegistry,
   type ToolHandler,
 } from "./tools.js";
-import { MCP_TOOL_NAMES } from "./tool-names.js";
+import { MCP_SERVER_VERSION, MCP_TOOL_NAMES } from "./tool-names.js";
 
 // ─── Configuration ───────────────────────────────────────────────────
 
@@ -149,10 +149,49 @@ async function handleRequest(
   const url = new URL(req.url ?? "/", `http://${BIND_HOST}:${PORT}`);
   const path = url.pathname;
 
-  // Health is unauthenticated so container orchestrators can probe it.
+  // Both probes are unauthenticated so orchestrators and load balancers can reach
+  // them without holding the shared token. Neither exposes configuration values.
+  //
+  //   GET /health   liveness.  Always 200 while the adapter answers HTTP. Checks
+  //                            nothing, so a MongoDB outage cannot cause a restart
+  //                            loop.
+  //   GET /ready    readiness. 200 when MongoDB answers a ping, 503 when it does
+  //                            not, so a load balancer stops routing here.
   if (req.method === "GET" && path === "/health") {
-    const result = await tools[MCP_TOOL_NAMES.HEALTH_CHECK]?.({});
-    sendJson(req, res, 200, result);
+    sendJson(req, res, 200, {
+      status: "healthy",
+      service: "cerberus-mcp-mongodb",
+      version: MCP_SERVER_VERSION,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/ready") {
+    const startedAt = Date.now();
+    let ready = false;
+    let detail: string | undefined;
+
+    try {
+      const result = (await tools[MCP_TOOL_NAMES.HEALTH_CHECK]?.({})) as
+        | { connected?: boolean; healthy?: boolean }
+        | undefined;
+      ready = result?.connected !== false && result?.healthy !== false;
+      if (!ready) detail = "MongoDB is not reachable";
+    } catch (error) {
+      detail = error instanceof Error ? error.message : "unknown error";
+    }
+
+    sendJson(req, res, ready ? 200 : 503, {
+      status: ready ? "ready" : "not_ready",
+      ready,
+      service: "cerberus-mcp-mongodb",
+      version: MCP_SERVER_VERSION,
+      latencyMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+      ...(detail ? { detail } : {}),
+    });
     return;
   }
 
