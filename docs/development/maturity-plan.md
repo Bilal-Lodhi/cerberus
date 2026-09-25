@@ -174,17 +174,22 @@ Ordered by the value of the outcome, not by effort.
      expired" although nothing expired it. Handles now expire after 12 hours and
      the registry evicts expired entries, then the oldest, at a ceiling of 100.
 
+   - `OpenAIProvider.isFatal()` decided fatality by substring-matching the error
+     message for `"401"` / `"403"`. Any error whose text happened to contain those
+     digits — a token count, a request id, a URL — was treated as an
+     authentication failure and skipped the retry budget. It is now classified
+     from the SDK error's HTTP status and machine-readable `code`.
+   - `toMongoPipeline` used a raw `JSON.parse`, so a pipeline the model wrapped in
+     a markdown fence or a sentence was discarded even though the rest of the
+     boundary exists to tolerate exactly that. It now uses the same recovery
+     ladder as every other model-reading path.
+
    **Open:**
 
    - The MCP adapter's `parseBody` destroys an oversized request without
      resolving its promise and without returning a distinct status, so an
      oversized body surfaces as a confusing missing-argument 400 rather than a
      413.
-   - `OpenAIProvider.isFatal()` decides fatality by substring-matching the error
-     message for `"401"` / `"403"`, which a token count containing those digits
-     would match.
-   - `toMongoPipeline` uses a raw `JSON.parse` rather than the defensive parsing
-     ladder the rest of the provider boundary uses.
 
    **In progress.**
 2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference

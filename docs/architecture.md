@@ -408,6 +408,11 @@ Boundary by boundary:
   (strip markdown fences → `JSON.parse` → repair trailing commas and control
   characters → extract the first balanced JSON object) and every field is
   coerced. A parse failure in the scenario classifier is treated as a rejection.
+  Every model-reading path uses that same recovery ladder, including the
+  auditor's pipeline translation. Retry fatality is classified from the SDK
+  error's HTTP status and machine-readable `code` rather than by searching the
+  message text, so a token count or request id containing `401` cannot be
+  mistaken for an authentication failure.
 - **API → MCP adapter.** A shared-secret bearer token
   (`CERBERUS_MCP_TOKEN`), compared in constant time. The adapter binds to
   `127.0.0.1` by default. It emits no CORS headers at all unless
