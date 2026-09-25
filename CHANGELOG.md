@@ -167,6 +167,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A restart reset a session's durable counters. `update_session_counts` was
+  applied with `$set`, so the durable totals were whatever the API held in memory
+  — and a restarted process held counters starting at zero. Its first write
+  replaced a session's lifetime totals with the post-restart ones: 40 events and
+  20 pastes came back as 1 and 1. Counters are now **hydrated** from the durable
+  document before any event is applied, and applied with **`$max`** at the storage
+  layer so a durable total cannot regress even if the caller sends a lower value.
+  Verified across a real process restart: five events before, one after, and the
+  durable `eventCount` reads 6 with `tabSwitchCount` and `fullscreenExitCount`
+  intact.
+- `SessionState.eventCount` was declared, initialised to zero and never read. It
+  now means "events accepted for this session, including before this process
+  started", and is what the durable `eventCount` is written from.
 - The session review reported the **oldest** risk assessment as the final one.
   `MongoStore.getRiskAssessments()` sorts `{ generatedAt: -1 }` — newest first —
   while the review route read `reports[reports.length - 1]` as "the last report".
