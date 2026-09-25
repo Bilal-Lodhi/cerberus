@@ -359,10 +359,17 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       if (!Array.isArray(events)) {
         throw new ToolArgumentError("Missing required parameter: events (array)");
       }
-      const processedCount = await store.ingestMicroEvents(
-        events as Record<string, unknown>[],
-      );
-      return { success: true, processedCount };
+      const batch = events as Record<string, unknown>[];
+      const { acceptedEventIds, duplicateEventIds } = await store.ingestMicroEvents(batch);
+      return {
+        success: true,
+        // `processedCount` keeps its old meaning for existing callers: the size
+        // of the batch. `acceptedEventIds` is what tells a caller which events
+        // were actually new, so a retry does not inflate in-memory counters.
+        processedCount: batch.length,
+        acceptedEventIds,
+        duplicateEventIds,
+      };
     },
 
     [MCP_TOOL_NAMES.STORE_RISK_ASSESSMENT]: async (body) => {
