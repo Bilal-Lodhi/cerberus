@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the console `severityMix` work (see `CHANGELOG.md`
+Last updated for the request-surface bounds work (see `CHANGELOG.md`
 `[Unreleased]`).
 
 ## Current state
@@ -132,18 +132,53 @@ Ordered by the value of the outcome, not by effort.
    body limits, the provider boundary, MongoDB query construction, session
    lifecycle, telemetry validation, the auditor whitelist, notifications and the
    console, answering the questions in the audit checklist rather than assuming
-   the answers. Confirmed findings so far, both unremediated:
-   - The API has **no request body size limit** — `@hono/node-server` exposes no
-     `bodyLimit` option and none is configured, so the architecture document's
-     "8 MiB body cap" applies only to the MCP sidecar downstream of a body the API
-     has already buffered in full. Hono ships a `body-limit` middleware, so the
-     fix needs no new dependency.
+   the answers.
+
+   **Remediated:**
+
+   - The API had **no request body size limit at all** — `@hono/node-server`
+     exposes no `bodyLimit` option and none was configured, so every route read
+     whatever the caller sent. Hono's built-in `body-limit` middleware now
+     refuses anything above `CERBERUS_MAX_BODY_BYTES` (default 8 MiB) with
+     `413 PAYLOAD_TOO_LARGE`, before the auth middleware, so it applies to
+     authenticated and unauthenticated callers alike. No new dependency.
+   - Fields that reach a paid provider were unbounded. `prompt` (8 000 chars),
+     `roleContext` (200), `question` (2 000) and telemetry batches (1 000 events)
+     are now capped before any inference or persistence happens.
+   - The auditor passed whatever the model's pipeline produced to the summariser,
+     with no ceiling. It is now truncated to 200 records regardless of `$limit`.
+   - `POST /api/v1/identity/set` cast a field to a string and called `.trim()` on
+     it, so a numeric `displayName` threw inside the handler and surfaced as an
+     unhandled 500. It now returns `400 INVALID_IDENTITY_FIELD`, and identity
+     fields are length-capped.
+
+   **Open:**
+
    - Model-supplied numeric fields are **not clamped** by the parsers.
      `parseRiskAssessment` accepts any finite number for `overallRiskScore`,
      `dimensionScores.*` and `flags[].confidence`, and `guardian.ts` only caps the
      blended score at the top. A negative or absurd model score flows through
-     unclamped.
-   **Planned.**
+     unclamped. `behavioralAnomalies` and `exfiltrationReport` are cast to their
+     contract types without field-level validation.
+   - Outbound notifications have **no timeout**. `notifySlack` and `sendEmail`
+     call `fetch` with no `AbortSignal`, and ingestion awaits both before
+     returning, so a hung webhook stalls the ingest request for as long as the
+     socket stays open.
+   - The identity registry is an unbounded in-memory `Map`. Every
+     `POST /api/v1/identity/set` adds an entry that is never evicted, and the
+     `GET /me` handler describes its handle as "unknown or expired" although
+     nothing expires it.
+   - The MCP adapter's `parseBody` destroys an oversized request without
+     resolving its promise and without returning a distinct status, so an
+     oversized body surfaces as a confusing missing-argument 400 rather than a
+     413.
+   - `OpenAIProvider.isFatal()` decides fatality by substring-matching the error
+     message for `"401"` / `"403"`, which a token count containing those digits
+     would match.
+   - `toMongoPipeline` uses a raw `JSON.parse` rather than the defensive parsing
+     ladder the rest of the provider boundary uses.
+
+   **In progress.**
 2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
    completion source is a stub returning `[]`, so `ExfiltrationReport` matches
    are always empty while the threshold is still parsed and documented. Either
@@ -161,6 +196,7 @@ so the maturity picture is in one place.
 | Gap | Status | Note |
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` enforcement | Implemented | Issue #3. Expiry bounds liveness only; historical documents are retained. |
+| Request body size limit | Implemented | `CERBERUS_MAX_BODY_BYTES`, default 8 MiB, enforced before buffering. |
 | Exfiltration similarity matching inert | Needs decision | Below. |
 | Session state is in memory and lost on restart | Accepted limitation | MongoDB is the durable fallback; the review router merges both and takes the larger count per counter. Durable session truth is a larger change and is deferred. |
 | No endpoint agent | Accepted limitation | All telemetry originates from the browser console. Building one is a scope decision, not an engineering task. |

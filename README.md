@@ -230,6 +230,7 @@ refuses to boot when a mandatory secret is missing.
 | --- | --- | --- |
 | **Server** | | |
 | `PORT` | `8080` | API listen port. |
+| `CERBERUS_MAX_BODY_BYTES` | `8388608` | Maximum request body size in bytes (8 MiB). Refused with `413 PAYLOAD_TOO_LARGE` before buffering. Must be a positive whole number of bytes. |
 | **AI provider** | | |
 | `OPENAI_API_KEY` | — | **Required.** |
 | `OPENAI_MODEL_NAME` | `gpt-5.6` | Model id sent to Chat Completions. |

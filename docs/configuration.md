@@ -20,10 +20,34 @@ the working directory.
 | Variable | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |
 | `PORT` | integer | `8080` | No | API listen port. A non-numeric value silently falls back to the default. |
+| `CERBERUS_MAX_BODY_BYTES` | positive integer (bytes) | `8388608` (8 MiB) | No | Maximum accepted request body size. Enforced before the body is buffered, for authenticated and unauthenticated callers alike. Must be a positive whole number of bytes or the process exits with a `ConfigError`. |
 
 Security note: the API listens on all interfaces; `PORT` is the only control
 over where it is reachable. Bind restrictions are the job of the container
 runtime, firewall or reverse proxy.
+
+`CERBERUS_MAX_BODY_BYTES` is a request-buffering bound, not a retention policy:
+an oversized request is refused with HTTP 413 and code `PAYLOAD_TOO_LARGE`, and
+nothing is truncated. It is applied before the authentication middleware, so an
+oversized body is rejected without being read into memory whether or not the
+caller holds a credential. The default deliberately matches the 8 MiB ceiling the
+MCP adapter applies to its own bodies, so a request the API admits cannot be
+rejected downstream for size.
+
+Per-field caps sit below this and are not configurable, because they bound what
+reaches a paid provider rather than what the process buffers:
+
+| Field | Cap | Endpoint |
+| --- | --- | --- |
+| `prompt` | 8 000 characters | `POST /api/v1/scenarios` |
+| `roleContext` | 200 characters | `POST /api/v1/scenarios` |
+| `question` | 2 000 characters | `POST /api/v1/auditor/query` |
+| `events` | 1 000 entries per batch | `POST /api/v1/guardian/ingest` |
+| `displayName`, `employeeId`, `role`, `department` | 200 characters each | `POST /api/v1/identity/set` |
+
+The auditor also caps its result set at 200 records regardless of what pipeline
+the model produces, so a pipeline without a `$limit` cannot pass every session to
+the provider.
 
 ## 2. AI provider
 

@@ -125,7 +125,9 @@ so container orchestrators can probe it.
   revocation list and no rotation tooling.
 - **No rate limiting.** Nothing throttles authentication attempts or ingestion
   volume at the application level. `scripts/stress-telemetry.ps1` exists
-  precisely because bursts are expected.
+  precisely because bursts are expected. `CERBERUS_MAX_BODY_BYTES` bounds how
+  large one request may be, not how many requests arrive: a caller can still
+  issue an unlimited number of requests within that size.
 - **No brute-force lockout or alerting.** Failed authentications are not counted
   or surfaced.
 - **No authorization.** Any authenticated caller can read every session, delete
@@ -175,6 +177,12 @@ These are the places where the code chooses to refuse rather than proceed:
 | Invalid `SESSION_TTL_SECONDS` | `loadConfig()` in `apps/api/src/config.ts` | `ConfigError`, process exits 1. Must be a positive whole number of seconds, so a misconfigured monitoring window cannot be silently replaced by a default. |
 | Telemetry for an expired session | `apps/api/src/routes/guardian.ts` | HTTP 409 `SESSION_EXPIRED`. The batch is not persisted and the monitoring window is not extended. |
 | Reactivating a terminated session | `apps/api/src/routes/guardian.ts` | HTTP 409 `SESSION_TERMINATED`. Termination is not reversible, so reactivation cannot resurrect a session that was deliberately stopped. |
+| Oversized API request body | `body-limit` middleware in `apps/api/src/index.ts` | HTTP 413 `PAYLOAD_TOO_LARGE` before the body is buffered. Runs ahead of the auth middleware, so it applies to authenticated and unauthenticated callers alike. |
+| Over-long `prompt` or `roleContext` | `apps/api/src/routes/scenarios.ts` | HTTP 400 before any inference is spent. |
+| Over-long auditor `question` | `apps/api/src/routes/auditor.ts` | HTTP 400 before any inference is spent. |
+| Over-sized telemetry batch | `apps/api/src/routes/guardian.ts` | HTTP 400 `BATCH_TOO_LARGE`; nothing reaches the persistence layer. |
+| Auditor result set above the ceiling | `apps/api/src/routes/auditor.ts` | Truncated to 200 records whatever pipeline the model produced, so a pipeline with no `$limit` cannot pass every session to the provider. |
+| Non-string or over-long identity field | `apps/api/src/routes/identity.ts` | HTTP 400 `INVALID_IDENTITY_FIELD`. |
 
 Deliberate **fail-open** behaviours, for completeness:
 
