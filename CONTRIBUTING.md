@@ -179,6 +179,31 @@ Use the body to explain why the change is needed, not to restate the diff.
 - Use the pull request template and fill in every section, including the scope
   boundaries and the exact commands you ran.
 
+## Maintainership and review
+
+**Cerberus currently has one maintainer.** There is no `CODEOWNERS` file, and
+that is a recorded decision rather than an oversight:
+
+- With a single maintainer, `CODEOWNERS` would route no review to anyone who is
+  not already the author of every change. It would be a file that looks like a
+  process without being one.
+- Every handle in a `CODEOWNERS` file has to be a real GitHub user or team.
+  Inventing entries to fill the paths would misrepresent who is accountable for
+  them.
+- A wildcard entry covering the whole repository would check a box without
+  changing who reviews what.
+
+Add `CODEOWNERS` when a second real owner relationship exists — someone who owns
+`apps/api/`, `packages/mcp-mongodb/`, `apps/console/` or `docs/` and will be
+asked to review it. At that point name the paths to real people, and update this
+section to say so.
+
+Until then, review is what it actually is: the maintainer reviews changes, and
+the required CI checks in `.github/workflows/ci.yml` are the gate that does not
+depend on anyone remembering to look. See
+[docs/compatibility.md](docs/compatibility.md) for what counts as a public
+contract and how a breaking change is handled.
+
 ## Licensing and contributor agreements
 
 No CLA is required to contribute to Cerberus.
