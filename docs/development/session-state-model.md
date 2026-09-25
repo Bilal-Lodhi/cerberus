@@ -50,7 +50,7 @@ and field that holds the authoritative value, if any.
 | `fullscreenExitCount` | A | `monitored_sessions.fullscreenExitCount` | `update_session_counts` | analysis triggers, `fullscreenPenalty`, `behavioralContext`, incident summary | Preserved (see §5 for the history) |
 | `copyAttemptCount` | A | `monitored_sessions.copyAttemptCount` | `update_session_counts` | analysis triggers, review, list | Preserved |
 | `lastRiskPayload` | B | `risk_assessments` (latest by `generatedAt`) | `store_risk_assessment` | session detail, review, notifications | Reconstructed on read; the in-memory copy is empty until the next analysis |
-| `eventCount` | A | `monitored_sessions.eventCount` | `update_session_counts` | list, review | Preserved |
+| `eventCount` | A | `monitored_sessions.eventCount` | `update_session_counts`, from the hydrated lifetime total | list, review | Preserved. Hydrated from the durable document and incremented per accepted event |
 | `status` | A | `monitored_sessions.status` | `set_session_status` | list, review, auto-lock decisions | Preserved |
 | `lastAnalyzedCodeHash` | C | — | in memory only | skips re-analysis of an unchanged workspace | Lost. Costs at most one extra analysis after a restart, and cannot lose evidence |
 | `recentEventFingerprints` | C | — | in memory only | suppresses replayed batches | Lost. A batch replayed after a restart is re-ingested; see §5 |
@@ -112,20 +112,63 @@ agreed with the route and disagreed with the database. The route now sorts the
 assessments itself, by `generatedAt`, rather than depending on the store's
 ordering — and the tests use a stub that orders the way MongoDB does.
 
-### 5.4 The dedup fingerprint ring does not survive a restart
+### 5.4 A restart used to reset the durable counters — fixed
+
+`update_session_counts` was applied with `$set`, so the durable totals were
+whatever the API happened to hold in memory. A restarted process held counters
+starting at zero, so its first write **replaced** the durable totals with the
+post-restart ones: a session with 40 events and 20 pastes came back as 1 and 1.
+The old comment claimed the write existed "so the console session list stays
+accurate after a restart"; it did the opposite.
+
+Two independent fixes, so neither the caller nor the database is a single point of
+failure:
+
+1. **Hydration.** Before any event is applied, a session entering `sessionStore`
+   for the first time in this process is seeded from its durable document —
+   counters and identity only. The event array, the reconstructed workspace and
+   the risk payload are deliberately *not* copied: they are rebuilt on read from
+   `micro_events` and `risk_assessments`, so copying them here would create a
+   second, staler copy.
+2. **`$max` at the storage layer.** Counters are applied with `$max`, never
+   `$set`. None of them can legitimately decrease, so the storage layer refuses to
+   let one regress even when the caller sends a lower value.
+
+Verified across a real process restart against real MongoDB: five events before,
+one after, and the durable `eventCount` reads **6**, with `tabSwitchCount` and
+`fullscreenExitCount` intact. Before the fix the same sequence produced **1**.
+
+`SessionState.eventCount` now means "events accepted for this session, including
+before this process started" — it was previously declared, initialised to zero and
+never read.
+
+### 5.5 The dedup fingerprint ring does not survive a restart
 
 `recentEventFingerprints` is a 128-entry `Set` in memory. A batch replayed after a
 restart is re-ingested: counters inflate and the events are written a second time.
 Within one process the ring works, which is why this was not visible.
 
-Bounded and explicit handling is the next item in this phase.
+### 5.6 The fingerprint ignores `eventId`
 
-### 5.5 `lastAnalyzedCodeHash` does not survive a restart
+`computeEventFingerprint()` builds its key from the event type and a slim payload
+view — **not** from `eventId`. Two genuinely distinct events with identical
+payloads are therefore treated as one, and the second is dropped. For `KEYSTROKE`
+that is wrong in principle: two keystrokes with the same inter-key delay are two
+keystrokes, not a replay.
+
+It also means the fingerprint is not an idempotency key and cannot become one
+without including the client-supplied identifier — which raises the question of
+how much that identifier can be trusted, since the monitored client supplies it.
+
+Recorded, not changed here: this is the replay and idempotency workstream, and the
+fix has to decide what a duplicate *is*, not only where the ring lives.
+
+### 5.7 `lastAnalyzedCodeHash` does not survive a restart
 
 Costs at most one redundant paid analysis per session after a restart. It cannot
 lose or corrupt evidence, so it is recorded here rather than prioritised.
 
-### 5.6 `WINDOW_BLUR` increments the fullscreen-exit counter
+### 5.8 `WINDOW_BLUR` increments the fullscreen-exit counter
 
 `applyEventToSession()` treats `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically.
 The counter therefore means "focus was lost", not "fullscreen was exited", which
@@ -164,12 +207,16 @@ Not authoritative, and never was: everything in §3 classified B, C or D.
 5. **A restart must not make a session look more recent than it is.** `updatedAt`
    is the durable activity signal; nothing in memory may override it with a
    client-supplied value.
+6. **A counter is monotonic.** Counters are hydrated before use and applied with
+   `$max`, so neither a restart nor a caller's bookkeeping can lower a durable
+   total.
 
 ## 8. What is still open
 
 Tracked in [maturity-plan.md](maturity-plan.md) against the phase exit condition:
 
-- replay handling that survives a restart (§5.4);
+- replay handling that survives a restart (§5.5), and what a duplicate *is*
+  (§5.6);
 - a single central transition path, so status cannot diverge between
   `sessionStore`, `activeSessions` and MongoDB;
 - partial-failure semantics for a session-changing operation whose persistence

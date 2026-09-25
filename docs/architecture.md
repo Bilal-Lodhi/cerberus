@@ -237,6 +237,11 @@ details:
   document is not the only durable home. `monitored_sessions.terminalContent` is
   never written, so the review's `terminalContent` recovers from the newest
   assessment's `codeSnapshot` rather than reporting an empty workspace.
+- **A restart does not reset the durable counters.** Before any event is applied,
+  a session entering `sessionStore` for the first time in this process is seeded
+  from its durable document — counters and identity only, never evidence. The
+  storage layer also applies counters with `$max`, so neither the caller's
+  bookkeeping nor a missed hydration can lower a durable total.
 
 Every session field, its class and its fate across a restart is inventoried in
 [development/session-state-model.md](development/session-state-model.md).
