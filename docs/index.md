@@ -31,6 +31,7 @@ phase progresses — backing up, restoring and upgrading.
 | [operations/reverse-proxy.md](operations/reverse-proxy.md) | Operators exposing Cerberus | What the proxy must own (TLS, per-caller limiting, unauthenticated throttling), why `X-Forwarded-For` is deliberately not trusted, a minimal nginx configuration, and what happens when you run more than one replica. |
 | [operations/upgrade.md](operations/upgrade.md) | Operators upgrading a deployment | Back up, read the migration plan, apply, restart, confirm — plus what to do when a migration refuses to run, why there are no down-migrations, and why the MCP adapter starts before the API. |
 | [operations/health-probes.md](operations/health-probes.md) | Operators, orchestrator config | Which of `/health` (liveness) and `/ready` (readiness) belongs in each probe slot and what goes wrong if they are swapped, what readiness reports, and why the probe is cached. |
+| [operations/backup-restore.md](operations/backup-restore.md) | Operators responsible for data | The backup and restore scripts, what a manifest makes verifiable, why `mongorestore` exits 0 when it restores nothing, what is deliberately not backed up, and the gaps this does not close (no scheduling, no point-in-time recovery, no off-host storage, no encryption). |
 
 ## Release preparation (`docs/release/`)
 
