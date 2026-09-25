@@ -167,6 +167,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The session review reported the **oldest** risk assessment as the final one.
+  `MongoStore.getRiskAssessments()` sorts `{ generatedAt: -1 }` — newest first —
+  while the review route read `reports[reports.length - 1]` as "the last report".
+  Against MongoDB that is the first assessment ever recorded, so `finalRiskScore`
+  was wrong and the derived `flagged` status was decided from a stale score. The
+  in-process test stub returned assessments in insertion order, so the suite
+  agreed with the route and disagreed with the database. The route now sorts the
+  assessments itself, by `generatedAt`, rather than depending on the store's
+  ordering, and the new tests use a stub that orders them the way MongoDB does.
+- `monitored_sessions.terminalContent` is never written — no route calls
+  `update_session_terminal_content` — so after a restart the session review
+  reported an empty workspace even though the newest risk assessment holds the
+  identical content in `codeSnapshot`. The review route now falls back to it. The
+  evidence was always durable; only the view lost it.
+- `fullscreenExitCount` was never persisted. The counter drives the
+  fullscreen-exit analysis trigger and its score penalty, but it was absent from
+  the `update_session_counts` payload, so MongoDB never learned it and a restart
+  reset it to 0 — silently disabling both. It is now written, read back, and
+  exposed on both session-list paths and in the review list.
 - Corrected two documentation claims that the code had already outgrown.
   `docs/architecture.md` and `docs/migration.md` both stated that session
   creation writes the status `in_progress`; it does not. Sessions are created as

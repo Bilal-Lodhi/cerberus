@@ -100,8 +100,8 @@ strong engineering rationale recorded here:
 
 | # | Criterion | State |
 | --- | --- | --- |
-| A | Durable session truth materially improved | Not started |
-| B | Restart recovery deterministic and documented | Not started |
+| A | Durable session truth materially improved | In progress — inventory complete; review ordering, restart evidence recovery and the missing `fullscreenExitCount` counter fixed. Counter hydration and monotonic durable counters remain |
+| B | Restart recovery deterministic and documented | In progress — [session-state-model.md](session-state-model.md) documents it; the restart suite grows with each fix |
 | C | Rate limiting exists for expensive and high-risk paths | Not started |
 | D | Replay handling explicit and tested | Not started |
 | E | API-key rotation has a safe documented path | Not started |

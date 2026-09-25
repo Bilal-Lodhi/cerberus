@@ -18,6 +18,7 @@ Cerberus is and how to run it, then come back here for depth.
 | [migration.md](migration.md) | Anyone with historical data or client code | Historical → current MongoDB collection names, MCP tool names and field names, plus what a one-off rename has to touch. Cerberus ships no migration tooling. |
 | [compatibility.md](compatibility.md) | Contributors, operators planning an upgrade | What counts as a public contract, the breaking-change and deprecation policies, versioning, supported runtimes, and the dependency and license policy with the current audit results. |
 | [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the active queue, accepted limitations and open decisions. |
+| [development/session-state-model.md](development/session-state-model.md) | Contributors, operators reasoning about restarts | Every piece of session state, its class (durable authority, reconstructable cache, ephemeral, derived), where its authority actually lives, and what a restart does to it. Written from the source. |
 
 ## Release preparation (`docs/release/`)
 

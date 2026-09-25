@@ -227,6 +227,19 @@ details:
   [configuration.md](configuration.md#session-lifetime-session_ttl_seconds).
 - The identity registry (`apps/api/src/routes/identity.ts`) is a separate
   per-process `Map` and also resets on restart.
+- **The review route sorts risk assessments itself.** `MongoStore.getRiskAssessments()`
+  returns them newest-first (`generatedAt: -1`), but every consumer in
+  `review.ts` wants "the latest" as the last element. Sorting explicitly at the
+  point of use means a change to the store's projection, index or sort cannot
+  silently reverse which assessment is treated as final — which is exactly what
+  happened: `finalRiskScore` reported the first assessment ever recorded.
+- **Recovery reads evidence from where it was actually written.** The session
+  document is not the only durable home. `monitored_sessions.terminalContent` is
+  never written, so the review's `terminalContent` recovers from the newest
+  assessment's `codeSnapshot` rather than reporting an empty workspace.
+
+Every session field, its class and its fate across a restart is inventoried in
+[development/session-state-model.md](development/session-state-model.md).
 
 ## 5. Deduplication layers
 
