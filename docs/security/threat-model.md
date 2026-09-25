@@ -17,6 +17,7 @@ production ready and does not guarantee that it detects or prevents anything.
 | Risk assessments | `risk_assessments`, `RiskAssessmentPayload` | Scores, flags, exfiltration matches, behavioural anomalies, paste snippets, code snapshot, incident summary. |
 | Employee identifiers | `employeeId` on sessions and assessments | Names or ids of monitored people. Personal data in most jurisdictions. |
 | Threat scenario matrices | `threat_scenarios` | Authored target systems, mandates, threat vectors, detection rules, penetration scenarios. Describes your defensive posture. |
+| Reference corpus | `reference_documents` | Operator-supplied reference text compared against paste content. Submitted by the operator through the API; never populated by Cerberus itself. |
 | Operator API key | `CERBERUS_API_KEY` | Full read and delete access to everything above. |
 | MCP shared secret | `CERBERUS_MCP_TOKEN` | Full read and delete access to the persistence layer. |
 | OpenAI API key | `OPENAI_API_KEY` | Billable credential; also the credential that authorises sending telemetry-derived prompts to the provider. |
@@ -245,8 +246,11 @@ State these plainly to anyone who will run this:
    multi-tenancy.
 3. Session state is in memory and is lost on restart. MongoDB is the durable
    fallback.
-4. Reference completions for similarity comparison are not populated, so
-   exfiltration similarity matching currently returns empty matches.
+4. Exfiltration similarity is a local, deterministic phrase-overlap comparison
+   against an operator-managed reference corpus. It is not plagiarism detection,
+   it does not establish that anything was copied, and it says nothing about
+   intent. The corpus is never populated by Cerberus itself — every entry is
+   submitted by the operator.
 5. The endpoint agent that would emit telemetry is not built. Telemetry comes
    from the console/browser.
 6. No endpoint `.exe` agent, no SaaS, no enterprise features.

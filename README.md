@@ -37,8 +37,10 @@ Implemented today:
   workspace, a 128-entry micro-event fingerprint ring to suppress replayed
   batches, and a behavioural-counter score blend.
 - **AI risk analysis** producing a `RiskAssessmentPayload` with six risk
-  dimensions, `RiskFlag`s, an `ExfiltrationReport` (similarity matches) and
-  `BehavioralAnomaly`s.
+  dimensions, `RiskFlag`s, an `ExfiltrationReport` and `BehavioralAnomaly`s. The
+  exfiltration report is computed **locally** by comparing paste content against
+  the operator-managed reference corpus — not asked of the model, so
+  `DATA_LEAKAGE_SIMILARITY_THRESHOLD` actually gates it.
 - **Behavioural anomaly detection**: paste abuse, focus breaches, copy attempts
   and anomalous keystroke rhythm.
 - **Agentic auto-lock** at risk >= 75 and auto-clear below 25, propagated to
@@ -256,7 +258,7 @@ refuses to boot when a mandatory secret is missing.
 | `SESSION_TTL_SECONDS` | `7200` | Enforced session lifetime. Expiry stops monitoring; it never deletes evidence. Must be a positive whole number of seconds. |
 | `MAX_PASTE_EVENTS` | `5` | Paste count above which analysis is forced. |
 | `MIN_HUMAN_KEYSTROKE_MS` | `80` | Inter-key delay treated as the human floor. |
-| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | `0.75` | Currently inert; see [Roadmap](#roadmap). |
+| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | `0.75` | Gate for the local exfiltration matcher, compared against the operator-managed reference corpus. Must be between 0 and 1. |
 | **Notifications (optional)** | | |
 | `SLACK_WEBHOOK_URL` | — | Unset = Slack notification is skipped. |
 | `SENDGRID_API_KEY` | — | Email requires all three of key, from and to. |
@@ -328,9 +330,6 @@ what this repository does and what an operator would need is explicit.
 - **Endpoint agent.** The process that would emit telemetry from a real
   workstation does not exist. All telemetry today originates from the
   browser-based console.
-- **Reference completions for similarity comparison.** The reference set is not
-  populated, so exfiltration similarity matching currently returns empty
-  matches.
 - **Multi-user identity and authorization.** Accounts, roles, OAuth/SSO.
 - **Multi-tenancy.** The service is single-tenant with one shared key.
 - **Durable session state.** Live state is in memory and is lost on restart.

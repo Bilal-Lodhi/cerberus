@@ -127,6 +127,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `npm test` runs the MCP workspace's suite as well as the API's. The MCP package
   had no tests at all; request body parsing now has integration tests over a real
   socket.
+- `DATA_LEAKAGE_SIMILARITY_THRESHOLD` now gates something. Exfiltration similarity
+  was previously left to the model, which never saw the threshold, and the
+  reference source was a stub returning `[]`, so matches were always empty while
+  the setting was still documented as doing something. Similarity is now computed
+  **locally and deterministically** (`apps/api/src/services/text-similarity.ts`:
+  normalise → 3-token shingles → Jaccard) against an operator-managed reference
+  corpus, and pairs at or above the threshold become `ExfiltrationMatch` entries.
+  The model's `exfiltrationReport` is replaced rather than merged, because only
+  the local comparison is reproducible from inputs an operator can inspect.
+  `aiCompletionLikelihood` is always `0`, since Cerberus does not attempt to
+  determine whether content was machine-generated.
+- `POST`, `GET` and `DELETE /api/v1/reference-documents` manage the reference
+  corpus: a local MongoDB collection (`reference_documents`) that **Cerberus never
+  populates itself**. There is no crawler, no bundled corpus and no third-party
+  content — every entry is submitted by the authenticated operator. Label 200
+  characters, content 20 000 characters, 20 tags of 50 characters, 200 documents
+  loaded per analysis.
+- The MCP package gains `store_reference_document`, `list_reference_documents` and
+  `delete_reference_document`, plus the `reference_documents` collection and its
+  indexes. `store_reference_document` upserts on `referenceId`, so re-submitting a
+  document updates it rather than creating a duplicate that would double-count in
+  similarity scoring.
+- `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is validated at startup: it must be a number
+  between 0 and 1 or the process exits with a `ConfigError`. A value above 1 could
+  never be reached by a similarity score, so it would have silently switched the
+  matcher off while appearing to be configured.
 
 ### Fixed
 

@@ -24,10 +24,13 @@ Four are being filed. The status line on each section says which:
 | 9 | Add a `CODEOWNERS` file | Deferred | — |
 
 The statuses above describe the triage as it stood when the issues were filed.
-All four filed candidates were subsequently resolved on `main`:
+Four of the filed candidates and one deferred candidate were subsequently
+resolved on `main`:
 
 - **1** — `SESSION_TTL_SECONDS` is now enforced, with expiry defined as
   active-liveness rather than evidence retention.
+- **2** (deferred) — `DATA_LEAKAGE_SIMILARITY_THRESHOLD` now gates a local,
+  deterministic comparison against an operator-managed reference corpus.
 - **4** — the console sends its three risk-distribution sliders as a structured
   `severityMix` object, mapped `routine → low`, `elevated → medium`,
   `severe → 60% high / 40% critical`.
@@ -36,7 +39,8 @@ All four filed candidates were subsequently resolved on `main`:
   documented in `README.md` and `CONTRIBUTING.md`.
 
 The section bodies below are kept as the historical record of the triage and are
-not updated in place.
+not updated in place. Candidate 9 (`CODEOWNERS`) remains deferred pending a
+maintainer decision.
 
 Candidates 2 and 9 are real and still open, but each needs a maintainer decision
 before a contributor can start: 2 needs a choice between building a reference
