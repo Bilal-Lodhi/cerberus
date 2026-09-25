@@ -1466,14 +1466,59 @@ export function isContentBearingEvent(eventType: string): boolean {
   return CONTENT_BEARING_EVENT_TYPES.has(eventType);
 }
 
+/**
+ * How many recent events a live session keeps in memory.
+ *
+ * The durable record is the `micro_events` collection; memory holds a **recent
+ * window** for analysis. Before this, `session.events` grew for the session's whole
+ * lifetime — `MAX_EVENTS_PER_BATCH` bounds one request, not a session — so a long
+ * session grew without limit and every consumer that scanned the array became slower
+ * as it did. Measured: ingest cost grew linearly with the events held, from 0.44 ms
+ * against an empty session to 11.53 ms against one holding 5 000
+ * (`docs/development/performance-baseline.md`).
+ *
+ * 1 000 events is well over the horizon any current check needs: the analysis
+ * triggers are all counter-based or look at the most recent paste.
+ */
+export const MAX_IN_MEMORY_EVENTS = 1_000;
+
+/**
+ * How many recent keystroke deltas feed the typing-rhythm checks.
+ *
+ * The rhythm signal is about how someone is typing **now**. A burst of machine-fast
+ * input an hour ago should not keep flagging a session that has been typing normally
+ * since, and scanning the whole history to decide was also what made ingest cost grow
+ * with session length. 500 keystrokes is well over a minute of ordinary typing.
+ */
+export const MAX_KEYSTROKE_DELTAS = 500;
+
+/**
+ * Trims an array to its most recent `limit` entries, in place.
+ *
+ * **Amortised O(1)**, not O(n) per push: the array is allowed to grow to `2 * limit`
+ * before being trimmed back to `limit`. Trimming on every push would make each push
+ * O(limit), which is a constant but a wasteful one, and would reintroduce a per-event
+ * cost proportional to the window size — the same shape of problem this exists to
+ * remove.
+ *
+ * Mutates in place so the array identity is stable for any caller holding a
+ * reference.
+ */
+export function trimToWindow<T>(items: T[], limit: number): void {
+  if (items.length <= limit * 2) return;
+  items.splice(0, items.length - limit);
+}
+
 /** Mutates session state in place for a single micro-event. */
 export function applyEventToSession(session: SessionState, event: MicroEvent): void {
   session.events.push(event);
+  trimToWindow(session.events, MAX_IN_MEMORY_EVENTS);
 
   switch (event.eventType) {
     case "KEYSTROKE":
       if (event.payload.deltaMs !== undefined) {
         session.keystrokeDeltas.push(event.payload.deltaMs);
+        trimToWindow(session.keystrokeDeltas, MAX_KEYSTROKE_DELTAS);
       }
       break;
     case "PASTE_TRIGGER":
@@ -1506,6 +1551,7 @@ export function applyEventToSession(session: SessionState, event: MicroEvent): v
       if (event.payload.newText !== undefined) session.currentCode = event.payload.newText;
       if (event.payload.changeLength !== undefined) {
         session.keystrokeDeltas.push(event.payload.changeLength);
+        trimToWindow(session.keystrokeDeltas, MAX_KEYSTROKE_DELTAS);
       }
       break;
     default:
@@ -1544,11 +1590,22 @@ export function computeKeystrokeMetrics(deltas: number[]): {
   minDeltaMs: number;
 } {
   if (deltas.length === 0) return { avgDeltaMs: 0, maxDeltaMs: 0, minDeltaMs: 0 };
-  return {
-    avgDeltaMs: deltas.reduce((a, b) => a + b, 0) / deltas.length,
-    maxDeltaMs: Math.max(...deltas),
-    minDeltaMs: Math.min(...deltas),
-  };
+
+  // A loop, not `Math.max(...deltas)`: spreading a large array passes one argument
+  // per element and throws `RangeError: Maximum call stack size exceeded` somewhere
+  // around 100 000 entries. The window above keeps arrays far below that, but a
+  // limit that depends on a different module's constant is not a limit.
+  let max = -Infinity;
+  let min = Infinity;
+  let sum = 0;
+
+  for (const delta of deltas) {
+    if (delta > max) max = delta;
+    if (delta < min) min = delta;
+    sum += delta;
+  }
+
+  return { avgDeltaMs: sum / deltas.length, maxDeltaMs: max, minDeltaMs: min };
 }
 
 export function applyDiffPatch(current: string, diffPatch: string): string {

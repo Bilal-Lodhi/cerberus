@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     in memory; `MAX_EVENTS_PER_BATCH` bounds one request, not a session's lifetime.
   Neither is visible from a throughput figure taken on a fresh database, which is
   why the scaling case exists.
+
+  **Correction.** The first of those two was wrong, and the document now says so.
+  The benchmark's own MCP double returned *every* event from `get_session_review`,
+  while the real store caps that at 500 (`MongoStore.getSessionEvents`,
+  `limit ?? 500`) — so the double re-serialised a growing array on every ingest and
+  the growth was attributed to the application. With a faithful double the scaling
+  table **plateaus** at ~700 req/s from 500 events onward. The memory figure was
+  similarly contaminated: the double's own event log shares the process heap, so the
+  memory case now uses a stub that retains nothing. Both bounds are explicit in the
+  script with comments saying why. This is the third time in this repository that a
+  double which did not match the real store produced a false conclusion, and the
+  document records it as a pattern rather than quietly deleting the finding.
 - `scripts/backup-cerberus.ps1` and `scripts/restore-cerberus.ps1`, plus
   `npm run backup` and `npm run restore`. Cerberus still has no backup mechanism of
   its own — it writes to MongoDB, so the mechanism is MongoDB's — but an unverified
