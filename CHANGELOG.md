@@ -15,12 +15,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/development/maturity-plan.md` — the current maturity state, completed
   milestones, the next work queue, accepted limitations and the decisions that
   need a maintainer.
+- `SESSION_TTL_SECONDS` is now enforced. A session is live while its most recent
+  activity is younger than the configured lifetime; once the window closes the
+  session is excluded from `GET /api/v1/guardian/sessions`, is not restored as
+  live by a restart, and refuses new telemetry with `409 SESSION_EXPIRED`.
+  Expiry is computed on every read from the session's activity and the configured
+  TTL — there is no `expired` status, no TTL index and no background sweep. It is
+  **not** an evidence-retention policy: nothing is deleted, and the review
+  endpoints still serve expired sessions.
+- `POST /api/v1/guardian/sessions/:sessionId/reactivate` reopens a closed
+  monitoring window. Reopening is explicit so that a monitoring window cannot be
+  extended indefinitely as a side effect of continuing to emit events. It is
+  idempotent for a live session and refuses a `terminated` session with
+  `409 SESSION_TERMINATED`.
+- A derived `liveness` field (`"active"` or `"expired"`) on
+  `GET /api/v1/guardian/sessions/:sessionId`, `GET /api/v1/sessions` and
+  `GET /api/v1/sessions/:sessionId`.
+- `createApp()` accepts an optional injected `clock`, and
+  `apps/api/src/services/session-liveness.ts` exports a manual clock, so the TTL
+  boundary is asserted exactly in tests instead of by sleeping.
 
 ### Changed
 
 - `README.md` and `CONTRIBUTING.md` now state where `flutter build web --release`
   writes its output: `apps/console/build/web`. `CONTRIBUTING.md` previously
   stopped at `flutter run -d chrome` and had no build step at all.
+- `SESSION_TTL_SECONDS` is validated at startup: it must be a positive whole
+  number of seconds. `0`, `-1`, `1.5`, `1e3` and `7200abc` now raise a
+  `ConfigError` and exit with code 1 instead of being silently parsed into a
+  different monitoring window. An unset value still takes the `7200` default.
+- The telemetry activity signal that drives expiry is server-generated only. The
+  client-supplied `MicroEvent.timestamp` is recorded and displayed but is
+  deliberately not an expiry input, and a deduplicated replay does not refresh
+  the activity stamp.
 
 ### Fixed
 

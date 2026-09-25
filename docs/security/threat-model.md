@@ -172,6 +172,9 @@ These are the places where the code chooses to refuse rather than proceed:
 | Oversized MCP request body | `parseBody()` in `http-adapter.ts` | Request destroyed above 8 MiB. Note: the parser resolves with `{}` rather than an explicit error, so an oversized body surfaces as a missing-argument 400. |
 | Unhandled API error | `app.onError` in `apps/api/src/index.ts` | Generic HTTP 500 with a correlation id. Framework and provider internals are logged server-side, never returned. |
 | Missing/invalid credential | `apps/api/src/middleware/auth.ts` | HTTP 401, identical for both cases. |
+| Invalid `SESSION_TTL_SECONDS` | `loadConfig()` in `apps/api/src/config.ts` | `ConfigError`, process exits 1. Must be a positive whole number of seconds, so a misconfigured monitoring window cannot be silently replaced by a default. |
+| Telemetry for an expired session | `apps/api/src/routes/guardian.ts` | HTTP 409 `SESSION_EXPIRED`. The batch is not persisted and the monitoring window is not extended. |
+| Reactivating a terminated session | `apps/api/src/routes/guardian.ts` | HTTP 409 `SESSION_TERMINATED`. Termination is not reversible, so reactivation cannot resurrect a session that was deliberately stopped. |
 
 Deliberate **fail-open** behaviours, for completeness:
 
@@ -197,9 +200,19 @@ Deliberate **fail-open** behaviours, for completeness:
   (`apps/api/src/utils/time.ts`) rather than UTC, which makes records easier to
   read but means stored timestamps depend on server configuration.
 - Deleting a session cascades to its micro-events and risk assessments
-  (`delete_session`). Terminating a session does not delete anything. There is
-  no retention policy, no automatic expiry enforcement and no TTL index, despite
-  `SESSION_TTL_SECONDS` existing in configuration.
+  (`delete_session`). Terminating a session does not delete anything.
+  `SESSION_TTL_SECONDS` bounds **active-liveness only**: once a session's
+  monitoring window closes it stops being monitored, is excluded from the live
+  list and refuses new telemetry, but every document is retained indefinitely.
+  There is no retention policy, no TTL index and no automatic deletion of
+  historical evidence. See
+  [configuration.md](../configuration.md#session-lifetime-session_ttl_seconds).
+- The activity timestamp that drives expiry is always server-generated. The
+  client-supplied `MicroEvent.timestamp` is recorded and displayed but is
+  deliberately not an expiry input, so a monitored client cannot hold its own
+  monitoring window open with a forged timestamp. A replayed batch is
+  deduplicated before the activity stamp is refreshed, so replay cannot extend
+  the window either.
 - Prompt content — terminal content, paste snippets, keystroke metrics — is sent
   to the configured AI provider on every analysed batch. Pointing
   `OPENAI_BASE_URL` elsewhere sends it elsewhere.

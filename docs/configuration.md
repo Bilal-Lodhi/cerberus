@@ -134,10 +134,55 @@ server-to-server interface.
 
 | Variable | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |
-| `SESSION_TTL_SECONDS` | integer | `7200` | No | Session expiry in seconds, held in `SecurityConfig`. |
+| `SESSION_TTL_SECONDS` | positive integer (seconds) | `7200` | No | Enforced session lifetime. See [Session lifetime](#session-lifetime-session_ttl_seconds) below. |
 | `MAX_PASTE_EVENTS` | integer | `5` | No | Paste count above which risk analysis is forced. |
 | `MIN_HUMAN_KEYSTROKE_MS` | integer | `80` | No | Inter-key delay treated as the human floor. |
-| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | float (0–1) | `0.75` | No | Similarity threshold for exfiltration matching. |
+| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | float (0–1) | `0.75` | No | Similarity threshold for exfiltration matching. Currently inert — see the note below. |
+
+### Session lifetime (`SESSION_TTL_SECONDS`)
+
+This is the only threshold whose misconfiguration stops the process. When the
+variable is set it must be a positive whole number of seconds; `0`, `-1`, `1.5`,
+`1e3`, `7200abc` and `abc` all raise a `ConfigError` and exit with code 1. When
+it is unset the default of `7200` applies. Silently reading `1.5` as `1`, or
+falling back to a default the operator did not choose, would decide how long a
+monitored person is observed on the strength of a typo.
+
+**The TTL defines active-liveness, not evidence retention.** It answers one
+question: is this session still being monitored? Expiry is computed on every
+read from the session's activity timestamp and this value
+(`apps/api/src/services/session-liveness.ts`). It is deliberately not a persisted
+status, so no background sweep is needed and the durable status vocabulary stays
+`active | locked | terminated`.
+
+An expired session:
+
+- is excluded from `GET /api/v1/guardian/sessions`, the live list;
+- is not restored as live by a restart, even when its durable status is still
+  `active` or `locked`;
+- refuses new telemetry with HTTP 409 and code `SESSION_EXPIRED`, so a
+  monitoring window cannot be extended indefinitely simply by continuing to emit
+  events;
+- can be reopened explicitly with
+  `POST /api/v1/guardian/sessions/<sessionId>/reactivate`, which sets the status
+  back to `active` and restarts the window. A `terminated` session is refused
+  with HTTP 409 and code `SESSION_TERMINATED` — termination is not reversible;
+- remains fully readable through `GET /api/v1/guardian/sessions/<sessionId>`,
+  `GET /api/v1/sessions` and `GET /api/v1/sessions/<sessionId>`, each carrying a
+  derived `liveness` field of `active` or `expired`.
+
+**What counts as activity.** The most recent of two server-generated timestamps:
+the server-observed time of the last accepted telemetry batch or lifecycle
+transition, and the durable `updatedAt` the persistence layer writes on every
+session mutation. The client-supplied `MicroEvent.timestamp` is deliberately not
+a candidate — it would let the monitored client hold its own monitoring window
+open — and neither is a replayed batch, which is deduplicated before the activity
+stamp is refreshed.
+
+**What expiry does not do.** It never deletes, truncates or hides evidence.
+Cleanup of historical data is a separate retention policy and is not implemented;
+deleting a session remains an explicit operator action
+(`DELETE /api/v1/guardian/sessions/<sessionId>`).
 
 Security notes:
 
