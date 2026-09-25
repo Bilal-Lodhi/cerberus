@@ -189,6 +189,8 @@ These are the places where the code chooses to refuse rather than proceed:
 | Outbound notification that never answers | `notifySlack()` / `sendEmail()` in `apps/api/src/services/notifications.ts` | Abandoned after 5 000 ms and logged as a timeout. Ingestion awaits both, so the deadline is what bounds the ingest request's latency. |
 | Operator handle past its lifetime | `GET /api/v1/identity/me` in `apps/api/src/routes/identity.ts` | HTTP 401 "Unknown or expired operator handle", and the entry is dropped. Handles expire after 12 hours. |
 | Operator identity registry at its ceiling | `evictIdentities()` in `apps/api/src/routes/identity.ts` | Expired handles are reclaimed, then the oldest handle is evicted, so the in-memory registry cannot grow without bound. |
+| Model output the recovery ladder cannot read | `parseJsonLoose()` in `apps/api/src/ai/parsers.ts` | Throws; every caller either fails closed (the scenario classifier rejects) or degrades to an empty result (the auditor pipeline, risk assessment, recommended actions). |
+| Retry fatality | `isFatal()` in `apps/api/src/ai/provider.ts` | Classified from the SDK error's HTTP status and `code`, never from message text, so an unrelated error containing `401` cannot exhaust the retry budget. |
 
 Deliberate **fail-open** behaviours, for completeness:
 

@@ -107,6 +107,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while `GET /me` already described an unknown handle as "unknown or expired"
   although nothing expired it. Handles now expire after 12 hours and the registry
   reclaims expired entries, then the oldest, at a ceiling of 100.
+- Retry fatality is classified from the OpenAI SDK error's HTTP status and
+  machine-readable `code` instead of by searching the error message for `"401"` /
+  `"403"`. Any error whose text happened to contain those digits — a token count,
+  a request id, a URL — was treated as an authentication failure and skipped the
+  retry budget entirely.
+- The auditor's pipeline translation uses the same defensive JSON recovery ladder
+  as every other model-reading path. A raw `JSON.parse` discarded an otherwise
+  usable pipeline whenever the model wrapped it in a markdown fence or a
+  sentence.
 
 ### Fixed
 
