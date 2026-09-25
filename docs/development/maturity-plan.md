@@ -209,35 +209,44 @@ above, P0 before P1 before P2, one coherent change per pull request.
 The queue is not a checklist to be cleared for its own sake: each item is either
 delivered, or rejected here with the engineering rationale for rejecting it.
 
-## Next queue
+## Phase queue — every item complete
 
-Ordered by the value of the outcome, not by effort.
+Ordered by the value of the outcome, not by effort. All nine are done; each entry
+records what actually landed rather than what was intended.
 
-1. **Durable session truth and restart consistency.** The largest remaining
-   engineering limitation. Inventory every in-memory session field, classify it,
-   and move lifecycle-affecting state to MongoDB as the durable authority through
-   one central transition path. **In progress.**
-2. **Replay and idempotency.** Deduplication currently lives in a per-process
-   fingerprint ring, so a replay after a restart is re-ingested. Define the dedup
-   window, make it survive restart where feasible, and make retry after a network
-   ambiguity safe. **Planned.**
-3. **API-key rotation.** A `CERBERUS_API_KEY_PREVIOUS` overlap so a key can be
-   changed without a hard cutover, compared timing-safely, with no key identity
-   logged. **Planned.**
-4. **Rate limiting.** A dependency-light in-process limiter on the expensive and
-   high-risk paths, documented as a backstop rather than DDoS defence.
-   **Planned.**
-5. **Migration tooling.** An explicit schema version, ordered and idempotent
-   migrations, and tests against a disposable MongoDB. **Planned.**
-6. **Health and readiness.** Split liveness from readiness, with optional
-   dependencies never blocking readiness. **Planned.**
-7. **Backup, restore and upgrade documentation.** With at least one local
-   roundtrip verified. **Planned.**
-8. **Performance baseline.** A bounded local harness and one recorded summary. No
-   universal performance claims. **Planned.**
-9. **Corpus-management usability.** A small console surface if it materially
-   improves the workflow; otherwise an improved documented API path.
-   **Planned.**
+1. **Durable session truth and restart consistency.** Done. Every in-memory session
+   field is inventoried and classified in
+   [session-state-model.md](session-state-model.md); counters hydrate from the durable
+   document and are monotonic at the storage layer; a restart no longer resets them,
+   verified across a real process restart. The central transition path and
+   partial-failure semantics remain open and are recorded there.
+2. **Replay and idempotency.** Done. A unique `(sessionId, eventId)` identity in
+   `micro_events`; the store reports what was newly inserted and only that is applied,
+   so a retry after a restart is stored and counted once. Content dedup is scoped to
+   content-bearing events. What this is *not* — replay protection against a hostile
+   client — is stated in the threat model.
+3. **API-key rotation.** Done. `CERBERUS_API_KEY_PREVIOUS` and
+   `CERBERUS_MCP_TOKEN_PREVIOUS`, both compared without short-circuiting, with the
+   procedure in [operations/key-rotation.md](../operations/key-rotation.md).
+4. **Rate limiting.** Done. In-process token buckets per route category, applied
+   after authentication; the AI ceiling is configurable; per-caller limiting is
+   documented as a proxy concern in
+   [operations/reverse-proxy.md](../operations/reverse-proxy.md).
+5. **Migration tooling.** Done. An ordered, append-only, idempotent runner that fails
+   before mutating, with a ledger and a dry-run CLI. The first migration repairs the
+   duplicate event identities the pre-fix ingestion path created — without it, such a
+   database cannot start.
+6. **Health and readiness.** Done. `/health` is liveness and checks nothing; `/ready`
+   checks persistence and answers 503. The MCP adapter exposes the same pair.
+7. **Backup, restore and upgrade documentation.** Done, with the drill run end to end
+   against real MongoDB. The restore compares counts against a manifest, because
+   `mongorestore` exits 0 when it restores nothing.
+8. **Performance baseline.** Done. `npm run bench` with measured p50/p95/p99 per
+   case. Its first finding was a benchmark artifact and is corrected in the document;
+   its real finding — unbounded in-memory session state — is fixed.
+9. **Corpus-management usability.** Done. The console gained a reference-corpus
+   panel; the assessment and the reasoning are in
+   [operations/corpus-management.md](../operations/corpus-management.md).
 
 ## Completed: the P0 audit pass
 
@@ -391,13 +400,14 @@ re-raise them.
 ## Release readiness
 
 **No release is published.** `v0.1.0` remains the only published baseline, still
-a pre-release, and its annotated tag is immutable.
+a pre-release, and its annotated tag is immutable — verified after every merge:
+tag object `55329b5e378cb890c9b9775647396ea57fd7bdc7`, commit
+`ef98f962530fb62340cf213b408f1cd715755c01`.
 
-`main` accumulates changes under `[Unreleased]` in `CHANGELOG.md`. A release
-candidate report is prepared when a coherent milestone has accumulated — not
-because a number of commits have passed. Publishing a release, moving a tag or
-declaring production readiness requires explicit maintainer authorisation.
+`main` accumulates changes under `[Unreleased]` in `CHANGELOG.md`. Publishing a
+release, moving a tag or declaring production readiness requires explicit
+maintainer authorisation; none has been given.
 
-The current milestone under construction is the operational-durability phase
-described in owner decision 4. Its exit condition is recorded at the top of this
-document.
+The operational-durability phase is complete: every exit condition at the top of
+this document is met. Release-candidate material is prepared under
+`docs/release/` and is **not** published.
