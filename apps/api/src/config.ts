@@ -34,6 +34,7 @@ export interface AppConfig {
   auth: AuthConfig;
   cors: CorsConfig;
   security: SecurityConfig;
+  rateLimit: RateLimitConfig;
 }
 
 export interface OpenAIConfig {
@@ -85,6 +86,18 @@ export interface AuthConfig {
 export interface CorsConfig {
   /** Explicit allow-list. Empty array means "no cross-origin access". */
   allowedOrigins: string[];
+}
+
+export interface RateLimitConfig {
+  /** Whether the in-process limiter runs. Default true. */
+  enabled: boolean;
+  /**
+   * Requests per minute allowed on AI-backed endpoints.
+   *
+   * The one limit worth tuning: every request to those endpoints spends money. The
+   * other categories are documented backstops rather than knobs.
+   */
+  aiRequestsPerMinute: number;
 }
 
 export interface SecurityConfig {
@@ -216,6 +229,27 @@ function readRatio(name: string, fallback: number): number {
   return parsed;
 }
 
+/**
+ * Reads a boolean with an explicit default.
+ *
+ * Unlike {@link readBool}, an unrecognised value is a startup failure rather than
+ * a silent `false`. This reads controls whose default is **on**, and silently
+ * treating `CERBERUS_RATE_LIMIT_ENABLED=maybe` as "disabled" would let a typo turn
+ * a control off.
+ */
+function readBoolStrict(name: string, fallback: boolean): boolean {
+  const raw = readEnv(name).toLowerCase();
+  if (!raw) return fallback;
+
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+
+  throw new ConfigError(
+    `${name} must be a boolean (true/false, 1/0, yes/no, on/off). Got "${raw}". ` +
+      `Leave it unset to use the default of ${fallback}.`,
+  );
+}
+
 export function loadConfig(): AppConfig {
   const devMode = readBool("CERBERUS_DEV_MODE");
 
@@ -317,6 +351,15 @@ export function loadConfig(): AppConfig {
     ),
   };
 
+  const rateLimit: RateLimitConfig = {
+    enabled: readBoolStrict("CERBERUS_RATE_LIMIT_ENABLED", true),
+    aiRequestsPerMinute: readPositiveInt(
+      "CERBERUS_AI_REQUESTS_PER_MINUTE",
+      10,
+      "of requests",
+    ),
+  };
+
   // ── Startup banner: never prints secret material ──
   console.log(
     `[config] mode=${devMode ? "development" : "production"} ` +
@@ -328,7 +371,8 @@ export function loadConfig(): AppConfig {
       `mcpToken=${mcpApiKey ? "set" : "unset"} ` +
       `corsOrigins=${cors.allowedOrigins.length} ` +
       `sessionTtl=${security.sessionTTLSeconds}s ` +
-      `maxBody=${security.maxRequestBodyBytes}B`,
+      `maxBody=${security.maxRequestBodyBytes}B ` +
+      `rateLimit=${rateLimit.enabled ? `on (ai=${rateLimit.aiRequestsPerMinute}/min)` : "off"}`,
   );
 
   if (devMode) {
@@ -346,5 +390,6 @@ export function loadConfig(): AppConfig {
     auth,
     cors,
     security,
+    rateLimit,
   };
 }
