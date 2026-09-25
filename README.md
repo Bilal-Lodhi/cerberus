@@ -151,13 +151,28 @@ Both defines have defaults (`http://localhost:8080` and an empty key), so with
 `CERBERUS_DEV_MODE=true` the console connects with no key at all. Against an
 authenticated API you must supply the key.
 
-To produce a deployable bundle instead of a dev session:
+To produce a deployable bundle instead of a dev session, run this **from
+`apps/console`**:
 
 ```bash
+cd apps/console
 flutter build web --release \
   --dart-define=API_BASE_URL=https://your-cerberus-host \
   --dart-define=CERBERUS_API_KEY=<your CERBERUS_API_KEY>
 ```
+
+The bundle is written to **`apps/console/build/web/`** — that is, `build/web`
+relative to `apps/console`, the directory you ran the command from. It is a
+plain static directory (`index.html`, `main.dart.js`, `assets/`, `canvaskit/`
+and the service worker), so serve it with any static file server or reverse
+proxy, for example:
+
+```bash
+cd apps/console/build/web
+python -m http.server 5173
+```
+
+`build/` is gitignored, so it never appears in a commit.
 
 > **Note:** `--dart-define` values are compiled into the web bundle, so anyone
 > who can fetch the bundle can read the API key. Serve the console only to
@@ -276,15 +291,24 @@ See [docs/security/threat-model.md](docs/security/threat-model.md) and
 
 ## Documentation
 
+**[docs/index.md](docs/index.md) is the entry point to the documentation set** —
+it lists every document under `docs/` with the audience it is written for.
+
+The documents most readers want first:
+
 - [docs/architecture.md](docs/architecture.md) — components, data flows, state and persistence model.
 - [docs/configuration.md](docs/configuration.md) — every environment variable.
 - [docs/security/threat-model.md](docs/security/threat-model.md) — assets, actors, trust boundaries and limits.
 - [docs/migration.md](docs/migration.md) — historical name → current name mapping.
+- [docs/development/maturity-plan.md](docs/development/maturity-plan.md) — current maturity state, next work and accepted limitations.
+
+Repository-level documents:
+
 - [SECURITY.md](SECURITY.md) — how to report a vulnerability.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute.
 - [CHANGELOG.md](CHANGELOG.md) — release history.
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and [SUPPORT.md](SUPPORT.md) — community expectations and where to ask for help.
-- [docs/release/](docs/release/) — release notes, release checklist, community-health checklist and repository metadata drafts.
+- [docs/release/](docs/release/) — the `v0.1.0` release notes, release checklist, community-health checklist and repository metadata, kept as a record of that release.
 
 ## Contributing
 
