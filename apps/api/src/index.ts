@@ -20,6 +20,9 @@
  *   GET    /api/v1/sessions                     session list for the console (includes expired)
  *   GET    /api/v1/sessions/:id                 full session review
  *   POST   /api/v1/auditor/query                natural-language audit query
+ *   POST   /api/v1/reference-documents          add a reference document
+ *   GET    /api/v1/reference-documents          list the reference corpus
+ *   DELETE /api/v1/reference-documents/:id      remove a reference document
  *
  * Everything except /health requires the operator API key. See
  * ../middleware/auth.ts and SECURITY.md.
@@ -38,6 +41,7 @@ import { createScenariosRouter } from "./routes/scenarios.js";
 import { createGuardianRouter } from "./routes/guardian.js";
 import { createReviewRouter } from "./routes/review.js";
 import { createAuditorRouter } from "./routes/auditor.js";
+import { createReferenceRouter } from "./routes/reference.js";
 import { healthRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
 import { identityRouter } from "./routes/identity.js";
 import { systemClock, type Clock } from "./services/session-liveness.js";
@@ -141,6 +145,7 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
     }),
   );
   app.route("/api/v1/auditor", createAuditorRouter(config));
+  app.route("/api/v1/reference-documents", createReferenceRouter(config));
 
   // ── 404 ─────────────────────────────────────────────────────────
   app.notFound((c) =>

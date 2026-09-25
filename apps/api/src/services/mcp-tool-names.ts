@@ -22,6 +22,9 @@ export const MCP_TOOL_NAMES = {
   GET_SESSION_REVIEW: "get_session_review",
   GET_EMPLOYEE_RISK_HISTORY: "get_employee_risk_history",
   LIST_SESSIONS: "list_sessions",
+  STORE_REFERENCE_DOCUMENT: "store_reference_document",
+  LIST_REFERENCE_DOCUMENTS: "list_reference_documents",
+  DELETE_REFERENCE_DOCUMENT: "delete_reference_document",
   HEALTH_CHECK: "health_check",
 } as const;
 

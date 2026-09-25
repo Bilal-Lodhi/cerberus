@@ -185,6 +185,28 @@ function readPositiveInt(name: string, fallback: number, unit: string): number {
   return parsed;
 }
 
+/**
+ * Reads a ratio in the closed range 0..1.
+ *
+ * Fails closed on an unusable value for the same reason as
+ * {@link readPositiveInt}: `DATA_LEAKAGE_SIMILARITY_THRESHOLD` above 1 can never
+ * be reached by a similarity score, so it would silently switch the exfiltration
+ * matcher off while appearing to be configured.
+ */
+function readRatio(name: string, fallback: number): number {
+  const raw = readEnv(name);
+  if (!raw) return fallback;
+
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new ConfigError(
+      `${name} must be a number between 0 and 1 (got "${raw}"). ` +
+        `Leave it unset to use the default of ${fallback}.`,
+    );
+  }
+  return parsed;
+}
+
 export function loadConfig(): AppConfig {
   const devMode = readBool("CERBERUS_DEV_MODE");
 
@@ -259,7 +281,8 @@ export function loadConfig(): AppConfig {
     ),
     maxPasteEventsPerSession: readInt("MAX_PASTE_EVENTS", 5),
     minHumanKeystrokeMs: readInt("MIN_HUMAN_KEYSTROKE_MS", 80),
-    dataLeakageSimilarityThreshold: readFloat(
+    // Gated by apps/api/src/services/text-similarity.ts.
+    dataLeakageSimilarityThreshold: readRatio(
       "DATA_LEAKAGE_SIMILARITY_THRESHOLD",
       0.75,
     ),

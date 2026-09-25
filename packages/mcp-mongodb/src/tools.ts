@@ -187,12 +187,61 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
     inputSchema: { type: "object", properties: {} },
   },
 
+  [MCP_TOOL_NAMES.STORE_REFERENCE_DOCUMENT]: {
+    name: MCP_TOOL_NAMES.STORE_REFERENCE_DOCUMENT,
+    description:
+      "Upsert one operator-managed reference document used for local data-leakage similarity comparison.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        referenceId: { type: "string", description: "Stable identifier; re-submitting updates" },
+        label: { type: "string", description: "Human-readable source description" },
+        content: { type: "string", description: "The reference text to compare against" },
+        tags: { type: "array", items: { type: "string" } },
+      },
+      required: ["referenceId", "label", "content"],
+    },
+  },
+
+  [MCP_TOOL_NAMES.LIST_REFERENCE_DOCUMENTS]: {
+    name: MCP_TOOL_NAMES.LIST_REFERENCE_DOCUMENTS,
+    description: "List the operator-managed reference corpus, newest first.",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number" } },
+    },
+  },
+
+  [MCP_TOOL_NAMES.DELETE_REFERENCE_DOCUMENT]: {
+    name: MCP_TOOL_NAMES.DELETE_REFERENCE_DOCUMENT,
+    description: "Remove one reference document from the corpus.",
+    inputSchema: {
+      type: "object",
+      properties: { referenceId: { type: "string" } },
+      required: ["referenceId"],
+    },
+  },
+
   [MCP_TOOL_NAMES.HEALTH_CHECK]: {
     name: MCP_TOOL_NAMES.HEALTH_CHECK,
     description: "Verify MongoDB connectivity and report store status.",
     inputSchema: { type: "object", properties: {} },
   },
 };
+
+/**
+ * Bounds on an operator-supplied reference document.
+ *
+ * The corpus is read in full on every risk analysis, so an unbounded entry would
+ * add unbounded work to the ingest path as well as unbounded storage. These are
+ * limits on what one document may contribute, not a retention policy.
+ */
+export const MAX_REFERENCE_CONTENT_CHARS = 20_000;
+export const MAX_REFERENCE_LABEL_CHARS = 200;
+export const MAX_REFERENCE_TAGS = 20;
+export const MAX_REFERENCE_TAG_CHARS = 50;
+/** Upper bound on how many corpus documents a single list call returns. */
+export const MAX_REFERENCE_DOCUMENTS = 200;
 
 /** Thrown for a missing/invalid tool argument. Surfaces as HTTP 400. */
 export class ToolArgumentError extends Error {
@@ -216,6 +265,55 @@ function requireObject(body: Record<string, unknown>, key: string): Record<strin
     throw new ToolArgumentError(`Missing required parameter: ${key}`);
   }
   return value as Record<string, unknown>;
+}
+
+/** Reads a required string and enforces a maximum length. */
+function requireBoundedString(
+  body: Record<string, unknown>,
+  key: string,
+  maxChars: number,
+): string {
+  const value = requireString(body, key);
+  if (value.length > maxChars) {
+    throw new ToolArgumentError(
+      `Parameter '${key}' must be at most ${maxChars} characters (got ${value.length}).`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Reads an optional string list, bounding both its length and each entry.
+ *
+ * A non-array, or an array containing non-strings, is rejected rather than
+ * coerced: silently dropping a tag would make the stored document differ from
+ * what the operator submitted.
+ */
+function readBoundedTags(body: Record<string, unknown>, key: string): string[] {
+  const value = body[key];
+  if (value === undefined || value === null) return [];
+
+  if (!Array.isArray(value)) {
+    throw new ToolArgumentError(`Parameter '${key}' must be an array of strings.`);
+  }
+  if (value.length > MAX_REFERENCE_TAGS) {
+    throw new ToolArgumentError(
+      `Parameter '${key}' must contain at most ${MAX_REFERENCE_TAGS} entries.`,
+    );
+  }
+
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new ToolArgumentError(`Parameter '${key}' must contain non-empty strings.`);
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length > MAX_REFERENCE_TAG_CHARS) {
+      throw new ToolArgumentError(
+        `Each '${key}' entry must be at most ${MAX_REFERENCE_TAG_CHARS} characters.`,
+      );
+    }
+    return trimmed;
+  });
 }
 
 export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolHandler> {
@@ -318,6 +416,36 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
     [MCP_TOOL_NAMES.LIST_SESSIONS]: async () => {
       const data = await store.listSessions();
       return { success: true, data };
+    },
+
+    [MCP_TOOL_NAMES.STORE_REFERENCE_DOCUMENT]: async (body) => {
+      const referenceId = requireBoundedString(body, "referenceId", MAX_REFERENCE_LABEL_CHARS);
+      const label = requireBoundedString(body, "label", MAX_REFERENCE_LABEL_CHARS);
+      const content = requireBoundedString(body, "content", MAX_REFERENCE_CONTENT_CHARS);
+      const tags = readBoundedTags(body, "tags");
+
+      await store.storeReferenceDocument({ referenceId, label, content, tags });
+      return { success: true, referenceId };
+    },
+
+    [MCP_TOOL_NAMES.LIST_REFERENCE_DOCUMENTS]: async (body) => {
+      const rawLimit = body["limit"];
+      const requested =
+        typeof rawLimit === "number" && Number.isFinite(rawLimit)
+          ? Math.floor(rawLimit)
+          : MAX_REFERENCE_DOCUMENTS;
+      // Clamped rather than rejected: a caller asking for more than the ceiling
+      // gets the ceiling, which is a bound on work rather than an error.
+      const limit = Math.min(Math.max(requested, 1), MAX_REFERENCE_DOCUMENTS);
+
+      const data = await store.listReferenceDocuments(limit);
+      return { success: true, data };
+    },
+
+    [MCP_TOOL_NAMES.DELETE_REFERENCE_DOCUMENT]: async (body) => {
+      const referenceId = requireBoundedString(body, "referenceId", MAX_REFERENCE_LABEL_CHARS);
+      const deleted = await store.deleteReferenceDocument(referenceId);
+      return { success: true, deleted };
     },
 
     [MCP_TOOL_NAMES.HEALTH_CHECK]: async () => {

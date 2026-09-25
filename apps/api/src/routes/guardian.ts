@@ -50,9 +50,22 @@ import {
   type SessionActivity,
   type SessionLiveness,
 } from "../services/session-liveness.js";
+import {
+  findSimilarityMatches,
+  type ReferenceDocument,
+} from "../services/text-similarity.js";
 import { toISOStringLocal, formatLocalTime } from "../utils/time.js";
 
 const MCP_TIMEOUT_MS = 5_000;
+
+/**
+ * Upper bound on how many reference documents one analysis loads.
+ *
+ * Matches the MCP adapter's own ceiling. The corpus is read in full per
+ * analysis, so this is what bounds the comparison work rather than the
+ * operator's corpus size.
+ */
+const MAX_CORPUS_DOCUMENTS = 200;
 
 /** Re-exported so the review router can type its shared registries. */
 export type { ActiveSession };
@@ -300,6 +313,7 @@ export function createGuardianRouter(
 
         const keystrokeMetrics = computeKeystrokeMetrics(session.keystrokeDeltas);
         const pasteContents = collectPasteContents(session.events);
+        const referenceCorpus = await loadReferenceCorpus(requestId);
 
         try {
           const analysisStartMs = Date.now();
@@ -307,7 +321,7 @@ export function createGuardianRouter(
             session.currentCode,
             pasteContents,
             keystrokeMetrics,
-            await getReferenceCompletions(),
+            referenceCorpus.map((reference) => reference.content),
           );
           console.log(
             `[guardian] [${requestId}] risk analysis complete in ` +
@@ -362,6 +376,40 @@ export function createGuardianRouter(
             0,
           );
           riskPayload.codeSnapshot = session.currentCode;
+
+          // ── Exfiltration similarity is computed locally, deterministically ──
+          //
+          // The report is replaced, not merged: a similarity claim is evidence,
+          // and only the local comparison is reproducible from the corpus and the
+          // threshold. The model's version is discarded because it cannot be
+          // re-derived, audited, or gated by `DATA_LEAKAGE_SIMILARITY_THRESHOLD`
+          // — which the model never sees.
+          const similarity = findSimilarityMatches(
+            pasteContents,
+            referenceCorpus,
+            config.security.dataLeakageSimilarityThreshold,
+          );
+          riskPayload.exfiltrationReport = {
+            overallSimilarity: similarity.overallSimilarity,
+            matchedSnippets: similarity.matches.map((match) => ({
+              sourceSnippet: match.sourceSnippet,
+              employeeSnippet: match.employeeSnippet,
+              similarityScore: match.similarityScore,
+              sourceLabel: match.sourceLabel,
+            })),
+            // Always 0: Cerberus does not attempt to determine whether content
+            // was machine-generated, and reporting a guess here would present an
+            // unfounded number as a measurement.
+            aiCompletionLikelihood: 0,
+          };
+
+          if (similarity.matches.length > 0) {
+            console.log(
+              `[guardian] [${requestId}] ${similarity.matches.length} similarity ` +
+                `match(es) at or above ${config.security.dataLeakageSimilarityThreshold} ` +
+                `(best=${similarity.overallSimilarity.toFixed(3)})`,
+            );
+          }
 
           riskPayload.behavioralContext = {
             totalPasteEvents: session.pasteCount,
@@ -1058,8 +1106,7 @@ export function createGuardianRouter(
     sessionId: string,
     durable: Record<string, unknown> | null = null,
   ): boolean {
-    return isExpired(sessionActivity(sessionId, durable), ttlSeconds, clock);
-  }
+    return isExpired(sessionActivity(sessionId, durable), ttlSeconds, clock);  }
 
   /**
    * Records the server-observed activity instant for a live session.
@@ -1069,6 +1116,54 @@ export function createGuardianRouter(
    */
   function touchSession(session: SessionState): void {
     session.lastActivityAt = toISOStringLocal(new Date(clock.now()));
+  }
+
+  /**
+   * Loads the operator-managed reference corpus for similarity comparison.
+   *
+   * The corpus is read in full on every analysis: one bounded MCP call against a
+   * local database, alongside the two or three the analysis path already makes.
+   * A cache would be cheaper, but its staleness would be invisible to the
+   * operator who just edited the corpus.
+   *
+   * A failure returns an empty corpus rather than failing the analysis.
+   * Similarity matching is one signal among several, and losing it must not lose
+   * the telemetry or the risk score. The failure is logged.
+   */
+  async function loadReferenceCorpus(
+    requestId: string,
+  ): Promise<ReferenceDocument[]> {
+    const listed = await callMcpTool<{
+      success: boolean;
+      data?: Array<Record<string, unknown>>;
+    }>(
+      config,
+      MCP_TOOL_NAMES.LIST_REFERENCE_DOCUMENTS,
+      { limit: MAX_CORPUS_DOCUMENTS },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    );
+
+    if (!listed.ok || !listed.data?.success) {
+      console.warn(
+        `[guardian] [${requestId}] reference corpus unavailable — similarity matching skipped`,
+      );
+      return [];
+    }
+
+    const documents = Array.isArray(listed.data.data) ? listed.data.data : [];
+    return documents
+      .filter(
+        (document): document is Record<string, unknown> =>
+          typeof document === "object" && document !== null,
+      )
+      .map((document) => ({
+        referenceId: String(document["referenceId"] ?? ""),
+        label: String(document["label"] ?? "unknown"),
+        content: typeof document["content"] === "string" ? document["content"] : "",
+      }))
+      .filter(
+        (document) => document.referenceId.length > 0 && document.content.length > 0,
+      );
   }
 
   /** Dedup layer 3: fingerprint ring suppresses replayed micro-event batches. */
@@ -1365,11 +1460,14 @@ function buildIncidentSummary(
 }
 
 /**
- * Reference completions for similarity comparison.
- * The historical implementation queried a cache of known model outputs; that
- * cache was never populated, so this returns an empty set. The mechanism is
- * retained because the risk-analysis contract consumes it.
+ * Loads the operator-managed reference corpus for similarity comparison.
+ *
+ * The corpus is read in full on every analysis. That is one bounded MCP call
+ * against a local database, alongside the two or three the analysis path already
+ * makes, and it avoids a cache whose staleness would be invisible to the
+ * operator who just edited the corpus.
+ *
+ * A failure returns an empty corpus rather than failing the analysis: similarity
+ * matching is one signal among several, and losing it must not lose the
+ * telemetry or the risk score. The failure is logged.
  */
-async function getReferenceCompletions(): Promise<string[]> {
-  return [];
-}
