@@ -442,13 +442,14 @@ re-raise them.
 
 ## Release readiness
 
-**`v0.2.0` is authorised for publication as a GitHub pre-release**, and is published
-by the release that carries this document. It is an operational-durability release and
-remains experimental: not production ready, no compliance claim, no endpoint agent, no
-accounts or tenancy.
+**`v0.2.0` is published as a GitHub pre-release**, on 2026-09-25. Annotated tag object
+`c987767494f4d1c624005f6f498334e658d2c1bc`, peeling to release target
+`a355f310eefb5345ddafe8af53cfec805eb21c64`. It is an operational-durability release
+and remains experimental: not production ready, no compliance claim, no endpoint
+agent, no accounts or tenancy.
 
 `v0.1.0` remains published and is still a pre-release, and its annotated tag is
-immutable — re-verified after every merge: tag object
+immutable — re-verified after publication: tag object
 `55329b5e378cb890c9b9775647396ea57fd7bdc7`, commit
 `ef98f962530fb62340cf213b408f1cd715755c01`.
 
