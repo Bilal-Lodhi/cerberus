@@ -43,6 +43,15 @@ $GlobalStart = Get-Date
 
 if (-not $ApiKey) { $ApiKey = "" }
 
+# Passed to the sub-suites only when non-empty.
+#
+# `pwsh -File script.ps1 -ApiKey ""` does NOT pass an empty string: PowerShell drops
+# the empty argument, so the child sees `-ApiKey` with no value and fails with
+# "Missing an argument for parameter 'ApiKey'". That broke the documented dev-mode
+# usage — `pwsh -File scripts/verify-all.ps1` with no key — which is the mode most
+# people run first. Splatting an array omits the parameter entirely instead.
+$apiKeyArgs = if ($ApiKey.Trim().Length -gt 0) { @('-ApiKey', $ApiKey) } else { @() }
+
 Write-Host ""
 Write-Host "CERBERUS FULL VERIFICATION SUITE" -ForegroundColor Cyan
 Write-Host "  Target : $BaseUrl"
@@ -71,7 +80,7 @@ Write-Host ""
 Write-Host "--- SUITE 1/3: ENDPOINT SMOKE TEST ---" -ForegroundColor Magenta
 $s1Start = Get-Date
 $script = Join-Path $ScriptDir "smoke-api.ps1"
-& pwsh -File $script -BaseUrl $BaseUrl -ApiKey $ApiKey
+& pwsh -File $script -BaseUrl $BaseUrl @apiKeyArgs
 $exitCode = $LASTEXITCODE
 $s1Elapsed = "{0:N0}s" -f ((Get-Date) - $s1Start).TotalSeconds
 
@@ -91,7 +100,7 @@ Write-Host ""
 Write-Host "--- SUITE 2/3: TELEMETRY - 12 EVENT TYPES + DEPLOY/REVIEW LIFECYCLE ---" -ForegroundColor Magenta
 $s2Start = Get-Date
 $script = Join-Path $ScriptDir "smoke-telemetry.ps1"
-& pwsh -File $script -BaseUrl $BaseUrl -ApiKey $ApiKey
+& pwsh -File $script -BaseUrl $BaseUrl @apiKeyArgs
 $exitCode = $LASTEXITCODE
 $s2Elapsed = "{0:N0}s" -f ((Get-Date) - $s2Start).TotalSeconds
 
@@ -111,7 +120,7 @@ Write-Host ""
 Write-Host "--- SUITE 3/3: 50-REQUEST STAGED CONCURRENT BURST ---" -ForegroundColor Magenta
 $s3Start = Get-Date
 $script = Join-Path $ScriptDir "stress-telemetry.ps1"
-& pwsh -File $script -BaseUrl $BaseUrl -ApiKey $ApiKey `
+& pwsh -File $script -BaseUrl $BaseUrl @apiKeyArgs `
   -GenerateCount $GenerateCount -IngestCount $IngestCount -IngestBatchSize $IngestBatchSize
 $exitCode = $LASTEXITCODE
 $s3Elapsed = "{0:N0}s" -f ((Get-Date) - $s3Start).TotalSeconds
