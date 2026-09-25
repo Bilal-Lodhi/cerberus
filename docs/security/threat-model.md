@@ -127,9 +127,14 @@ so container orchestrators can probe it.
   retries and duplicates, not against a hostile telemetry producer. The
   content-fingerprint ring is scoped to content-bearing events and is a cache in
   front of the durable identity, not a control.
-- **Manual key rotation.** Rotation means changing the environment variable and
-  restarting the processes. There is no overlap window, no second valid key, no
-  revocation list and no rotation tooling.
+- **Rotation needs an overlap window, and now has one.** Set
+  `CERBERUS_API_KEY_PREVIOUS` (and `CERBERUS_MCP_TOKEN_PREVIOUS` for the sidecar)
+  to the value being retired, restart, move every client across, then unset it and
+  restart again. Both comparisons always run, so the response time does not reveal
+  which key matched, and neither key is ever logged. There is still **no key
+  identity, no revocation list and no rotation tooling**: ending the overlap is the
+  revocation, and there is no way to revoke one key without revoking the others.
+  See [operations/key-rotation.md](../operations/key-rotation.md).
 - **No rate limiting.** Nothing throttles authentication attempts or ingestion
   volume at the application level. `scripts/stress-telemetry.ps1` exists
   precisely because bursts are expected. `CERBERUS_MAX_BODY_BYTES` bounds how

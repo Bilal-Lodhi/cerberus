@@ -102,7 +102,9 @@ Security notes:
 | Variable | Type | Default | Required | Notes |
 | --- | --- | --- | --- | --- |
 | `CERBERUS_API_KEY` | string (secret) | — | **Yes**, unless `CERBERUS_DEV_MODE=true` | The operator API key. Accepted as `Authorization: Bearer <key>` or `X-API-Key: <key>`. |
+| `CERBERUS_API_KEY_PREVIOUS` | string (secret) | unset | No | The key being retired, accepted alongside the current one during a rotation. Requires `CERBERUS_API_KEY`. |
 | `CERBERUS_MCP_TOKEN` | string (secret) | — | **Yes**, unless `CERBERUS_DEV_MODE=true` | Bearer token the API presents to the MCP adapter. |
+| `CERBERUS_MCP_TOKEN_PREVIOUS` | string (secret) | unset | No | The MCP token being retired, accepted during a rotation. Read by both the API and the adapter. |
 | `CERBERUS_DEV_MODE` | boolean | `false` | No | `true`, `1`, `yes` or `on` enable it. |
 
 Security notes:
@@ -113,8 +115,20 @@ Security notes:
   `apps/api/src/middleware/auth.ts` and in the MCP adapter). Empty values never
   match, so an unset expected key cannot be satisfied by a missing credential.
   The 401 response is identical whether the credential was absent or wrong.
-- Key rotation is manual: change the value and restart both processes. There is
-  no overlap window and no revocation list.
+- **When a previous key is configured, both comparisons always run.** Short-
+  circuiting on the first match would make the response time depend on *which* key
+  matched, which would let a caller holding a retired key tell "retired but still
+  accepted" from "not accepted at all". Neither key is ever logged; the startup
+  banner reports only `set` or `unset`.
+- A previous key set **without** a current key is a startup `ConfigError`. An
+  overlap is not a replacement, and a deployment authenticating only against the
+  credential it is retiring is not a state worth supporting. A previous key equal
+  to the current one is accepted with a warning — it is a no-op, and the warning
+  tells an operator the rotation is already finished.
+- Rotation is a four-step overlap, not a hard cutover. The full procedure, and
+  what an overlap does not do, is in
+  [operations/key-rotation.md](operations/key-rotation.md). There is still no key
+  identity and no revocation list: ending the overlap *is* the revocation.
 - `CERBERUS_DEV_MODE=true` **disables authentication entirely** on both the API
   and the MCP adapter, and substitutes a fixed localhost CORS allow-list.
   Nothing else about the request is validated differently. The API logs a

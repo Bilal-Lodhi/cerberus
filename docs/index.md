@@ -20,6 +20,15 @@ Cerberus is and how to run it, then come back here for depth.
 | [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the active queue, accepted limitations and open decisions. |
 | [development/session-state-model.md](development/session-state-model.md) | Contributors, operators reasoning about restarts | Every piece of session state, its class (durable authority, reconstructable cache, ephemeral, derived), where its authority actually lives, and what a restart does to it. Written from the source. |
 
+## Operations (`docs/operations/`)
+
+Running a self-hosted deployment: rotating credentials, and — as the durability
+phase progresses — backing up, restoring and upgrading.
+
+| Document | Audience | What it covers |
+| --- | --- | --- |
+| [operations/key-rotation.md](operations/key-rotation.md) | Operators | The four-step overlap procedure for `CERBERUS_API_KEY` and `CERBERUS_MCP_TOKEN`, why an overlap is used instead of a hard cutover, what Cerberus refuses to do, and what an overlap does not do. |
+
 ## Release preparation (`docs/release/`)
 
 These describe how `v0.1.0` was prepared and published. They are a historical
