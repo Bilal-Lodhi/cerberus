@@ -33,6 +33,42 @@ const MCP_TIMEOUT_MS = 5_000;
 
 type Severity = TimelineEntry["severity"];
 
+/**
+ * Reads a report's `generatedAt` as epoch milliseconds, or 0 when unusable.
+ *
+ * 0 rather than `NaN`: a `NaN` comparator makes `Array.prototype.sort` leave the
+ * order unspecified, which is exactly the kind of silent non-determinism this
+ * function exists to remove.
+ */
+function reportTimeMs(report: Record<string, unknown>): number {
+  const parsed = Date.parse(String(report["generatedAt"] ?? ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Orders risk assessments oldest-first.
+ *
+ * The persistence layer returns them **newest-first** (`generatedAt: -1` in
+ * `MongoStore.getRiskAssessments`), but every consumer here wants "the latest" as
+ * the last element. Sorting explicitly at the point of use means a change to the
+ * store's projection, index or sort cannot silently reverse which assessment is
+ * treated as final — which is what happened: the route read the *oldest* report as
+ * `finalRiskScore`, and the in-process test stub's insertion order hid it.
+ */
+function sortReportsOldestFirst<T extends Record<string, unknown>>(reports: T[]): T[] {
+  return [...reports].sort((a, b) => reportTimeMs(a) - reportTimeMs(b));
+}
+
+/** The first value that is a non-empty string, or `""`. */
+function firstNonEmptyString(
+  ...values: Array<string | null | undefined>
+): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
+}
+
 export interface ReviewRouterOptions {
   /** Time source for TTL expiry. Defaults to the system clock. */
   clock?: Clock;
@@ -213,6 +249,7 @@ export function createReviewRouter(
       eventCount?: number;
       pasteCount?: number;
       tabSwitchCount?: number;
+      fullscreenExitCount?: number;
       copyAttemptCount?: number;
       peakRiskScore?: number;
     }
@@ -278,6 +315,8 @@ export function createReviewRouter(
         let eventCount = memSession?.events.length ?? entry.eventCount ?? 0;
         let pasteCount = memSession?.pasteCount ?? entry.pasteCount ?? 0;
         let tabSwitchCount = memSession?.tabSwitchCount ?? entry.tabSwitchCount ?? 0;
+        let fullscreenExitCount =
+          memSession?.fullscreenExitCount ?? entry.fullscreenExitCount ?? 0;
         let copyAttemptCount = memSession?.copyAttemptCount ?? entry.copyAttemptCount ?? 0;
         let riskScore =
           memSession?.lastRiskPayload?.overallRiskScore ?? entry.peakRiskScore ?? 0;
@@ -286,7 +325,7 @@ export function createReviewRouter(
         const review = await callMcpTool<{
           success: boolean;
           events?: Array<{ eventType: string; timestamp: string }>;
-          riskAssessments?: Array<{ overallRiskScore: number }>;
+          riskAssessments?: Array<{ overallRiskScore: number; generatedAt?: string }>;
         }>(
           config,
           MCP_TOOL_NAMES.GET_SESSION_REVIEW,
@@ -313,15 +352,25 @@ export function createReviewRouter(
           ).length;
           if (mcpCopies > copyAttemptCount) copyAttemptCount = mcpCopies;
 
+          const mcpFullscreenExits = events.filter(
+            (event) =>
+              event.eventType === "FULLSCREEN_EXIT" || event.eventType === "WINDOW_BLUR",
+          ).length;
+          if (mcpFullscreenExits > fullscreenExitCount) {
+            fullscreenExitCount = mcpFullscreenExits;
+          }
+
           if (events.length > 0) {
             lastEventTimestamp = [...events].sort(
               (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
             )[0].timestamp;
           }
 
-          const assessments = review.data.riskAssessments ?? [];
+          const assessments = sortReportsOldestFirst(
+            review.data.riskAssessments ?? [],
+          );
           if (assessments.length > 0) {
-            const latest = assessments[assessments.length - 1].overallRiskScore;
+            const latest = assessments[assessments.length - 1]["overallRiskScore"];
             if (typeof latest === "number" && latest > riskScore) riskScore = latest;
           }
         }
@@ -345,6 +394,7 @@ export function createReviewRouter(
           eventCount,
           pasteCount,
           tabSwitchCount,
+          fullscreenExitCount,
           copyAttemptCount,
           riskScore,
           peakRiskScore: riskScore,
@@ -433,7 +483,9 @@ export function createReviewRouter(
 
     const session = review.data.session;
     const events = review.data.events ?? [];
-    const reports = review.data.riskAssessments ?? [];
+    // Oldest first, so "the latest" is the last element regardless of the order
+    // the persistence layer returned them in.
+    const reports = sortReportsOldestFirst(review.data.riskAssessments ?? []);
 
     const timeline = events.map((event) =>
       buildTimelineEntry({
@@ -511,7 +563,16 @@ export function createReviewRouter(
       employeeId: session.employeeId ?? memSession?.employeeId ?? "unknown",
       auditId: session.auditId ?? memSession?.auditId ?? "",
       status,
-      terminalContent: session.terminalContent ?? memSession?.currentCode ?? "",
+      // `monitored_sessions.terminalContent` is never written — no route calls
+      // `update_session_terminal_content` — so after a restart this would resolve
+      // to "". The newest assessment's `codeSnapshot` holds the same content, so
+      // the review view recovers instead of reporting an empty workspace. The
+      // evidence was always durable; only the view lost it.
+      terminalContent: firstNonEmptyString(
+        session.terminalContent,
+        memSession?.currentCode,
+        lastReport?.["codeSnapshot"] as string | undefined,
+      ),
       timeline,
       riskSummary,
       finalRiskScore,

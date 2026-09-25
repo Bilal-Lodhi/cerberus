@@ -378,6 +378,7 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
         eventCount: (counts["eventCount"] as number) ?? 0,
         pasteCount: counts["pasteCount"] as number | undefined,
         tabSwitchCount: counts["tabSwitchCount"] as number | undefined,
+        fullscreenExitCount: counts["fullscreenExitCount"] as number | undefined,
         copyAttemptCount: counts["copyAttemptCount"] as number | undefined,
         peakRiskScore: counts["peakRiskScore"] as number | undefined,
         status: counts["status"] as string | undefined,

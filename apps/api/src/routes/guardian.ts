@@ -268,6 +268,10 @@ export function createGuardianRouter(
             eventCount: session.events.length,
             pasteCount: session.pasteCount,
             tabSwitchCount: session.tabSwitchCount,
+            // Previously omitted, so MongoDB never learned this counter and a
+            // restart reset it to 0 — which silently disabled the fullscreen-exit
+            // analysis trigger and its score penalty.
+            fullscreenExitCount: session.fullscreenExitCount,
             copyAttemptCount: session.copyAttemptCount,
             peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
           },
@@ -707,6 +711,7 @@ export function createGuardianRouter(
           eventCount: state.events.length,
           pasteCount: state.pasteCount,
           tabSwitchCount: state.tabSwitchCount,
+          fullscreenExitCount: state.fullscreenExitCount,
           copyAttemptCount: state.copyAttemptCount,
           alertTriggered:
             (state.lastRiskPayload?.overallRiskScore ?? 0) >= AUTO_LOCK_THRESHOLD,
@@ -735,6 +740,7 @@ export function createGuardianRouter(
         eventCount: 0,
         pasteCount: 0,
         tabSwitchCount: 0,
+        fullscreenExitCount: 0,
         copyAttemptCount: 0,
         alertTriggered: false,
       });
@@ -800,6 +806,7 @@ export function createGuardianRouter(
           eventCount: Number(doc["eventCount"] ?? 0),
           pasteCount: Number(doc["pasteCount"] ?? 0),
           tabSwitchCount: Number(doc["tabSwitchCount"] ?? 0),
+          fullscreenExitCount: Number(doc["fullscreenExitCount"] ?? 0),
           copyAttemptCount: Number(doc["copyAttemptCount"] ?? 0),
           alertTriggered: riskScore >= AUTO_LOCK_THRESHOLD,
         });
