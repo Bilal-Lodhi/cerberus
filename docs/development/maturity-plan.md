@@ -442,9 +442,10 @@ re-raise them.
 
 ## Release readiness
 
-**`v0.2.0` is published as a GitHub pre-release.** It is an operational-durability
-release and remains experimental: not production ready, no compliance claim, no
-endpoint agent, no accounts or tenancy.
+**`v0.2.0` is authorised for publication as a GitHub pre-release**, and is published
+by the release that carries this document. It is an operational-durability release and
+remains experimental: not production ready, no compliance claim, no endpoint agent, no
+accounts or tenancy.
 
 `v0.1.0` remains published and is still a pre-release, and its annotated tag is
 immutable — re-verified after every merge: tag object
