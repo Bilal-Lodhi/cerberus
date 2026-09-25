@@ -23,6 +23,13 @@ Four are being filed. The status line on each section says which:
 | 8 | Document the console web build output directory | Filed | `documentation`, `good first issue` |
 | 9 | Add a `CODEOWNERS` file | Deferred | — |
 
+The statuses above describe the triage as it stood when the issues were filed.
+Candidates 6 and 8 were subsequently resolved on `main`: `docs/index.md` now
+exists and is linked from `README.md`, and the console web build output
+directory (`apps/console/build/web`) is documented in `README.md` and
+`CONTRIBUTING.md`. The section bodies below are kept as the historical record of
+the triage and are not updated in place.
+
 Candidates 2 and 9 are real and still open, but each needs a maintainer decision
 before a contributor can start: 2 needs a choice between building a reference
 set and deleting the setting, and 9 needs the maintainer to name real owners. They
