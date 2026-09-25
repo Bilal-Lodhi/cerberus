@@ -16,7 +16,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
-import type { AppConfig } from "../config.js";
+import type { AppConfig, AuthConfig } from "../config.js";
 
 /** Routes that are always reachable without a credential. */
 const PUBLIC_PATHS = new Set<string>(["/health", "/"]);
@@ -61,6 +61,26 @@ export function extractCredential(c: Context): string {
 }
 
 /**
+ * True when the presented credential matches the current key or, during a
+ * rotation, the key being retired.
+ *
+ * **Both comparisons always run.** Short-circuiting on the first match would make
+ * the response time depend on *which* key matched, letting a caller holding a
+ * retired key distinguish "retired but still accepted" from "not accepted at all"
+ * — which is exactly the state an operator wants to be able to end silently.
+ *
+ * Neither key is ever logged, echoed, or included in an error response.
+ */
+export function credentialMatches(presented: string, auth: AuthConfig): boolean {
+  const matchesCurrent = constantTimeEquals(presented, auth.apiKey);
+  const matchesPrevious = auth.previousApiKey
+    ? constantTimeEquals(presented, auth.previousApiKey)
+    : false;
+
+  return matchesCurrent || matchesPrevious;
+}
+
+/**
  * Builds the authentication middleware.
  *
  * Behaviour:
@@ -100,7 +120,7 @@ export function createAuthMiddleware(config: AppConfig): MiddlewareHandler {
       );
     }
 
-    if (!constantTimeEquals(presented, config.auth.apiKey)) {
+    if (!credentialMatches(presented, config.auth)) {
       // Deliberately identical response shape to the missing-credential case.
       return c.json(
         {

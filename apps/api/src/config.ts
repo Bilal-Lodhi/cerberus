@@ -69,6 +69,15 @@ export interface MCPConfig {
 export interface AuthConfig {
   /** Operator API key. Empty only when devMode is true. */
   apiKey: string;
+  /**
+   * The key being retired, accepted during a rotation overlap.
+   *
+   * Set `CERBERUS_API_KEY` to the new key and this to the old one, restart, move
+   * every client across, then unset this and restart again. There is no key
+   * identity, no revocation list and no rotation tooling — this is the minimum
+   * that makes a rotation possible without a hard cutover.
+   */
+  previousApiKey?: string;
   /** Header names accepted for the credential, in priority order. */
   headerNames: string[];
 }
@@ -212,8 +221,27 @@ export function loadConfig(): AppConfig {
 
   const openaiApiKey = readEnv("OPENAI_API_KEY");
   const apiKey = readEnv("CERBERUS_API_KEY");
+  const previousApiKey = readEnv("CERBERUS_API_KEY_PREVIOUS");
   const mcpApiKey = readEnv("CERBERUS_MCP_TOKEN");
   const configuredCorsOrigins = splitList(readEnv("CERBERUS_CORS_ORIGINS"));
+
+  // ── The rotation overlap is an overlap, never a replacement ──
+  //
+  // Accepting a "previous" key with no current key would leave a deployment
+  // authenticating against the credential it is trying to retire.
+  if (previousApiKey && !apiKey) {
+    throw new ConfigError(
+      "CERBERUS_API_KEY_PREVIOUS is set but CERBERUS_API_KEY is not. The previous key is an " +
+        "overlap for a rotation, not a replacement: set the current key as well, or unset both.",
+    );
+  }
+
+  if (previousApiKey && previousApiKey === apiKey) {
+    console.warn(
+      "[config] CERBERUS_API_KEY_PREVIOUS equals CERBERUS_API_KEY — the overlap is a no-op. " +
+        "Unset the previous key once every client has moved to the current one.",
+    );
+  }
 
   // ── Fail closed: mandatory secrets outside explicit development mode ──
   const missing: string[] = [];
@@ -258,6 +286,7 @@ export function loadConfig(): AppConfig {
 
   const auth: AuthConfig = {
     apiKey,
+    ...(previousApiKey ? { previousApiKey } : {}),
     headerNames: ["authorization", "x-api-key"],
   };
 
@@ -295,6 +324,7 @@ export function loadConfig(): AppConfig {
       `model="${openai.model}" ` +
       `openaiKey=${openaiApiKey ? "set" : "unset"} ` +
       `apiKey=${apiKey ? "set" : "unset"} ` +
+      `previousApiKey=${previousApiKey ? "set" : "unset"} ` +
       `mcpToken=${mcpApiKey ? "set" : "unset"} ` +
       `corsOrigins=${cors.allowedOrigins.length} ` +
       `sessionTtl=${security.sessionTTLSeconds}s ` +
