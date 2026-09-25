@@ -80,8 +80,24 @@ cd apps/console
 flutter pub get
 flutter analyze
 dart format --output=none --set-exit-if-changed .
+flutter test
 flutter run -d chrome --dart-define=API_BASE_URL=http://localhost:8080
 ```
+
+To build the deployable web bundle rather than a dev session, from
+`apps/console`:
+
+```bash
+flutter build web --release \
+  --dart-define=API_BASE_URL=https://your-cerberus-host \
+  --dart-define=CERBERUS_API_KEY=<your CERBERUS_API_KEY>
+```
+
+The bundle is written to `apps/console/build/web/` — `build/web` relative to the
+directory you ran the command from. That path is gitignored via `/build/` in
+`apps/console/.gitignore`, so it is never committed. Both `--dart-define` values
+are compiled into the bundle, which means the API key is readable by anyone who
+can fetch it; see the security note in `README.md`.
 
 The console is a Flutter web app and is not containerised by `docker-compose.yml`.
 
