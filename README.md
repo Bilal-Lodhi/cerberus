@@ -32,10 +32,11 @@ Implemented today:
   switches, window blur, copy attempts, dev-tools open, fullscreen exit,
   external app switch, edits, submissions and pastes. Session state is held in
   memory.
-- **Multi-layer deduplication** before spending inference: identical
-  risk-assessment id, code-hash equality to skip re-analysis of an unchanged
-  workspace, a 128-entry micro-event fingerprint ring to suppress replayed
-  batches, and a behavioural-counter score blend.
+- **Multi-layer deduplication** before spending inference: a durable unique
+  identity on `(sessionId, eventId)` so a retried batch is stored and counted once
+  even across a restart, identical risk-assessment id, code-hash equality to skip
+  re-analysis of an unchanged workspace, a 128-entry content fingerprint ring
+  scoped to content-bearing events, and a behavioural-counter score blend.
 - **AI risk analysis** producing a `RiskAssessmentPayload` with six risk
   dimensions, `RiskFlag`s, an `ExfiltrationReport` and `BehavioralAnomaly`s. The
   exfiltration report is computed **locally** by comparing paste content against

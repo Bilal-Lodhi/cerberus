@@ -117,10 +117,16 @@ so container orchestrators can probe it.
   opaque per-process token that is not accepted as a credential anywhere.
 - **No replay protection beyond TLS.** A captured request can be replayed while
   the key is valid. There is no nonce, timestamp window, request signing or
-  idempotency key on the API surface. Telemetry ingestion has an
-  application-level fingerprint ring that suppresses *duplicate event content*,
-  but that is a data-quality mechanism, not a security control, and it only
-  holds 128 fingerprints per session.
+  idempotency key on the API surface.
+- **Telemetry has durable *retry idempotency*, which is not replay protection.**
+  `micro_events` carries a unique index on `(sessionId, eventId)` and the store
+  reports which events were newly inserted, so a batch retried after a network
+  ambiguity is stored and counted once — including across a restart. But the
+  **monitored client supplies `eventId`**, so a client that wants to re-send
+  content sends a fresh one and the event is accepted. This protects against
+  retries and duplicates, not against a hostile telemetry producer. The
+  content-fingerprint ring is scoped to content-bearing events and is a cache in
+  front of the durable identity, not a control.
 - **Manual key rotation.** Rotation means changing the environment variable and
   restarting the processes. There is no overlap window, no second valid key, no
   revocation list and no rotation tooling.

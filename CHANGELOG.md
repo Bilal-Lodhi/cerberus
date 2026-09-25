@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /api/v1/guardian/ingest` reports `acceptedCount` and `duplicateCount`
+  alongside `processedCount`, which keeps its meaning (the batch size). A caller
+  retrying after a network ambiguity can see that its events were already stored.
+- `micro_events` gains a unique index on `(sessionId, eventId)`.
 - `CONTRIBUTING.md` records that Cerberus is single-maintainer and does not use
   `CODEOWNERS`, why a file of invented or wildcard entries would be worse than
   none, and the condition for revisiting it: a second real owner relationship.
@@ -167,6 +171,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A batch retried after a restart was re-ingested and re-counted. Deduplication
+  lived in a 128-entry fingerprint ring in process memory, which is empty after a
+  restart. `micro_events` now carries a unique index on `(sessionId, eventId)`,
+  `ingest_micro_events` upserts each event with `$setOnInsert` and reports which
+  events were **newly inserted**, and the ingest path applies only those. Verified
+  against real MongoDB across a real process restart: a two-event batch sent twice
+  reports `accepted=2 duplicate=0` then `accepted=0 duplicate=2`, the durable
+  `eventCount` stays 2, and exactly 2 documents are stored.
+- Content deduplication was applied to **signal** events, silently dropping
+  legitimate telemetry: two keystrokes with the same inter-key delay are two
+  keystrokes, not a replay. It is now scoped to content-bearing types (`PASTE`,
+  `PASTE_TRIGGER`, `EDIT`, `CODE_DELTA`, `SUBMIT`); every other event is
+  identified by `eventId` alone.
+- An event with no `eventId` is rejected with `400 MISSING_EVENT_ID`.
+  `MicroEvent.eventId` was already required by the contract and is now the durable
+  idempotency key, so an event that cannot be identified cannot be deduplicated.
 - A restart reset a session's durable counters. `update_session_counts` was
   applied with `$set`, so the durable totals were whatever the API held in memory
   — and a restarted process held counters starting at zero. Its first write

@@ -142,33 +142,41 @@ one after, and the durable `eventCount` reads **6**, with `tabSwitchCount` and
 before this process started" — it was previously declared, initialised to zero and
 never read.
 
-### 5.5 The dedup fingerprint ring does not survive a restart
+### 5.5 Replay handling — durable, with two caveats
 
-`recentEventFingerprints` is a 128-entry `Set` in memory. A batch replayed after a
-restart is re-ingested: counters inflate and the events are written a second time.
-Within one process the ring works, which is why this was not visible.
+`recentEventFingerprints` is a 128-entry `Set` in memory and does not survive a
+restart. It is no longer the guarantee: `micro_events` carries a unique index on
+`(sessionId, eventId)`, `ingest_micro_events` upserts with `$setOnInsert` and
+reports which events were newly inserted, and the ingest path applies **only
+those** to in-memory state. A batch retried after a restart is stored once and
+counted once.
 
-### 5.6 The fingerprint ignores `eventId`
+Two things this is not:
 
-`computeEventFingerprint()` builds its key from the event type and a slim payload
-view — **not** from `eventId`. Two genuinely distinct events with identical
-payloads are therefore treated as one, and the second is dropped. For `KEYSTROKE`
-that is wrong in principle: two keystrokes with the same inter-key delay are two
-keystrokes, not a replay.
+- **It is not adversarial replay protection.** The monitored client supplies
+  `eventId`, so a client that wants to re-send content simply sends a fresh one.
+  The threat model says so explicitly. Durable identity makes *retry after a
+  network ambiguity* safe; it does not make a hostile client honest.
+- **The content fingerprint is scoped, not general.** It applies only to
+  content-bearing types (`PASTE`, `PASTE_TRIGGER`, `EDIT`, `CODE_DELTA`,
+  `SUBMIT`). Applying it to signal events — keystrokes, focus changes, copy
+  attempts — silently dropped legitimate telemetry, because two signals with
+  identical payloads are two events. `isContentBearingEvent()` draws that line.
 
-It also means the fingerprint is not an idempotency key and cannot become one
-without including the client-supplied identifier — which raises the question of
-how much that identifier can be trusted, since the monitored client supplies it.
+The fingerprint ring is therefore a **cache in front of a durable guarantee**, and
+it catches only the case the durable identity does not: the same content re-sent
+under a fresh `eventId`.
 
-Recorded, not changed here: this is the replay and idempotency workstream, and the
-fix has to decide what a duplicate *is*, not only where the ring lives.
+Verified against real MongoDB across a real process restart: a two-event batch sent
+twice reports `accepted=2 duplicate=0` then `accepted=0 duplicate=2`, the durable
+`eventCount` stays 2, and MongoDB holds exactly 2 documents.
 
-### 5.7 `lastAnalyzedCodeHash` does not survive a restart
+### 5.6 `lastAnalyzedCodeHash` does not survive a restart
 
 Costs at most one redundant paid analysis per session after a restart. It cannot
 lose or corrupt evidence, so it is recorded here rather than prioritised.
 
-### 5.8 `WINDOW_BLUR` increments the fullscreen-exit counter
+### 5.7 `WINDOW_BLUR` increments the fullscreen-exit counter
 
 `applyEventToSession()` treats `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically.
 The counter therefore means "focus was lost", not "fullscreen was exited", which
@@ -210,13 +218,17 @@ Not authoritative, and never was: everything in §3 classified B, C or D.
 6. **A counter is monotonic.** Counters are hydrated before use and applied with
    `$max`, so neither a restart nor a caller's bookkeeping can lower a durable
    total.
+7. **An in-memory dedup layer is a cache, never the guarantee.** The durable
+   `(sessionId, eventId)` identity decides what is new; the fingerprint ring only
+   avoids a round trip for content it has already seen in this process.
+8. **Content dedup applies only where content exists.** A signal event is
+   identified by its `eventId`, not by its payload, because two signals with
+   identical payloads are two events.
 
 ## 8. What is still open
 
 Tracked in [maturity-plan.md](maturity-plan.md) against the phase exit condition:
 
-- replay handling that survives a restart (§5.5), and what a duplicate *is*
-  (§5.6);
 - a single central transition path, so status cannot diverge between
   `sessionStore`, `activeSessions` and MongoDB;
 - partial-failure semantics for a session-changing operation whose persistence

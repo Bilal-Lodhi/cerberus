@@ -248,21 +248,44 @@ Every session field, its class and its fate across a restart is inventoried in
 
 ## 5. Deduplication layers
 
-Four layers, all in `apps/api/src/routes/guardian.ts`:
+Five layers. The first is durable; the rest are in-process and best-effort.
 
-1. **Risk-assessment id.** The AI contract carries `riskAssessmentId`; the
-   parser generates a UUID when the model omits one
-   (`apps/api/src/ai/parsers.ts`).
-2. **Code-hash equality.** SHA-256 of `currentCode` is compared against
+1. **Durable event identity.** `micro_events` carries a unique index on
+   `(sessionId, eventId)`, and `ingest_micro_events` upserts each event with
+   `$setOnInsert`. The store reports which events were **newly inserted**, and the
+   ingest path applies only those to in-memory state. A retried batch is therefore
+   stored once and counted once — **including a retry after a restart**, when every
+   in-process layer is empty. `eventId` is required by the `MicroEvent` contract;
+   the route rejects an event without one with `400 MISSING_EVENT_ID`, because an
+   event that cannot be identified cannot be deduplicated.
+
+   This is **retry idempotency, not adversarial replay protection**: the monitored
+   client supplies `eventId`, so a client that wants to re-send content can simply
+   send a fresh one. The threat model says so explicitly.
+
+2. **Risk-assessment id.** The AI contract carries `riskAssessmentId`; the parser
+   generates a UUID when the model omits one (`apps/api/src/ai/parsers.ts`).
+3. **Code-hash equality.** SHA-256 of `currentCode` is compared against
    `lastAnalyzedCodeHash`. When unchanged, the previous payload is reused and no
-   inference is performed; the cached payload is returned with
-   `alertTriggered` computed as score > 50.
-3. **Micro-event fingerprint ring.** `computeEventFingerprint()` builds a slim
+   inference is performed; the cached payload is returned with `alertTriggered`
+   computed as score > 50. In-process only: after a restart this costs one
+   redundant analysis per session, and cannot lose evidence.
+4. **Content fingerprint ring, scoped.** `computeEventFingerprint()` builds a slim
    key from event type, the first 512 characters of
-   `pasteContent`/`newText`/`diffPatch`, `changeLength`, and `deltaMs` bucketed
-   to 10 ms. A fingerprint already present in `recentEventFingerprints` causes
-   the event to be dropped. The set is trimmed to the most recent 128 entries.
-4. **Behavioural counter blend.** The semantic score is blended with a
+   `pasteContent`/`newText`/`diffPatch`, `changeLength`, and `deltaMs` bucketed to
+   10 ms. A key already in `recentEventFingerprints` drops the event, and the set
+   is trimmed to the most recent 128 entries.
+
+   It applies **only to content-bearing types** — `PASTE`, `PASTE_TRIGGER`,
+   `EDIT`, `CODE_DELTA`, `SUBMIT`. Everything else is a *signal*, and two signals
+   with identical payloads are two events: two keystrokes with the same inter-key
+   delay are two keystrokes, not a replay. Applying content dedup to signals
+   silently lost telemetry, which is why it is scoped (`isContentBearingEvent`).
+
+   The ring is a cache in front of layer 1, not a guarantee: it does not survive a
+   restart, and it catches only the case layer 1 does not — the same content
+   re-sent under a fresh `eventId`.
+5. **Behavioural counter blend.** The semantic score is blended with a
    behavioural boost:
 
    ```text
@@ -365,6 +388,7 @@ idempotent for identical specifications.
 | `monitored_sessions` | `{ createdAt: -1 }` | |
 | `micro_events` | `{ sessionId: 1, timestamp: -1 }` | |
 | `micro_events` | `{ eventType: 1 }` | |
+| `micro_events` | `{ sessionId: 1, eventId: 1 }` | unique — the durable event identity |
 | `risk_assessments` | `{ sessionId: 1, generatedAt: -1 }` | |
 | `risk_assessments` | `{ employeeId: 1 }` | |
 | `threat_scenarios` | `{ "metadata.matrixId": 1 }` | unique |
