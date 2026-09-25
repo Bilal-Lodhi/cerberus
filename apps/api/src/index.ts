@@ -12,11 +12,12 @@
  *   POST   /api/v1/scenarios/cancel             cancel an in-flight authoring request
  *   POST   /api/v1/guardian/ingest              ingest telemetry
  *   POST   /api/v1/guardian/deploy              create a monitored session
- *   GET    /api/v1/guardian/sessions            list sessions (live + durable)
- *   GET    /api/v1/guardian/sessions/:id        live session detail
+ *   GET    /api/v1/guardian/sessions            list live sessions (expired excluded)
+ *   GET    /api/v1/guardian/sessions/:id        session detail, with derived liveness
+ *   POST   /api/v1/guardian/sessions/:id/reactivate
  *   POST   /api/v1/guardian/sessions/:id/terminate
  *   DELETE /api/v1/guardian/sessions/:id
- *   GET    /api/v1/sessions                     session list for the console
+ *   GET    /api/v1/sessions                     session list for the console (includes expired)
  *   GET    /api/v1/sessions/:id                 full session review
  *   POST   /api/v1/auditor/query                natural-language audit query
  *
@@ -38,10 +39,24 @@ import { createReviewRouter } from "./routes/review.js";
 import { createAuditorRouter } from "./routes/auditor.js";
 import { healthRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
 import { identityRouter } from "./routes/identity.js";
+import { systemClock, type Clock } from "./services/session-liveness.js";
+
+export interface AppOptions {
+  /**
+   * Time source used for `SESSION_TTL_SECONDS` expiry. Defaults to the system
+   * clock; tests inject a manual clock so the TTL boundary is asserted exactly
+   * rather than by sleeping.
+   */
+  clock?: Clock;
+}
 
 /** Builds the fully-wired Hono application. */
-export function createApp(config: AppConfig): Hono {
+export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
   const app = new Hono();
+
+  // Session liveness reads the clock on every request, so the injected source
+  // is resolved once here and shared by the guardian and review routers.
+  const clock: Clock = options.clock ?? systemClock;
 
   // ── CORS: explicit allow-list only ──────────────────────────────
   const allowedOrigins = config.cors.allowedOrigins;
@@ -81,7 +96,7 @@ export function createApp(config: AppConfig): Hono {
   app.use("*", prettyJSON());
 
   // ── Routes ──────────────────────────────────────────────────────
-  const guardian = createGuardianRouter(config);
+  const guardian = createGuardianRouter(config, { clock });
 
   app.route("/", healthRouter);
   app.route("/health", healthRouter);
@@ -90,7 +105,9 @@ export function createApp(config: AppConfig): Hono {
   app.route("/api/v1/guardian", guardian.router);
   app.route(
     "/api/v1/sessions",
-    createReviewRouter(config, guardian.sessionStore, guardian.activeSessions),
+    createReviewRouter(config, guardian.sessionStore, guardian.activeSessions, {
+      clock,
+    }),
   );
   app.route("/api/v1/auditor", createAuditorRouter(config));
 
