@@ -183,6 +183,9 @@ These are the places where the code chooses to refuse rather than proceed:
 | Over-sized telemetry batch | `apps/api/src/routes/guardian.ts` | HTTP 400 `BATCH_TOO_LARGE`; nothing reaches the persistence layer. |
 | Auditor result set above the ceiling | `apps/api/src/routes/auditor.ts` | Truncated to 200 records whatever pipeline the model produced, so a pipeline with no `$limit` cannot pass every session to the provider. |
 | Non-string or over-long identity field | `apps/api/src/routes/identity.ts` | HTTP 400 `INVALID_IDENTITY_FIELD`. |
+| Model-supplied score or confidence out of range | `parseRiskAssessment()` / `parseRiskDimensions()` / `parseRiskFlag()` in `apps/api/src/ai/parsers.ts` | Clamped to the documented range (0-100 for scores, 0-1 for confidences) rather than accepted as-is. A well-formed but absurd value cannot corrupt a threshold comparison. |
+| Model-supplied array or text field oversized | `boundedArray()` / `bounded()` in `apps/api/src/ai/parsers.ts` | Arrays capped at 50 entries, free text at 2 000 characters, identifiers at 200, `subMandates` recursion depth-limited to 5. Non-object entries are dropped rather than coerced. |
+| Non-finite composed risk score | `clampScore()` in `apps/api/src/routes/guardian.ts` | Coerced to 0 rather than `NaN`, so a bad blend cannot silently disable the auto-lock by making every comparison false. |
 
 Deliberate **fail-open** behaviours, for completeness:
 

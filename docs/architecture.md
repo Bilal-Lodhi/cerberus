@@ -253,13 +253,62 @@ Four layers, all in `apps/api/src/routes/guardian.ts`:
    fullscreenPenalty = fullscreenExitCount > 0 ? 10 : 0
    keystrokePenalty  = anomalousKeystrokes ? 12 : 0
    behaviouralBoost  = sum of the above
-   blendedScore      = min(round(semanticScore * 0.85 + behaviouralBoost * 0.15), 100)
+   blendedScore      = clampScore(semanticScore * 0.85 + behaviouralBoost * 0.15)
    ```
 
+   `clampScore()` rounds and clamps into 0-100, and maps a non-finite value to 0
+   rather than `NaN` — `NaN >= AUTO_LOCK_THRESHOLD` is false, so a `NaN` score
+   would silently disable the auto-lock instead of failing loudly.
    `dataExfiltration` and `policyViolation` dimensions are then adjusted by the
-   blend factor and the paste/tab/copy penalties, each capped at 100.
+   blend factor and the paste/tab/copy penalties, each through `clampScore()`.
 
-## 6. Persistence model
+## 6. Score composition and model-output bounds
+
+Risk scoring is **model-assisted, not model-trusting**. Two distinct numbers are
+in play, and they are not interchangeable:
+
+- the **semantic score** — what the model returned for `overallRiskScore`, which
+  is advisory and untrusted;
+- the **behavioural boost** — a deterministic function of counted telemetry
+  (pastes, tab switches, copy attempts, fullscreen exits, keystroke rhythm).
+
+The persisted `overallRiskScore` is the blend above, so it is a composition of
+both. The model's raw number is not separately retained; the dimensions and
+flags that produced it are, and `behavioralContext` records the counter tallies
+the boost was derived from. The blend is documented rather than implicit so an
+operator can explain any score without re-running the model.
+
+`apps/api/src/ai/parsers.ts` is the single boundary every consumer reads from, and
+it bounds what the model may supply:
+
+| Value | Bound |
+| --- | --- |
+| `overallRiskScore`, `dimensionScores.*` | clamped to 0-100 |
+| `flags[].confidence`, `exfiltrationReport.overallSimilarity`, `matchedSnippets[].similarityScore`, `aiCompletionLikelihood` | clamped to 0-1 |
+| classifier `confidence` | clamped to 0-1, so an out-of-range value cannot stand in for the ≥ 0.75 admission gate |
+| `regulatoryMandates[].weight` | clamped to 0-1 |
+| `threatVectors[].riskScore` | clamped to 0-100 |
+| `antiExfiltrationThresholds.*` | each clamped to its documented range, over the documented defaults |
+| every array (`flags`, `behavioralAnomalies`, `matchedSnippets`, `subMandates`, systems, mandates, vectors, scenarios) | at most 50 entries |
+| free text | at most 2 000 characters; identifiers at most 200 |
+| `subMandates` recursion | depth-limited to 5 |
+
+Non-object entries in any of those arrays are **dropped**, not coerced: every
+consumer indexes into them, so a `null`, string or nested array would either
+throw or fabricate a fieldless record that reads like real evidence.
+
+Two consequences worth stating plainly:
+
+- **Duplicate flags do not inflate the score.** The blend depends on counted
+  telemetry, not on how many `flags` the model returned. Duplicates inflate the
+  payload, which is why the array is bounded, but not the number.
+- **A model score is never an authoritative judgement about a person.** It is one
+  input to a blended advisory number. Nothing in the codebase labels a monitored
+  operator as malicious, and no automated action is taken against a person; the
+  auto-lock is a system-state containment action on a session, documented as such
+  in [security/threat-model.md](security/threat-model.md).
+
+## 7. Persistence model
 
 All persistence goes through the MCP HTTP adapter. The API never opens a
 MongoDB connection.
@@ -324,7 +373,7 @@ Any other stage is ignored rather than executed. The records it filters come
 from `list_sessions`, which returns a projection of session fields, not raw
 events.
 
-## 7. Trust boundaries
+## 8. Trust boundaries
 
 ```text
         untrusted                         trusted (self-hosted)                    external
@@ -379,7 +428,7 @@ Boundary by boundary:
 What the boundaries do **not** provide is enumerated in
 [security/threat-model.md](security/threat-model.md).
 
-## 8. Known gaps in this release
+## 9. Known gaps in this release
 
 Cerberus is at `v0.1.0` and is not production ready. The following are known,
 deliberate or unresolved gaps rather than defects.
