@@ -331,26 +331,19 @@ export function createGuardianRouter(
           const behaviouralBoost =
             pastePenalty + tabPenalty + copyPenalty + fullscreenPenalty + keystrokePenalty;
 
-          const blendedScore = Math.min(
-            Math.round(semanticScore * 0.85 + behaviouralBoost * 0.15),
-            100,
+          const blendedScore = clampScore(
+            semanticScore * 0.85 + behaviouralBoost * 0.15,
           );
           riskPayload.overallRiskScore = blendedScore;
 
           const boostFactor = semanticScore > 0 ? blendedScore / semanticScore : 1.0;
-          riskPayload.dimensionScores.dataExfiltration = Math.min(
-            Math.round(
-              riskPayload.dimensionScores.dataExfiltration * boostFactor + pastePenalty * 0.8,
-            ),
-            100,
+          riskPayload.dimensionScores.dataExfiltration = clampScore(
+            riskPayload.dimensionScores.dataExfiltration * boostFactor + pastePenalty * 0.8,
           );
-          riskPayload.dimensionScores.policyViolation = Math.min(
-            Math.round(
-              riskPayload.dimensionScores.policyViolation * boostFactor +
-                tabPenalty * 0.6 +
-                copyPenalty * 0.5,
-            ),
-            100,
+          riskPayload.dimensionScores.policyViolation = clampScore(
+            riskPayload.dimensionScores.policyViolation * boostFactor +
+              tabPenalty * 0.6 +
+              copyPenalty * 0.5,
           );
 
           // ── Incident context enrichment ──
@@ -1258,6 +1251,20 @@ export function hasAnomalousKeystrokes(
     (delta) => delta < config.security.minHumanKeystrokeMs,
   ).length;
   return fastCount / deltas.length > 0.3;
+}
+
+/**
+ * Clamps a computed risk score into the 0-100 range the contract documents.
+ *
+ * The parsers already clamp what the model supplies, so this is a second line of
+ * defence on the composed value. The behavioural blend multiplies by a factor
+ * derived from the semantic score, and a non-finite result must not be able to
+ * turn a score into `NaN`: `NaN >= AUTO_LOCK_THRESHOLD` is false, so a NaN score
+ * would silently disable the auto-lock rather than fail loudly.
+ */
+export function clampScore(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(Math.max(Math.round(value), 0), 100);
 }
 
 export function computeKeystrokeMetrics(deltas: number[]): {

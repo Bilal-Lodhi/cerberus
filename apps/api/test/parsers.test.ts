@@ -11,9 +11,16 @@ import assert from "node:assert/strict";
 
 import {
   DEFAULT_ANTI_EXFILTRATION_THRESHOLDS,
+  MAX_MANDATE_DEPTH,
+  MAX_PARSED_ENTRIES,
+  MAX_PARSED_TEXT_CHARS,
   extractJsonObject,
+  parseAntiExfiltrationThresholds,
+  parseBehavioralAnomaly,
+  parseExfiltrationReport,
   parseJsonLoose,
   parseRecommendedActions,
+  parseRegulatoryMandates,
   parseRiskAssessment,
   parseScenarioClassifierVerdict,
   parseThreatScenarioMatrix,
@@ -22,6 +29,7 @@ import {
   safeStringArray,
   stripMarkdownFences,
 } from "../src/ai/parsers.js";
+import { clampScore } from "../src/routes/guardian.js";
 
 const GENERATED_AT = "2026-01-01T00:00:00.000Z";
 
@@ -368,5 +376,349 @@ describe("parseRecommendedActions", () => {
 
   test("returns an empty array on unparseable input", () => {
     assert.deepEqual(parseRecommendedActions("nope"), []);
+  });
+
+  test("bounds each action's length", () => {
+    const actions = parseRecommendedActions(
+      JSON.stringify({ actions: ["z".repeat(MAX_PARSED_TEXT_CHARS * 3)] }),
+    );
+    assert.equal(actions.length, 1);
+    assert.equal(actions[0].length, MAX_PARSED_TEXT_CHARS);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Bounds on model-supplied values
+// ═══════════════════════════════════════════════════════════════════
+
+describe("model output bounds — risk assessment", () => {
+  test("clamps an out-of-range overallRiskScore into 0-100", () => {
+    for (const [raw, expected] of [
+      [-1e9, 0],
+      [-1, 0],
+      [101, 100],
+      [1e9, 100],
+      [Number.NaN, 0],
+      [Number.POSITIVE_INFINITY, 0],
+    ] as Array<[number, number]>) {
+      const payload = parseRiskAssessment(
+        JSON.stringify({ overallRiskScore: raw }),
+        GENERATED_AT,
+      );
+      assert.equal(payload.overallRiskScore, expected, `raw=${raw}`);
+    }
+  });
+
+  test("clamps every dimension score into 0-100", () => {
+    const payload = parseRiskAssessment(
+      JSON.stringify({
+        dimensionScores: {
+          dataExfiltration: -500,
+          unauthorizedAccess: 1e6,
+          policyViolation: 50,
+          amlRedFlag: Number.NaN,
+          insiderTrading: -0.5,
+          soxNonCompliance: 100.4,
+        },
+      }),
+      GENERATED_AT,
+    );
+
+    assert.equal(payload.dimensionScores.dataExfiltration, 0);
+    assert.equal(payload.dimensionScores.unauthorizedAccess, 100);
+    assert.equal(payload.dimensionScores.policyViolation, 50);
+    assert.equal(payload.dimensionScores.amlRedFlag, 0);
+    assert.equal(payload.dimensionScores.insiderTrading, 0);
+    assert.equal(payload.dimensionScores.soxNonCompliance, 100);
+  });
+
+  test("clamps flag confidence into 0-1", () => {
+    const payload = parseRiskAssessment(
+      JSON.stringify({
+        flags: [
+          { flagType: "A", confidence: 42 },
+          { flagType: "B", confidence: -3 },
+          { flagType: "C", confidence: 0.25 },
+        ],
+      }),
+      GENERATED_AT,
+    );
+
+    assert.equal(payload.flags[0].confidence, 1);
+    assert.equal(payload.flags[1].confidence, 0);
+    assert.equal(payload.flags[2].confidence, 0.25);
+  });
+
+  test("bounds the flag and anomaly arrays", () => {
+    const many = Array.from({ length: MAX_PARSED_ENTRIES * 3 }, (_, i) => ({
+      flagType: `F${i}`,
+    }));
+    const payload = parseRiskAssessment(
+      JSON.stringify({ flags: many, behavioralAnomalies: many }),
+      GENERATED_AT,
+    );
+
+    assert.equal(payload.flags.length, MAX_PARSED_ENTRIES);
+    assert.equal(payload.behavioralAnomalies.length, MAX_PARSED_ENTRIES);
+  });
+
+  test("drops non-object entries instead of fabricating records", () => {
+    // A null entry used to be indexed into, and a string entry used to become a
+    // fieldless record that looked like real evidence.
+    const payload = parseRiskAssessment(
+      JSON.stringify({ flags: [null, "not a flag", 42, [], { flagType: "REAL" }] }),
+      GENERATED_AT,
+    );
+
+    assert.equal(payload.flags.length, 1);
+    assert.equal(payload.flags[0].flagType, "REAL");
+  });
+
+  test("bounds a long flag description and identifier", () => {
+    const payload = parseRiskAssessment(
+      JSON.stringify({
+        flags: [
+          {
+            flagType: "T".repeat(500),
+            description: "D".repeat(MAX_PARSED_TEXT_CHARS * 4),
+          },
+        ],
+      }),
+      GENERATED_AT,
+    );
+
+    assert.equal(payload.flags[0].description.length, MAX_PARSED_TEXT_CHARS);
+    assert.ok(payload.flags[0].flagType.length <= MAX_PARSED_TEXT_CHARS);
+  });
+});
+
+describe("model output bounds — exfiltration report", () => {
+  test("returns null for a non-object report", () => {
+    for (const raw of ["a string", 42, [], true]) {
+      assert.equal(
+        parseExfiltrationReport(raw),
+        null,
+        `expected null for ${JSON.stringify(raw)}`,
+      );
+    }
+  });
+
+  test("clamps similarity fields into 0-1", () => {
+    const report = parseExfiltrationReport({
+      overallSimilarity: 9,
+      aiCompletionLikelihood: -4,
+      matchedSnippets: [],
+    });
+
+    assert.ok(report);
+    assert.equal(report.overallSimilarity, 1);
+    assert.equal(report.aiCompletionLikelihood, 0);
+  });
+
+  test("validates each matched snippet", () => {
+    const report = parseExfiltrationReport({
+      overallSimilarity: 0.5,
+      matchedSnippets: [
+        { sourceSnippet: "s", employeeSnippet: "e", similarityScore: 12, sourceLabel: "L" },
+        null,
+        "junk",
+      ],
+    });
+
+    assert.ok(report);
+    assert.equal(report.matchedSnippets.length, 1);
+    assert.equal(report.matchedSnippets[0].similarityScore, 1);
+    assert.equal(report.matchedSnippets[0].sourceLabel, "L");
+  });
+
+  test("bounds the matched-snippet array", () => {
+    const report = parseExfiltrationReport({
+      matchedSnippets: Array.from({ length: MAX_PARSED_ENTRIES * 2 }, () => ({
+        similarityScore: 0.5,
+      })),
+    });
+
+    assert.ok(report);
+    assert.equal(report.matchedSnippets.length, MAX_PARSED_ENTRIES);
+  });
+
+  test("a malformed report reaches the contract, not the raw value", () => {
+    const payload = parseRiskAssessment(
+      JSON.stringify({ exfiltrationReport: "looks like a match" }),
+      GENERATED_AT,
+    );
+    assert.equal(payload.exfiltrationReport, null);
+  });
+});
+
+describe("model output bounds — behavioural anomalies", () => {
+  test("coerces a malformed anomaly into the contract shape", () => {
+    const anomaly = parseBehavioralAnomaly({ anomalyType: "PASTE_BURST" });
+
+    assert.equal(anomaly.anomalyType, "PASTE_BURST");
+    assert.equal(anomaly.metricValue, 0);
+    assert.equal(anomaly.threshold, 0);
+    assert.equal(typeof anomaly.description, "string");
+  });
+
+  test("bounds anomaly text fields", () => {
+    const anomaly = parseBehavioralAnomaly({
+      anomalyType: "A".repeat(400),
+      description: "D".repeat(MAX_PARSED_TEXT_CHARS * 3),
+      metricValue: 9,
+      threshold: 5,
+    });
+
+    assert.ok(anomaly.anomalyType.length <= MAX_PARSED_TEXT_CHARS);
+    assert.equal(anomaly.description.length, MAX_PARSED_TEXT_CHARS);
+    assert.equal(anomaly.metricValue, 9);
+  });
+});
+
+describe("model output bounds — scenario matrix", () => {
+  test("clamps mandate weight into 0-1", () => {
+    const mandates = parseRegulatoryMandates([
+      { mandateId: "a", weight: 5 },
+      { mandateId: "b", weight: -1 },
+      { mandateId: "c", weight: 0.4 },
+    ]);
+
+    assert.equal(mandates[0].weight, 1);
+    assert.equal(mandates[1].weight, 0);
+    assert.equal(mandates[2].weight, 0.4);
+  });
+
+  test("clamps vector riskScore into 0-100 and keeps a sane investigation time", () => {
+    const matrix = parseThreatScenarioMatrix(
+      JSON.stringify({
+        threatVectors: [
+          { vectorId: "a", riskScore: 1e6, investigationTimeMinutes: -50 },
+          { vectorId: "b", riskScore: 42, investigationTimeMinutes: 30 },
+        ],
+      }),
+      "m",
+      GENERATED_AT,
+    );
+
+    assert.equal(matrix.threatVectors[0].riskScore, 100);
+    assert.equal(matrix.threatVectors[0].investigationTimeMinutes, 0);
+    assert.equal(matrix.threatVectors[1].riskScore, 42);
+    assert.equal(matrix.threatVectors[1].investigationTimeMinutes, 30);
+  });
+
+  test("clamps anti-exfiltration thresholds to their documented ranges", () => {
+    const thresholds = parseAntiExfiltrationThresholds({
+      maxPasteEvents: -5,
+      maxTimeBetweenKeystrokesMs: 1e9,
+      dataLeakageSimilarityThreshold: 4,
+      behavioralAnomalySensitivity: -2,
+      maxCopyAttempts: 0,
+      maxWindowBlurEvents: 99_999,
+    });
+
+    assert.equal(thresholds.maxPasteEvents, 0);
+    assert.equal(thresholds.maxTimeBetweenKeystrokesMs, 60_000);
+    assert.equal(thresholds.dataLeakageSimilarityThreshold, 1);
+    assert.equal(thresholds.behavioralAnomalySensitivity, 0);
+    assert.equal(thresholds.maxCopyAttempts, 0);
+    assert.equal(thresholds.maxWindowBlurEvents, 10_000);
+  });
+
+  test("falls back to the documented thresholds when the model supplies none", () => {
+    const thresholds = parseAntiExfiltrationThresholds(undefined);
+    assert.deepEqual(thresholds, DEFAULT_ANTI_EXFILTRATION_THRESHOLDS);
+  });
+
+  test("bounds the scenario collections", () => {
+    const many = Array.from({ length: MAX_PARSED_ENTRIES * 2 }, (_, i) => ({
+      vectorId: `v${i}`,
+    }));
+    const matrix = parseThreatScenarioMatrix(
+      JSON.stringify({
+        targetSystems: many,
+        regulatoryMandates: many,
+        threatVectors: many,
+        penetrationScenarios: many,
+      }),
+      "m",
+      GENERATED_AT,
+    );
+
+    assert.equal(matrix.targetSystems.length, MAX_PARSED_ENTRIES);
+    assert.equal(matrix.regulatoryMandates.length, MAX_PARSED_ENTRIES);
+    assert.equal(matrix.threatVectors.length, MAX_PARSED_ENTRIES);
+    assert.equal(matrix.penetrationScenarios.length, MAX_PARSED_ENTRIES);
+  });
+
+  test("bounds and validates the nested subMandates tree", () => {
+    // A deep tree must terminate rather than recurse without bound.
+    let nested: Record<string, unknown> = { mandateId: "leaf", weight: 0.5 };
+    for (let i = 0; i < MAX_MANDATE_DEPTH + 10; i++) {
+      nested = { mandateId: `m${i}`, weight: 0.5, subMandates: [nested] };
+    }
+
+    const mandates = parseRegulatoryMandates([nested]);
+
+    let depth = 0;
+    let cursor = mandates[0];
+    while (cursor.subMandates.length > 0) {
+      cursor = cursor.subMandates[0];
+      depth++;
+      assert.ok(depth <= MAX_MANDATE_DEPTH + 1, "subMandates recursion did not terminate");
+    }
+    assert.ok(depth > 0);
+  });
+
+  test("drops non-object subMandates entries", () => {
+    const mandates = parseRegulatoryMandates([
+      { mandateId: "a", subMandates: ["a string", null, { mandateId: "ok" }] },
+    ]);
+
+    assert.equal(mandates[0].subMandates.length, 1);
+    assert.equal(mandates[0].subMandates[0].mandateId, "ok");
+  });
+});
+
+describe("model output bounds — classifier", () => {
+  test("clamps confidence into 0-1 so it cannot stand in for a confident verdict", () => {
+    assert.equal(
+      parseScenarioClassifierVerdict(JSON.stringify({ confidence: 42 })).confidence,
+      1,
+    );
+    assert.equal(
+      parseScenarioClassifierVerdict(JSON.stringify({ confidence: -1 })).confidence,
+      0,
+    );
+  });
+
+  test("bounds the reason and detectedDomain fields", () => {
+    const verdict = parseScenarioClassifierVerdict(
+      JSON.stringify({
+        reason: "R".repeat(MAX_PARSED_TEXT_CHARS * 3),
+        detectedDomain: "D".repeat(1000),
+      }),
+    );
+
+    assert.equal(verdict.reason.length, MAX_PARSED_TEXT_CHARS);
+    assert.ok(verdict.detectedDomain.length <= MAX_PARSED_TEXT_CHARS);
+  });
+});
+
+describe("clampScore", () => {
+  test("rounds and clamps into 0-100", () => {
+    assert.equal(clampScore(0), 0);
+    assert.equal(clampScore(74.6), 75);
+    assert.equal(clampScore(100), 100);
+    assert.equal(clampScore(101), 100);
+    assert.equal(clampScore(-1), 0);
+    assert.equal(clampScore(1e9), 100);
+  });
+
+  test("turns a non-finite score into zero rather than NaN", () => {
+    // NaN would make every threshold comparison false, silently disabling the
+    // auto-lock instead of failing loudly.
+    assert.equal(clampScore(Number.NaN), 0);
+    assert.equal(clampScore(Number.POSITIVE_INFINITY), 0);
+    assert.equal(clampScore(Number.NEGATIVE_INFINITY), 0);
   });
 });
