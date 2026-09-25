@@ -32,6 +32,21 @@ experiences.
 The limiter is **disabled** for the baseline, so these figures measure the
 application rather than bucket arithmetic. It has its own tests.
 
+### The stubs must match the real store's bounds
+
+This is not a footnote. An earlier version of this benchmark reported a **quadratic
+ingest cost** — a 29× throughput loss between an empty session and one holding 5 000
+events — and it was wrong. The cause was the benchmark's own MCP double: it returned
+*every* event from `get_session_review`, while the real store caps that at 500
+(`MongoStore.getSessionEvents`, `limit ?? 500`). The double re-serialised a growing
+array on every ingest, and the growth was attributed to the application.
+
+The same mistake has appeared twice elsewhere in this repository's history: a review
+route that assumed a sort order the real store does not provide, and a test double
+that did not deduplicate events the way the unique index does. **A double that does
+not match the real store's bounds measures the double.** Both the event cap and the
+memory isolation below are now explicit in the script, with comments saying why.
+
 ## Environment
 
 | | |
@@ -41,7 +56,7 @@ application rather than bucket arithmetic. It has its own tests.
 | CPU | AMD Ryzen 5 5600G, 12 logical cores |
 | Run | `npm run bench` (full), `--expose-gc` for the memory figure |
 
-Absolute numbers are machine-specific. **The ratios and the shape are the durable
+Absolute numbers are machine-specific. **The shape and the ratios are the durable
 part**, and they are what a future run should be compared against.
 
 ## Results
@@ -50,73 +65,96 @@ part**, and they are what a future run should be compared against.
 
 | Case | n | req/s | p50 ms | p95 ms | p99 ms | max ms |
 | --- | --- | --- | --- | --- | --- | --- |
-| `GET /health` | 2000 | 33 841 | 0.03 | 0.04 | 0.06 | 1.44 |
-| `POST /guardian/ingest` (oversized → 413) | 300 | 29 260 | 0.03 | 0.05 | 0.06 | 0.10 |
-| `GET /api/v1/sessions` (401, unauthenticated) | 2000 | 26 678 | 0.03 | 0.06 | 0.11 | 1.06 |
-| `GET /api/v1/sessions` | 1000 | 13 909 | 0.07 | 0.11 | 0.16 | 0.95 |
-| `POST /guardian/ingest` (50 replayed events) | 300 | 1 902 | 0.48 | 0.56 | 1.59 | 5.46 |
-| `POST /guardian/ingest` (1 KEYSTROKE) | 1000 | 603 | 1.57 | 2.77 | 4.95 | 9.20 |
-| `GET /api/v1/sessions/:id` | 500 | 249 | 3.44 | 7.45 | 13.74 | 19.84 |
-| `POST /guardian/ingest` (50 events) | 300 | 45 | 21.28 | 41.02 | 46.65 | 47.37 |
+| `GET /health` | 2000 | 33 681 | 0.03 | 0.04 | 0.07 | 0.55 |
+| `POST /guardian/ingest` (oversized → 413) | 300 | 29 290 | 0.03 | 0.05 | 0.07 | 0.14 |
+| `GET /api/v1/sessions` (401, unauthenticated) | 2000 | 26 615 | 0.03 | 0.07 | 0.11 | 0.88 |
+| `GET /api/v1/sessions` | 1000 | 13 656 | 0.07 | 0.11 | 0.16 | 0.78 |
+| `POST /guardian/ingest` (analysis) | 300 | 2 010 | 0.44 | 0.75 | 1.24 | 1.79 |
+| `POST /guardian/ingest` (50 replayed events) | 300 | 1 982 | 0.47 | 0.56 | 1.30 | 3.10 |
+| `POST /guardian/ingest` (1 KEYSTROKE) | 1000 | 837 | 1.25 | 1.86 | 2.65 | 3.28 |
+| `POST /guardian/ingest` (50 events) | 300 | 582 | 1.59 | 1.95 | 4.91 | 6.45 |
+| `GET /api/v1/sessions/:id` | 500 | 466 | 1.81 | 3.93 | 6.85 | 9.62 |
 
 ### Ingest cost against session size
 
-**This is the finding that matters.** The same single-event request, against sessions
-holding different amounts of history:
+The same single-event request, against sessions holding different amounts of history:
 
 | Events already held | n | req/s | p50 ms | p95 ms | p99 ms |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 200 | 2 263 | 0.44 | 0.65 | 0.69 |
-| 100 | 200 | 1 452 | 0.69 | 0.92 | 1.00 |
-| 500 | 200 | 576 | 1.58 | 2.18 | 5.87 |
-| 1 000 | 200 | 339 | 2.67 | 3.98 | 9.45 |
-| 2 500 | 200 | 150 | 6.02 | 11.27 | 13.14 |
-| 5 000 | 200 | 78 | 11.53 | 19.95 | 22.54 |
+| 0 | 200 | 1 733 | 0.53 | 0.89 | 1.56 |
+| 100 | 200 | 1 347 | 0.67 | 1.06 | 2.06 |
+| 500 | 200 | 618 | 1.40 | 2.32 | 4.39 |
+| 1 000 | 200 | 690 | 1.29 | 1.63 | 5.66 |
+| 2 500 | 200 | 720 | 1.27 | 1.63 | 5.90 |
+| 5 000 | 200 | 611 | 1.44 | 2.41 | 4.34 |
 
-Throughput falls by a factor of **29** and p50 rises by a factor of **26** between an
-empty session and one holding 5 000 events. The growth is linear in the events
-already held, which makes the total cost of a session quadratic in its length.
+**The cost plateaus.** It rises from 0.53 ms to about 1.3–1.4 ms between an empty
+session and one holding 500 or more events, then stays flat from 500 to 5 000. That
+is the shape of a bounded cost, not a growing one.
 
-A 5 000-event session is an ordinary day of telemetry for one monitored operator.
-At that point a single keystroke costs 11.5 ms of server time, and the console sends
-one event per request.
+The step is the review fetch: `get_session_review` returns up to 500 events, so an
+ingest against a session with history carries that response while one against a fresh
+session carries nothing. **It is a real, bounded cost and a real optimisation
+opportunity** — ingest does not need 500 events to decide whether to analyse — but it
+is a constant, not a scaling problem.
 
 ### Memory
 
-2 000 further events ingested into one session, measured with `--expose-gc`:
+5 000 events ingested into one session, with the MCP double replaced by a sink that
+retains nothing, so the heap delta is what Cerberus holds rather than what the double
+holds beside it:
 
 ```
-heap 34.7 MiB -> 37.3 MiB   (+2.6 MiB, 1365 B/event)
+heap 28.5 MiB -> 33.2 MiB   (+4.7 MiB, ~991 B/event)
 ```
 
-Roughly **1.4 KiB per event held in memory**, and `SessionState.events` has no
-per-session cap: `MAX_EVENTS_PER_BATCH` bounds one request, not a session's
-lifetime. A 5 000-event session therefore holds about 7 MiB, and the cost is per
-live session.
+**Treat this figure with care, and treat the bound as the real result.** A heap delta
+in one process includes V8 bookkeeping and anything else allocated during the run, so
+it cannot isolate the session store. What *is* deterministic is the bound, asserted in
+`apps/api/test/session-memory-window.test.ts`: after 20 000 events, `session.events`
+stays at or below `2 * MAX_IN_MEMORY_EVENTS` and `session.keystrokeDeltas` at or below
+`2 * MAX_KEYSTROKE_DELTAS`.
 
-This is not a leak test — a leak needs hours. It answers the narrower question a
-baseline can honestly answer: does a sustained burst grow the heap without bound?
+Before the window existed, `session.events` grew for a session's whole lifetime —
+`MAX_EVENTS_PER_BATCH` bounds one request, not a session. A length assertion can prove
+a bound; a heap figure cannot, because several things contribute to it.
+
+This is not a leak test. A leak needs hours.
 
 ## Reading the numbers
 
-**The cheap paths are genuinely cheap.** Health, an unauthenticated rejection, and
-an oversized-body rejection all sit in the 26 000–34 000 req/s range at p99 under
-0.11 ms. The body limit in particular rejects before buffering, which is why a
-9 MiB claim costs 0.03 ms.
+**The cheap paths are genuinely cheap.** Health, an unauthenticated rejection, and an
+oversized-body rejection all sit at 26 000–34 000 req/s with p99 under 0.11 ms. The
+body limit rejects before buffering, which is why a 9 MiB claim costs 0.03 ms.
 
-**The dedup fast path is ~45× faster than a fresh batch** (1 902 vs 45 req/s). The
-durable identity check makes a replayed batch cheap rather than merely correct,
-which is the outcome the idempotency work was aiming for.
+**The dedup fast path is ~3.4× faster than a fresh batch** (1 982 vs 582 req/s for 50
+events). A replayed batch is cheap as well as correct, which is what the idempotency
+work was aiming for.
 
-**A request that triggers analysis is not slower than one that does not** (2 423 vs
-603 req/s) — because it runs against a *fresh* session each time, so it does not pay
-the per-session growth the single-session case does. That contrast is what first
-pointed at session size as the variable.
+**A request that triggers analysis is not the slowest ingest path** (2 010 req/s vs
+837 for a plain keystroke). The difference is session size, not the analysis: the
+analysis case runs against a fresh session each time, so it carries no review
+response.
 
-**The two findings above are the actionable ones.** Both are the same shape: work
-proportional to how much a session already holds. Neither is visible from a
-throughput figure taken on a fresh database, which is exactly why the scaling case
-exists.
+**`GET /api/v1/sessions/:id` is the most expensive read** at 1.81 ms p50, because it
+assembles the timeline and the risk summary from the same bounded review fetch.
+
+## What this baseline found, honestly
+
+One real defect, and one wrong finding that the baseline itself was corrected for.
+
+**Real:** `session.events` and `session.keystrokeDeltas` had no bound, so a live
+session's memory grew for its lifetime and every consumer that scanned those arrays
+got slower as it did. `hasAnomalousKeystrokes` scanned the entire keystroke history on
+every single event, and `computeKeystrokeMetrics` used `Math.max(...deltas)`, which
+throws `RangeError: Maximum call stack size exceeded` past roughly 100 000 entries.
+Both are fixed, and the fix is proved by a length assertion rather than a heap figure.
+
+**Wrong, and corrected:** the quadratic ingest cost reported by the first version of
+this benchmark was an artifact of a stub that did not match the real store's event
+cap. The corrected measurement plateaus. The error is recorded here rather than quietly
+removed, because the failure mode — a double that measures itself — has now appeared
+three times in this repository and is worth recognising on sight.
 
 ## Reproducing
 
@@ -126,7 +164,8 @@ npm run bench
 
 The command builds the API first, so the benchmark always measures current compiled
 output rather than a stale `dist/`. Run it before and after a change to a hot path;
-compare p50 and p99 for the affected case, and re-check the scaling table.
+compare p50 and p99 for the affected case, and re-check the scaling table for the
+plateau.
 
 To compare against a recorded run:
 

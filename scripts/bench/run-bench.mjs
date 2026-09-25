@@ -171,10 +171,17 @@ function installMcpStub() {
       }
       case "get_session_review": {
         const id = String(body.sessionId);
+        // The real store caps this at 500 (`MongoStore.getSessionEvents`,
+        // `limit ?? 500`). Returning the whole array here made the *stub* the
+        // bottleneck: it re-serialised a growing array on every ingest, which showed
+        // up as ingest cost growing with session size and was mistaken for an API
+        // defect. A double that does not match the real store's bounds measures the
+        // double.
+        const all = events.get(id) ?? [];
         return Response.json({
           success: true,
           session: sessions.get(id) ?? null,
-          events: events.get(id) ?? [],
+          events: all.slice(-500),
           riskAssessments: [],
         });
       }
@@ -462,16 +469,62 @@ for (const size of scalingSizes) {
   );
 }
 
+/**
+ * A stub that accepts telemetry and retains nothing.
+ *
+ * Used for the memory case only. With the ordinary stub the MCP double's own event
+ * log lives in the same heap as the API, so a heap delta measures both and attributes
+ * the double's growth to the application — the same class of mistake as the event-cap
+ * fidelity bug above. A store that keeps nothing isolates what Cerberus itself holds.
+ */
+function installSinkStub() {
+  const original = globalThis.fetch;
+
+  globalThis.fetch = async (url, init) => {
+    const target = typeof url === "string" ? url : url.url;
+    if (target.includes("/chat/completions")) {
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
+    const tool = target.split("/tools/")[1];
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+
+    if (tool === "ingest_micro_events") {
+      const batch = body.events ?? [];
+      return Response.json({
+        success: true,
+        processedCount: batch.length,
+        acceptedEventIds: batch.map((event) => event.eventId),
+        duplicateEventIds: [],
+      });
+    }
+    if (tool === "get_session_review") {
+      return Response.json({ success: true, session: null, events: [], riskAssessments: [] });
+    }
+    return Response.json({ success: true });
+  };
+
+  return { restore: () => { globalThis.fetch = original; } };
+}
+
 // ── 11. Memory under sustained ingest ──
 //
 // Not a leak test — a leak needs hours. It answers "does a sustained burst grow the
 // heap without bound?", which is the question a baseline can honestly answer.
+//
+// A SINK stub is used, so the heap delta is what Cerberus holds rather than what the
+// MCP double holds alongside it. Enough events are pushed to exceed the in-memory
+// window (`MAX_IN_MEMORY_EVENTS`, 1 000 with slack to 2 000); a smaller count would
+// measure the window filling rather than the window holding.
+const sink = installSinkStub();
+const memoryApp = createApp(benchConfig());
+const sustainedIterations = QUICK ? 500 : 5000;
+
 if (global.gc) global.gc();
 const heapBefore = process.memoryUsage().heapUsed;
-const sustainedIterations = QUICK ? 200 : 2000;
 
 for (let i = 0; i < sustainedIterations; i++) {
-  await app.request("/api/v1/guardian/ingest", {
+  await memoryApp.request("/api/v1/guardian/ingest", {
     method: "POST",
     headers: HEADERS,
     body: JSON.stringify({
@@ -479,6 +532,7 @@ for (let i = 0; i < sustainedIterations; i++) {
     }),
   });
 }
+sink.restore();
 if (global.gc) global.gc();
 const heapAfter = process.memoryUsage().heapUsed;
 const heapDeltaMb = (heapAfter - heapBefore) / (1024 * 1024);
