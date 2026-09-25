@@ -305,6 +305,7 @@ The documents most readers want first:
 - [docs/configuration.md](docs/configuration.md) — every environment variable.
 - [docs/security/threat-model.md](docs/security/threat-model.md) — assets, actors, trust boundaries and limits.
 - [docs/migration.md](docs/migration.md) — historical name → current name mapping.
+- [docs/compatibility.md](docs/compatibility.md) — what is a public contract, the breaking-change and deprecation policies, supported runtimes, and the dependency and license policy.
 - [docs/development/maturity-plan.md](docs/development/maturity-plan.md) — current maturity state, next work and accepted limitations.
 
 Repository-level documents:

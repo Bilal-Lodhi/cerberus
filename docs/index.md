@@ -16,6 +16,7 @@ Cerberus is and how to run it, then come back here for depth.
 | [configuration.md](configuration.md) | Operators, contributors | Every environment variable: type, default, whether it is required, and the security implications of changing it. Includes worked local-development and production examples. |
 | [security/threat-model.md](security/threat-model.md) | Operators, security reviewers | Assets, actors, trust boundaries, what the single-key model does and does not protect against, CORS posture, fail-closed and fail-open behaviours, and data-protection considerations. |
 | [migration.md](migration.md) | Anyone with historical data or client code | Historical → current MongoDB collection names, MCP tool names and field names, plus what a one-off rename has to touch. Cerberus ships no migration tooling. |
+| [compatibility.md](compatibility.md) | Contributors, operators planning an upgrade | What counts as a public contract, the breaking-change and deprecation policies, versioning, supported runtimes, and the dependency and license policy with the current audit results. |
 | [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the active queue, accepted limitations and open decisions. |
 
 ## Release preparation (`docs/release/`)
