@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import '../models/scenario_model.dart';
+import '../models/severity_mix.dart';
 import '../services/api_service.dart';
 
 /// ─── CERBERUS — Scenario Provider ─────────────────────────────────────
@@ -32,6 +33,10 @@ class ScenarioProvider extends ChangeNotifier {
   String _lastPrompt = '';
   int _lastVectorCount = 5;
   String _lastTargetSystemContext = '';
+
+  /// The structured severity mix the last generation used. Retries and resumes
+  /// replay the exact same request, so this is stored rather than re-derived.
+  SeverityMix _lastSeverityMix = defaultSeverityMix;
   String? _generationRequestId;
   int _generationSeq = 0;
 
@@ -56,6 +61,7 @@ class ScenarioProvider extends ChangeNotifier {
     String prompt, {
     required int vectorCount,
     required String targetSystemContext,
+    required SeverityMix severityMix,
   }) async {
     final trimmed = prompt.trim();
     if (trimmed.isEmpty) {
@@ -67,6 +73,7 @@ class ScenarioProvider extends ChangeNotifier {
     _lastPrompt = trimmed;
     _lastVectorCount = vectorCount;
     _lastTargetSystemContext = targetSystemContext;
+    _lastSeverityMix = severityMix;
     _attempt = 0;
     _matrix = null;
     _error = null;
@@ -82,6 +89,7 @@ class ScenarioProvider extends ChangeNotifier {
       trimmed,
       vectorCount,
       targetSystemContext,
+      severityMix,
       seq,
     );
   }
@@ -103,6 +111,7 @@ class ScenarioProvider extends ChangeNotifier {
       _lastPrompt,
       _lastVectorCount,
       _lastTargetSystemContext,
+      _lastSeverityMix,
       seq,
     );
   }
@@ -137,6 +146,7 @@ class ScenarioProvider extends ChangeNotifier {
       _lastPrompt,
       _lastVectorCount,
       _lastTargetSystemContext,
+      _lastSeverityMix,
       seq,
     );
   }
@@ -149,6 +159,7 @@ class ScenarioProvider extends ChangeNotifier {
     _attempt = 0;
     _lastPrompt = '';
     _lastTargetSystemContext = '';
+    _lastSeverityMix = defaultSeverityMix;
     _generationRequestId = null;
     notifyListeners();
   }
@@ -159,6 +170,7 @@ class ScenarioProvider extends ChangeNotifier {
     String prompt,
     int vectorCount,
     String targetSystemContext,
+    SeverityMix severityMix,
     int seq,
   ) async {
     while (_attempt <= _maxAutoRetries) {
@@ -168,6 +180,7 @@ class ScenarioProvider extends ChangeNotifier {
           prompt,
           vectorCount: vectorCount,
           targetSystemContext: targetSystemContext,
+          severityMix: severityMix,
           generationRequestId: _generationRequestId,
         );
 

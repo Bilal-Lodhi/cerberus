@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/scenario_model.dart';
+import '../models/severity_mix.dart';
 import '../providers/scenario_provider.dart';
 import '../providers/identity_provider.dart';
 import '../providers/guardian_provider.dart';
@@ -273,9 +274,16 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
 
   String _selectedTargetSystem = '';
   int _vectorCount = 1;
+
+  /// Risk-distribution sliders. These are the ONLY source of the severity mix:
+  /// they are converted by [severityMixFromSliders] and sent as the structured
+  /// `severityMix` field, never folded into the prompt as prose.
+  ///
+  /// [_severeWeight] is a budget across the two most severe bands, not a
+  /// `critical`-only weight — see [severeHighShare].
   double _routineWeight = 0.3;
   double _elevatedWeight = 0.5;
-  double _criticalWeight = 0.2;
+  double _severeWeight = 0.2;
   static const double _riskFloor = 0.1;
 
   bool _hasDeployed = false;
@@ -595,20 +603,32 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
       structuredPrompt,
       vectorCount: _vectorCount,
       targetSystemContext: _selectedTargetSystem,
+      severityMix: _buildSeverityMix(),
     );
   }
 
+  /// The structured severity mix for the current slider positions.
+  ///
+  /// The mapping itself lives in `lib/models/severity_mix.dart` so the UI and
+  /// the request body cannot disagree about it.
+  SeverityMix _buildSeverityMix() => severityMixFromSliders(
+    routine: _routineWeight,
+    elevated: _elevatedWeight,
+    severe: _severeWeight,
+  );
+
+  /// Builds the prompt sent alongside the structured request fields.
+  ///
+  /// The risk distribution is deliberately NOT included here. It travels as the
+  /// structured `severityMix` field, and the server states it to the model from
+  /// those exact numbers (`buildScenarioSystemPrompt`). Repeating it as prose
+  /// would create a second, potentially disagreeing, source of truth.
   String _buildStructuredPrompt(String userPrompt) {
     final systemLabel = _targetSystemOptions.firstWhere(
       (d) => d['value'] == _selectedTargetSystem,
       orElse: () => _targetSystemOptions.first,
     )['label']!;
-    final riskDesc =
-        '${(_routineWeight * 100).round()}% routine, '
-        '${(_elevatedWeight * 100).round()}% elevated, '
-        '${(_criticalWeight * 100).round()}% critical';
     return 'Target System: $systemLabel\n'
-        'Risk distribution: $riskDesc\n'
         'Number of threat vectors: $_vectorCount\n'
         'Audit requirements: $userPrompt\n'
         '---\n'
@@ -954,13 +974,34 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
             const SizedBox(height: 4),
             Builder(
               builder: (_) {
-                final sum = _routineWeight + _elevatedWeight + _criticalWeight;
+                final sum = _routineWeight + _elevatedWeight + _severeWeight;
                 final totalPct = (sum * 100).round();
-                return Text(
-                  'Total: $totalPct%',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.outline,
-                  ),
+                final mix = _buildSeverityMix();
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Total: $totalPct%',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    // The mapping is shown, not hidden: "Severe" is a budget
+                    // across two severity bands, so the split is stated here
+                    // rather than left for the operator to discover.
+                    Text(
+                      'Sent as severityMix — '
+                      'Routine → low (${(mix.low * 100).round()}%), '
+                      'Elevated → medium (${(mix.medium * 100).round()}%), '
+                      'Severe → high (${(mix.high * 100).round()}%) + '
+                      'critical (${(mix.critical * 100).round()}%)',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.outline,
+                        height: 1.3,
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
@@ -971,7 +1012,7 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
               _routineWeight,
               Colors.green,
               (v) {
-                final remaining = 1.0 - _elevatedWeight - _criticalWeight;
+                final remaining = 1.0 - _elevatedWeight - _severeWeight;
                 final capped = v > remaining ? remaining : v;
                 setState(() => _routineWeight = capped);
                 setSheetState(() {});
@@ -983,7 +1024,7 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
               _elevatedWeight,
               Colors.orange,
               (v) {
-                final remaining = 1.0 - _routineWeight - _criticalWeight;
+                final remaining = 1.0 - _routineWeight - _severeWeight;
                 final capped = v > remaining ? remaining : v;
                 setState(() => _elevatedWeight = capped);
                 setSheetState(() {});
@@ -991,13 +1032,15 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
             ),
             _buildSheetRiskSlider(
               theme,
-              'Critical',
-              _criticalWeight,
+              // "Severe", not "Critical": only severeCriticalShare of this
+              // budget becomes `critical`. See lib/models/severity_mix.dart.
+              'Severe',
+              _severeWeight,
               Colors.red,
               (v) {
                 final remaining = 1.0 - _routineWeight - _elevatedWeight;
                 final capped = v > remaining ? remaining : v;
-                setState(() => _criticalWeight = capped);
+                setState(() => _severeWeight = capped);
                 setSheetState(() {});
               },
             ),
@@ -1063,7 +1106,7 @@ class _ScenarioPanelContentState extends State<_ScenarioPanelContent> {
                         _vectorCount = 1;
                         _routineWeight = 0.3;
                         _elevatedWeight = 0.5;
-                        _criticalWeight = 0.2;
+                        _severeWeight = 0.2;
                       });
                     },
                     icon: const Icon(Icons.refresh, size: 18),

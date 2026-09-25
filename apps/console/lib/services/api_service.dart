@@ -6,6 +6,7 @@ import '../models/health_model.dart';
 import '../models/scenario_model.dart';
 import '../models/guardian_model.dart';
 import '../models/identity_model.dart';
+import '../models/severity_mix.dart';
 
 /// ─── CERBERUS — API Service ────────────────────────────────────────
 /// Thin HTTP connectivity layer targeting the Hono API gateway.
@@ -55,7 +56,8 @@ class ApiService {
   /// not changed between poll intervals.
   RiskAssessmentPayload? _lastPolledRiskPayload;
 
-  ApiService({required this.baseUrl, this.apiKey}) : _client = http.Client();
+  ApiService({required this.baseUrl, this.apiKey, http.Client? client})
+    : _client = client ?? http.Client();
 
   /// Returns headers common to all API calls, including the operator API
   /// key and the session token when an identity has been established.
@@ -121,10 +123,19 @@ class ApiService {
   }
 
   // ── Threat Scenario Authoring ──────────────────────────────────────────────
+  /// POST /api/v1/scenarios — author a threat scenario matrix.
+  ///
+  /// [severityMix] is sent as a structured `severityMix` object, which is the
+  /// contract the API already accepts and normalises. It is the only channel
+  /// for the risk distribution: the three panel sliders must not also be folded
+  /// into [prompt] as prose, or the same choice would be stated twice and could
+  /// disagree. See `lib/models/severity_mix.dart` for the slider → severity
+  /// mapping.
   Future<ThreatScenarioResult> authorScenario(
     String prompt, {
     required int vectorCount,
     required String targetSystemContext,
+    required SeverityMix severityMix,
     String? generationRequestId,
   }) async {
     final uri = Uri.parse('$baseUrl/api/v1/scenarios');
@@ -142,6 +153,7 @@ class ApiService {
               'prompt': prompt,
               'roleContext': targetSystemContext,
               'vectorCount': vectorCount,
+              'severityMix': severityMix.toJson(),
             }),
           )
           .timeout(const Duration(seconds: 120));

@@ -96,6 +96,49 @@ describe("normalizeSeverityMix", () => {
     assert.ok(Math.abs(mix.low + mix.medium + mix.high + mix.critical - 1) < 1e-9);
     assert.notEqual(mix.low, 0.5);
   });
+
+  test("leaves an already-normalised client mix unchanged", () => {
+    // The exact shape the console sends for its default slider positions
+    // (30% routine / 50% elevated / 20% severe, split 60/40).
+    const mix = normalizeSeverityMix({ low: 0.3, medium: 0.5, high: 0.12, critical: 0.08 });
+    assert.equal(mix.low, 0.3);
+    assert.equal(mix.medium, 0.5);
+    assert.equal(mix.high, 0.12);
+    assert.equal(mix.critical, 0.08);
+  });
+
+  test("is idempotent for a client mix", () => {
+    const once = normalizeSeverityMix({ low: 0.3, medium: 0.3, high: 0.3, critical: 0.1 });
+    const twice = normalizeSeverityMix(once);
+    for (const key of ["low", "medium", "high", "critical"] as const) {
+      assert.ok(
+        Math.abs(twice[key] - once[key]) < 1e-12,
+        `${key} drifted on re-normalisation: ${once[key]} -> ${twice[key]}`,
+      );
+    }
+  });
+
+  test("preserves a high/critical-only mix from the console's severe slider", () => {
+    // routine = 0, elevated = 0, severe = 1 -> the console sends 0.6 / 0.4.
+    const mix = normalizeSeverityMix({ low: 0, medium: 0, high: 0.6, critical: 0.4 });
+    assert.equal(mix.low, 0);
+    assert.equal(mix.medium, 0);
+    assert.equal(mix.high, 0.6);
+    assert.equal(mix.critical, 0.4);
+  });
+
+  test("ignores NaN and Infinity weights", () => {
+    const mix = normalizeSeverityMix({
+      low: Number.NaN,
+      medium: Number.POSITIVE_INFINITY,
+      high: 1,
+      critical: 1,
+    });
+    assert.equal(mix.low, 0);
+    assert.equal(mix.medium, 0);
+    assert.equal(mix.high, 0.5);
+    assert.equal(mix.critical, 0.5);
+  });
 });
 
 describe("evaluateVerdict", () => {
@@ -279,6 +322,75 @@ describe("POST /api/v1/scenarios", () => {
       `expected store_threat_scenario, saw: ${stub.mcpTools.join(", ")}`,
     );
     assert.ok(!stub.mcpTools.includes("store_test_suite"));
+  });
+
+  test("forwards the normalised severity mix into the generation prompt", async () => {
+    stub = installFetchStub({
+      mcpResponse: () => ({ success: true, mongoDocumentId: "scenario-doc" }),
+      // Call 1 is the classifier gate; call 2 is the matrix author.
+      aiResponses: [classifierAccept, matrixResponse],
+    });
+
+    const res = await app.request("/api/v1/scenarios", {
+      method: "POST",
+      headers: authorizedHeaders(),
+      body: JSON.stringify({
+        prompt: "Author threat scenarios for the SWIFT gateway covering token injection",
+        roleContext: "swift-gateway",
+        vectorCount: 3,
+        // The exact shape the console sends for 30% routine / 50% elevated /
+        // 20% severe, split 60/40 across high and critical.
+        severityMix: { low: 0.3, medium: 0.5, high: 0.12, critical: 0.08 },
+      }),
+    });
+
+    assert.equal(res.status, 201);
+
+    const aiCalls = stub.calls.filter((call) => call.url.includes("api.openai.com"));
+    assert.equal(aiCalls.length, 2, "expected a classifier call and a generation call");
+
+    const generation = aiCalls[1].body as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = generation.messages.find((m) => m.role === "system")?.content ?? "";
+
+    // The distribution reaches the model from the structured field, stated once
+    // and authoritatively -- not restated as prose in the user prompt.
+    assert.match(system, /Severity distribution/);
+    assert.match(system, /30% low/);
+    assert.match(system, /50% medium/);
+    assert.match(system, /12% high/);
+    assert.match(system, /8% critical/);
+  });
+
+  test("uses the documented default mix when the client sends none", async () => {
+    stub = installFetchStub({
+      mcpResponse: () => ({ success: true, mongoDocumentId: "scenario-doc" }),
+      aiResponses: [classifierAccept, matrixResponse],
+    });
+
+    const res = await app.request("/api/v1/scenarios", {
+      method: "POST",
+      headers: authorizedHeaders(),
+      body: JSON.stringify({
+        prompt: "Author threat scenarios for the SWIFT gateway covering token injection",
+        roleContext: "swift-gateway",
+        vectorCount: 3,
+      }),
+    });
+
+    assert.equal(res.status, 201);
+
+    const aiCalls = stub.calls.filter((call) => call.url.includes("api.openai.com"));
+    const generation = aiCalls[1].body as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const system = generation.messages.find((m) => m.role === "system")?.content ?? "";
+
+    assert.match(system, /25% low/);
+    assert.match(system, /35% medium/);
+    assert.match(system, /25% high/);
+    assert.match(system, /15% critical/);
   });
 
   test("rejects a request the classifier marks inappropriate", async () => {
