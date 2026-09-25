@@ -16,7 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the reference-corpus work (see `CHANGELOG.md` `[Unreleased]`).
+Last updated at the maturity checkpoint (see `CHANGELOG.md` `[Unreleased]`).
 
 ## Current state
 
@@ -38,6 +38,46 @@ Verified at the start of this work cycle, from a clean checkout on
 | `dart format --output=none --set-exit-if-changed .` | clean, 24 files unchanged |
 | `flutter build web --release` | succeeds, writes `apps/console/build/web` |
 | `docker build` + Compose startup + fail-closed startup | covered by CI |
+
+And at the maturity checkpoint, on `6d0e0a7`:
+
+| Gate | Result |
+| --- | --- |
+| `npm ci` | clean, 0 vulnerabilities |
+| `npm run build` / `npm run typecheck` | clean |
+| `npm test` | API 319 tests, MCP 10 tests, 0 failures, 0 cancelled |
+| `npm audit --omit=dev --audit-level=high` | 0 vulnerabilities |
+| `flutter analyze` / `flutter test` / `dart format` | clean; 22 tests pass |
+| Documentation links and heading anchors | 66 file links, 15 anchors, 0 broken |
+| `docs/` index coverage | 12 files, 0 unlinked |
+| Configuration census | every variable in `.env.example` is read by code |
+| `v0.1.0` tag | still an annotated tag on `ef98f962…`, unmodified |
+
+## Maturity checkpoint
+
+Every item in the target set below is either implemented or recorded as an
+accepted limitation with a reason. The four original issues are closed, no known
+P0 security or correctness defect remains, and the audit findings raised during
+this cycle are all remediated.
+
+| Target | State |
+| --- | --- |
+| Repository layout, docs entry point, architecture/config docs match code | Done |
+| Build, typecheck, tests, format, Docker, Compose, fail-closed startup | Done, gated in CI |
+| Configuration honesty — every documented variable is implemented, deprecated or removed | Done; census verified |
+| Session TTL resolved | Done — computed liveness, evidence preserved |
+| Restart and recovery invariants tested | Done |
+| Similarity threshold real | Done — local deterministic matcher over an operator-managed corpus |
+| `severityMix` is real structured data | Done |
+| CI robust across event modes; cannot pass security scans vacuously | Done |
+| Threat model reflects current code | Done |
+| Dependency and license audit current | Done; recorded in [compatibility.md](../compatibility.md) |
+| Public API breakage policy documented | Done; [compatibility.md](../compatibility.md) |
+| Backlog is bounded future work, not correctness debt | Done — one open decision, below |
+
+**The single remaining open decision is `CODEOWNERS`**, which needs the maintainer
+to name real owners. Everything else on the queue is either complete or an
+accepted limitation.
 
 ## Completed milestones
 
@@ -121,106 +161,128 @@ Implemented and published:
 
 ## Active work
 
-Nothing in flight. The next item selected is the P0 audit (below).
+Nothing in flight. The four original issues, the P0 audit pass and the
+reference-corpus work are all complete and merged. What remains is the bounded
+queue below — one open decision and one scope decision.
 
 ## Next queue
 
 Ordered by the value of the outcome, not by effort.
 
-1. **P0 security and correctness audit.** A route-by-route pass over auth, CORS,
-   body limits, the provider boundary, MongoDB query construction, session
-   lifecycle, telemetry validation, the auditor whitelist, notifications and the
-   console, answering the questions in the audit checklist rather than assuming
-   the answers.
+1. **`CODEOWNERS`.** The only open maintainer decision. Either name owners for
+   `apps/api/`, `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
+   `CONTRIBUTING.md` that a single-maintainer project does not use one.
+   **Needs decision.**
+2. **Endpoint agent scope.** The largest remaining gap between what Cerberus is
+   and what an operator would need: no process emits telemetry from a real
+   workstation. Building one materially expands what is monitored, so it is a
+   product and privacy decision rather than an engineering task, and it is
+   explicitly reserved. **Needs decision.**
+3. **Durable session truth.** Live session state is in memory and lost on
+   restart, with MongoDB as the durable fallback. Making persisted state
+   authoritative is a larger change with a consistency model to define; it is
+   deferred rather than blocked. **Planned.**
+4. **Console corpus management.** The reference corpus is managed over the API.
+   A console surface for it would be a convenience, not a capability.
+   **Planned.**
+5. **Local performance baseline.** A bounded harness for ingest throughput,
+   review query latency and long-session memory growth. No benchmark ships today,
+   and no performance claim is made. **Planned.**
 
-   **Remediated:**
+## Completed: the P0 audit pass
 
-   - The API had **no request body size limit at all** — `@hono/node-server`
-     exposes no `bodyLimit` option and none was configured, so every route read
-     whatever the caller sent. Hono's built-in `body-limit` middleware now
-     refuses anything above `CERBERUS_MAX_BODY_BYTES` (default 8 MiB) with
-     `413 PAYLOAD_TOO_LARGE`, before the auth middleware, so it applies to
-     authenticated and unauthenticated callers alike. No new dependency.
-   - Fields that reach a paid provider were unbounded. `prompt` (8 000 chars),
-     `roleContext` (200), `question` (2 000) and telemetry batches (1 000 events)
-     are now capped before any inference or persistence happens.
-   - The auditor passed whatever the model's pipeline produced to the summariser,
-     with no ceiling. It is now truncated to 200 records regardless of `$limit`.
-   - `POST /api/v1/identity/set` cast a field to a string and called `.trim()` on
-     it, so a numeric `displayName` threw inside the handler and surfaced as an
-     unhandled 500. It now returns `400 INVALID_IDENTITY_FIELD`, and identity
-     fields are length-capped.
-   - Model-supplied numerics were **not clamped**. `parseRiskAssessment` accepted
-     any finite number for `overallRiskScore`, `dimensionScores.*` and
-     `flags[].confidence`, and `guardian.ts` only capped the blended score at the
-     top, so a well-formed `-1e9` or `1e9` flowed through and would have corrupted
-     threshold comparisons, sorting and the auto-lock. Every documented range is
-     now clamped at the parser boundary, arrays and strings are bounded, and
-     `exfiltrationReport` / `behavioralAnomalies` are parsed field by field
-     instead of cast. Non-object array entries are dropped rather than becoming
-     fieldless records. See
-     [architecture.md](../architecture.md#6-score-composition-and-model-output-bounds).
+A route-by-route pass over auth, CORS, body limits, the provider boundary,
+MongoDB query construction, session lifecycle, telemetry validation, the auditor
+whitelist, notifications and the console. Every finding is remediated; none is
+open.
 
-   - Outbound notifications had **no timeout**. `notifySlack` and `sendEmail`
-     called `fetch` with no `AbortSignal`, and ingestion awaits both before
-     returning, so a hung webhook stalled the ingest request for as long as the
-     socket stayed open — the notification path could block telemetry
-     collection. Both now carry a 5 000 ms deadline, verified against a real
-     server that accepts and never answers.
-   - The identity registry was an unbounded in-memory `Map`. Every
-     `POST /api/v1/identity/set` added an entry that was never evicted, while the
-     `GET /me` handler already described an unknown handle as "unknown or
-     expired" although nothing expired it. Handles now expire after 12 hours and
-     the registry evicts expired entries, then the oldest, at a ceiling of 100.
+- The API had **no request body size limit at all** — `@hono/node-server` exposes
+  no `bodyLimit` option and none was configured, so every route read whatever the
+  caller sent. Hono's built-in `body-limit` middleware now refuses anything above
+  `CERBERUS_MAX_BODY_BYTES` (default 8 MiB) with `413 PAYLOAD_TOO_LARGE`, before
+  the auth middleware, so it applies to authenticated and unauthenticated callers
+  alike. No new dependency.
+- Fields that reach a paid provider were unbounded. `prompt` (8 000 chars),
+  `roleContext` (200), `question` (2 000) and telemetry batches (1 000 events) are
+  now capped before any inference or persistence happens.
+- The auditor passed whatever the model's pipeline produced to the summariser,
+  with no ceiling. It is now truncated to 200 records regardless of `$limit`.
+- `POST /api/v1/identity/set` cast a field to a string and called `.trim()` on it,
+  so a numeric `displayName` threw inside the handler and surfaced as an unhandled
+  500. It now returns `400 INVALID_IDENTITY_FIELD`, and identity fields are
+  length-capped.
+- Model-supplied numerics were **not clamped**. `parseRiskAssessment` accepted any
+  finite number for `overallRiskScore`, `dimensionScores.*` and
+  `flags[].confidence`, and `guardian.ts` only capped the blended score at the
+  top, so a well-formed `-1e9` or `1e9` flowed through and would have corrupted
+  threshold comparisons, sorting and the auto-lock. Every documented range is now
+  clamped at the parser boundary, arrays and strings are bounded, and
+  `exfiltrationReport` / `behavioralAnomalies` are parsed field by field instead of
+  cast. Non-object array entries are dropped rather than becoming fieldless
+  records. See
+  [architecture.md](../architecture.md#6-score-composition-and-model-output-bounds).
+- Outbound notifications had **no timeout**. `notifySlack` and `sendEmail` called
+  `fetch` with no deadline, and ingestion awaits both before returning, so a hung
+  webhook stalled the ingest request for as long as the socket stayed open — the
+  notification path could block telemetry collection. Both now carry a 5 000 ms
+  deadline, verified against a real server that accepts and never answers. The
+  first implementation used `AbortSignal.timeout()`, whose timer is **unref'd**:
+  CI caught that a deadline which is the only pending work never fires. It is now
+  an explicit `AbortController` driven by a ref'd `setTimeout`.
+- The identity registry was an unbounded in-memory `Map`. Every
+  `POST /api/v1/identity/set` added an entry that was never evicted, while the
+  `GET /me` handler already described an unknown handle as "unknown or expired"
+  although nothing expired it. Handles now expire after 12 hours and the registry
+  evicts expired entries, then the oldest, at a ceiling of 100.
+- `OpenAIProvider.isFatal()` decided fatality by substring-matching the error
+  message for `"401"` / `"403"`. Any error whose text happened to contain those
+  digits — a token count, a request id, a URL — was treated as an authentication
+  failure and skipped the retry budget. It is now classified from the SDK error's
+  HTTP status and machine-readable `code`.
+- `toMongoPipeline` used a raw `JSON.parse`, so a pipeline the model wrapped in a
+  markdown fence or a sentence was discarded even though the rest of the boundary
+  exists to tolerate exactly that. It now uses the same recovery ladder as every
+  other model-reading path.
+- The MCP adapter's `parseBody` destroyed an oversized request without resolving
+  its promise, so the handler hung and the client saw a connection reset instead
+  of a status; and a malformed body was indistinguishable from a missing one,
+  surfacing as a misleading "Missing required parameter". The parser is extracted
+  into `packages/mcp-mongodb/src/body.ts`, always settles, and returns
+  `413 PAYLOAD_TOO_LARGE`, `400 INVALID_JSON` or `400 INVALID_BODY` explicitly.
+  The adapter reads the same `CERBERUS_MAX_BODY_BYTES` variable as the API so the
+  two ceilings cannot drift. Verified against a real MongoDB and a real socket.
+- The MCP package had **no tests at all**. It now has a suite, and the root
+  `npm test` runs it alongside the API's.
 
-   - `OpenAIProvider.isFatal()` decided fatality by substring-matching the error
-     message for `"401"` / `"403"`. Any error whose text happened to contain those
-     digits — a token count, a request id, a URL — was treated as an
-     authentication failure and skipped the retry budget. It is now classified
-     from the SDK error's HTTP status and machine-readable `code`.
-   - `toMongoPipeline` used a raw `JSON.parse`, so a pipeline the model wrapped in
-     a markdown fence or a sentence was discarded even though the rest of the
-     boundary exists to tolerate exactly that. It now uses the same recovery
-     ladder as every other model-reading path.
-   - The MCP adapter's `parseBody` destroyed an oversized request without
-     resolving its promise, so the handler hung and the client saw a connection
-     reset instead of a status; and a malformed body was indistinguishable from a
-     missing one, surfacing as a misleading "Missing required parameter". The
-     parser is extracted into `packages/mcp-mongodb/src/body.ts`, always settles,
-     and returns `413 PAYLOAD_TOO_LARGE`, `400 INVALID_JSON` or
-     `400 INVALID_BODY` explicitly. The adapter reads the same
-     `CERBERUS_MAX_BODY_BYTES` variable as the API so the two ceilings cannot
-     drift. Verified against a real MongoDB and a real socket.
+## Completed: the exfiltration similarity threshold
 
-   **No open items.** Every finding from this audit pass is remediated, and the
-   MCP package now has its own test suite wired into `npm test`. **Complete.**
+`DATA_LEAKAGE_SIMILARITY_THRESHOLD` was documented as a similarity threshold and
+gated nothing: the reference source was a stub returning `[]`, so
+`ExfiltrationReport` matches were always empty. The similarity numbers that did
+appear came from the model, which never sees the threshold.
 
-2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates the exfiltration matcher.**
-   **Implemented.** The reference source was a stub returning `[]`, so
-   `ExfiltrationReport` matches were always empty while the threshold was still
-   parsed and documented.
-   - The corpus is a local, operator-managed MongoDB collection
-     (`reference_documents`) managed through `POST`/`GET`/`DELETE
-     /api/v1/reference-documents`. **Cerberus never writes to it itself** — there
-     is no crawler, no bundled corpus and no third-party content.
-   - Similarity is computed **locally and deterministically**
-     (`apps/api/src/services/text-similarity.ts`: normalise → 3-token shingles →
-     Jaccard). The model's `exfiltrationReport` is replaced rather than merged,
-     because only the local comparison is reproducible from inputs an operator can
-     inspect — and because the model never sees the threshold.
-   - The threshold is the gate: pairs at or above it become `ExfiltrationMatch`
-     entries; pairs below it do not, though the best score is still reported so an
-     operator can see how close a paste came.
-   - `aiCompletionLikelihood` is always `0`: Cerberus does not attempt to
-     determine whether content was machine-generated, and a guess there would
-     present an unfounded number as a measurement.
-   - Texts under 10 tokens are not compared at all, so two short strings cannot
-     match by accident. The threshold itself is validated fail-closed to 0-1: a
-     value above 1 could never be reached and would silently disable the matcher.
-   - Verified through the full stack against real MongoDB and a stubbed provider:
-     a near-copy paste produced a match at 0.854 with the corpus label, a
-     half-overlap paste produced none at 0.474, and the provider's deliberately
-     fabricated match was discarded.
+- The corpus is a local, operator-managed MongoDB collection
+  (`reference_documents`) managed through `POST`/`GET`/`DELETE
+  /api/v1/reference-documents`. **Cerberus never writes to it itself** — there is
+  no crawler, no bundled corpus and no third-party content.
+- Similarity is computed **locally and deterministically**
+  (`apps/api/src/services/text-similarity.ts`: normalise → 3-token shingles →
+  Jaccard). The model's `exfiltrationReport` is replaced rather than merged,
+  because only the local comparison is reproducible from inputs an operator can
+  inspect — and because the model never sees the threshold.
+- The threshold is the gate: pairs at or above it become `ExfiltrationMatch`
+  entries; pairs below it do not, though the best score is still reported so an
+  operator can see how close a paste came.
+- `aiCompletionLikelihood` is always `0`: Cerberus does not attempt to determine
+  whether content was machine-generated, and a guess there would present an
+  unfounded number as a measurement.
+- Texts under 10 tokens are not compared at all, so two short strings cannot match
+  by accident. The threshold itself is validated fail-closed to 0-1: a value above
+  1 could never be reached and would silently disable the matcher.
+- Verified through the full stack against real MongoDB and a stubbed provider: a
+  near-copy paste produced a match at 0.854 with the corpus label, a half-overlap
+  paste produced none at 0.474, and the provider's deliberately fabricated match
+  was discarded.
 
 ## Known gaps in this release
 
