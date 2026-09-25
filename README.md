@@ -46,7 +46,9 @@ Implemented today:
 - **Threat scenario authoring** (`POST /api/v1/scenarios`) producing monitored
   target systems, regulatory mandates, threat vectors with detection rules, and
   penetration scenarios carrying anti-exfiltration thresholds. Guarded by a
-  deterministic regex pre-filter plus a fail-closed AI classifier.
+  deterministic regex pre-filter plus a fail-closed AI classifier. The console
+  sends its three risk-distribution sliders as a structured `severityMix`
+  (`routine → low`, `elevated → medium`, `severe → 60% high / 40% critical`).
 - **Session review** with a reconstructed event timeline and risk summary, plus
   session terminate (preserves data) and delete (removes data).
 - **Natural-language auditor** over session records, restricted to a whitelisted

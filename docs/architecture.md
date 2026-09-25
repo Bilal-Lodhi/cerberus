@@ -148,6 +148,30 @@ generation returns HTTP 200 with `cancelled: true`.
 non-finite values, and renormalises to sum to 1.0; an unusable mix falls back to
 `{ low: 0.25, medium: 0.35, high: 0.25, critical: 0.15 }`.
 
+### The console's slider → `severityMix` mapping
+
+The console's scenario panel exposes **three** risk-distribution sliders, but the
+contract has **four** severity keys. The mapping lives in exactly one place,
+`apps/console/lib/models/severity_mix.dart`:
+
+| Slider | Severity |
+| --- | --- |
+| `routine` | `low` |
+| `elevated` | `medium` |
+| `severe` | `high` (60%) + `critical` (40%) |
+
+The third slider is labelled **"Severe"**, not "Critical", because only 40% of its
+budget becomes `critical`. The panel prints the resulting four percentages beneath
+the sliders, so the split is shown rather than left to be discovered, and the
+shares are named constants (`severeHighShare`, `severeCriticalShare`) rather than
+literals buried in the widget.
+
+This is the only channel for the risk distribution. The sliders are **not** also
+folded into the prompt text: `buildScenarioSystemPrompt()` states the distribution
+to the model from the structured numbers, so the operator's choice is expressed
+once and cannot disagree with itself. The client normalises to sum 1.0 using the
+same rules as the server, so the server never silently reinterprets what was sent.
+
 ## 4. Session state model
 
 Live state lives in two in-process maps created per `createGuardianRouter()`
