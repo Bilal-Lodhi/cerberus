@@ -46,6 +46,24 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   return { ...base, ...overrides };
 }
 
+/**
+ * Config with a specific session TTL, for `SESSION_TTL_SECONDS` expiry tests.
+ *
+ * Spelled out rather than relying on a deep merge, because `makeConfig`
+ * replaces `security` wholesale and a partial object would silently drop the
+ * other thresholds.
+ */
+export function makeConfigWithTtl(
+  sessionTTLSeconds: number,
+  overrides: Partial<AppConfig> = {},
+): AppConfig {
+  const base = makeConfig(overrides);
+  return {
+    ...base,
+    security: { ...base.security, sessionTTLSeconds },
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // fetch stub
 // ═══════════════════════════════════════════════════════════════════

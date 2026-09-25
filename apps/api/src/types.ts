@@ -345,9 +345,29 @@ export interface ActiveSession {
   status: "active" | "flagged" | "investigating" | "cleared" | "locked";
   deployedAt: string;
   riskIndex: number;
+  /**
+   * Server-observed time of the last activity on this session. Feeds the
+   * `SESSION_TTL_SECONDS` expiry predicate for a session that has been deployed
+   * but has not ingested telemetry yet, and is refreshed on reactivation.
+   * Absent means "fall back to `deployedAt`".
+   */
+  lastActivityAt?: string;
 }
 
 // ─── Session Review Types ──────────────────────────────────────────
+
+/**
+ * Derived liveness of a session, computed from its activity and
+ * `SESSION_TTL_SECONDS` (see `services/session-liveness.ts`).
+ *
+ * `"expired"` means the monitoring window has closed: the session is not live,
+ * refuses new telemetry until it is reactivated, and is excluded from
+ * `GET /api/v1/guardian/sessions`. It is NOT a statement about the evidence —
+ * review data is retained and still served by the review endpoints.
+ *
+ * This is never persisted as a session status.
+ */
+export type SessionLiveness = "active" | "expired";
 
 export interface SessionReviewResponse {
   sessionId: string;
@@ -358,6 +378,8 @@ export interface SessionReviewResponse {
   timeline: TimelineEntry[];
   riskSummary: RiskAssessmentPayload[];
   finalRiskScore: number | null;
+  /** Derived, never persisted. Absent on older payloads. */
+  liveness?: SessionLiveness;
 }
 
 export interface TimelineEntry {

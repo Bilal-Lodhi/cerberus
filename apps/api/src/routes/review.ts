@@ -7,6 +7,11 @@
  * The in-memory store is authoritative for live counters; MongoDB is the
  * durable fallback after a restart. Both sources are merged by taking the
  * maximum observed value, so a restart never under-reports activity.
+ *
+ * These are the REVIEW surfaces. Unlike `GET /api/v1/guardian/sessions`, they
+ * deliberately include sessions whose `SESSION_TTL_SECONDS` window has closed:
+ * expiry stops monitoring, it never hides evidence. Each entry carries a
+ * derived `liveness` field so a caller can tell the two apart.
  */
 
 import { Hono } from "hono";
@@ -14,12 +19,24 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import type { RiskAssessmentPayload, SessionReviewResponse, TimelineEntry } from "../types.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
+import {
+  resolveLiveness,
+  systemClock,
+  type Clock,
+  type SessionActivity,
+  type SessionLiveness,
+} from "../services/session-liveness.js";
 import { toISOStringLocal } from "../utils/time.js";
 import type { ActiveSession, SessionState } from "./guardian.js";
 
 const MCP_TIMEOUT_MS = 5_000;
 
 type Severity = TimelineEntry["severity"];
+
+export interface ReviewRouterOptions {
+  /** Time source for TTL expiry. Defaults to the system clock. */
+  clock?: Clock;
+}
 
 /**
  * Extracts the effective character count from a COPY_ATTEMPT payload.
@@ -144,8 +161,43 @@ export function createReviewRouter(
   config: AppConfig,
   sessionStore: Map<string, SessionState>,
   activeSessions: Map<string, ActiveSession>,
+  options: ReviewRouterOptions = {},
 ): Hono {
   const reviewRouter = new Hono();
+
+  /** Time source for every liveness decision in this router. */
+  const clock: Clock = options.clock ?? systemClock;
+  /** Configured monitoring window, in seconds. */
+  const ttlSeconds = config.security.sessionTTLSeconds;
+
+  /**
+   * Assembles the activity view for one session from every available source.
+   * The predicate takes the most recent usable timestamp, so a stale durable
+   * `updatedAt` cannot expire a session that is still ingesting.
+   *
+   * Only server-generated timestamps appear here; the client-supplied telemetry
+   * timestamp is deliberately excluded (see `services/session-liveness.ts`).
+   */
+  function activityFor(
+    sessionId: string,
+    durableUpdatedAt: string | null | undefined,
+  ): SessionActivity {
+    const state = sessionStore.get(sessionId);
+    const active = activeSessions.get(sessionId);
+
+    return {
+      lastActivityAt:
+        state?.lastActivityAt ?? active?.lastActivityAt ?? active?.deployedAt ?? null,
+      persistedUpdatedAt: durableUpdatedAt ?? null,
+    };
+  }
+
+  function livenessFor(
+    sessionId: string,
+    durableUpdatedAt: string | null | undefined,
+  ): SessionLiveness {
+    return resolveLiveness(activityFor(sessionId, durableUpdatedAt), ttlSeconds, clock);
+  }
 
   // ─── GET /api/v1/sessions ───────────────────────────────────────
   reviewRouter.get("/", async (c) => {
@@ -281,6 +333,15 @@ export function createReviewRouter(
           matrixId: active?.matrixId ?? entry.auditId ?? "",
           targetSystem: active?.targetSystem ?? "",
           status: active?.status ?? entry.status ?? "active",
+          // Derived, never persisted: an expired session is still listed here
+          // (review must not hide evidence) but is no longer live.
+          //
+          // `entry.updatedAt` is the durable, server-written activity signal.
+          // `lastEventTimestamp` is deliberately NOT used: it comes from the
+          // client-supplied `MicroEvent.timestamp`, which must not be able to
+          // decide whether monitoring continues. It is still reported below as
+          // display data.
+          liveness: livenessFor(entry.sessionId, entry.updatedAt),
           eventCount,
           pasteCount,
           tabSwitchCount,
@@ -312,6 +373,8 @@ export function createReviewRouter(
         auditId?: string;
         status?: string;
         terminalContent?: string;
+        updatedAt?: string;
+        createdAt?: string;
       } | null;
       events?: Array<{
         eventType?: string;
@@ -358,6 +421,7 @@ export function createReviewRouter(
         timeline,
         riskSummary,
         finalRiskScore: memSession.lastRiskPayload?.overallRiskScore ?? 0,
+        liveness: livenessFor(sessionId, null),
       };
 
       return c.json({ success: true, data: response });
@@ -451,6 +515,11 @@ export function createReviewRouter(
       timeline,
       riskSummary,
       finalRiskScore,
+      // `updatedAt` is written by the persistence layer with a server clock and
+      // is therefore the only trustworthy durable activity signal. The
+      // client-supplied event timestamps in `timeline` are display data and are
+      // deliberately not consulted here.
+      liveness: livenessFor(sessionId, session.updatedAt ?? session.createdAt ?? null),
     };
 
     return c.json({ success: true, data: response });

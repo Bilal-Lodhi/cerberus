@@ -135,6 +135,39 @@ export class ConfigError extends Error {
   }
 }
 
+/**
+ * Reads a strictly positive whole number of seconds.
+ *
+ * Unlike {@link readInt}, an explicitly set but unusable value is a startup
+ * failure rather than a silent fallback. `SESSION_TTL_SECONDS` bounds how long
+ * an operator may be monitored; quietly substituting a default the operator did
+ * not choose — or silently reading `"1.5"` as `1` — would be a monitoring-scope
+ * decision made by a typo.
+ *
+ * An unset variable still takes the default, so the documented default path is
+ * unchanged.
+ */
+function readPositiveSeconds(name: string, fallback: number): number {
+  const raw = readEnv(name);
+  if (!raw) return fallback;
+
+  if (!/^\d+$/.test(raw)) {
+    throw new ConfigError(
+      `${name} must be a whole number of seconds (got "${raw}"). ` +
+        `Leave it unset to use the default of ${fallback}.`,
+    );
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new ConfigError(
+      `${name} must be a positive integer number of seconds (got "${raw}"). ` +
+        `Leave it unset to use the default of ${fallback}.`,
+    );
+  }
+  return parsed;
+}
+
 export function loadConfig(): AppConfig {
   const devMode = readBool("CERBERUS_DEV_MODE");
 
@@ -199,7 +232,8 @@ export function loadConfig(): AppConfig {
   };
 
   const security: SecurityConfig = {
-    sessionTTLSeconds: readInt("SESSION_TTL_SECONDS", 7200),
+    // Enforced by apps/api/src/services/session-liveness.ts on every read.
+    sessionTTLSeconds: readPositiveSeconds("SESSION_TTL_SECONDS", 7200),
     maxPasteEventsPerSession: readInt("MAX_PASTE_EVENTS", 5),
     minHumanKeystrokeMs: readInt("MIN_HUMAN_KEYSTROKE_MS", 80),
     dataLeakageSimilarityThreshold: readFloat(
@@ -216,7 +250,8 @@ export function loadConfig(): AppConfig {
       `openaiKey=${openaiApiKey ? "set" : "unset"} ` +
       `apiKey=${apiKey ? "set" : "unset"} ` +
       `mcpToken=${mcpApiKey ? "set" : "unset"} ` +
-      `corsOrigins=${cors.allowedOrigins.length}`,
+      `corsOrigins=${cors.allowedOrigins.length} ` +
+      `sessionTtl=${security.sessionTTLSeconds}s`,
   );
 
   if (devMode) {

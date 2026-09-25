@@ -5,14 +5,20 @@
  *
  *   POST   /ingest                              batch telemetry ingestion
  *   POST   /deploy                              create a monitored session
- *   GET    /sessions                            list sessions (union of live + durable)
- *   GET    /sessions/:sessionId                 live session detail
+ *   GET    /sessions                            list live sessions (expired excluded)
+ *   GET    /sessions/:sessionId                 session detail, with derived liveness
+ *   POST   /sessions/:sessionId/reactivate      explicitly resume an expired session
  *   POST   /sessions/:sessionId/terminate       stop monitoring, preserve data
  *   DELETE /sessions/:sessionId                 delete session and all derived data
  *
  * Persistence flows through the MCP MongoDB sidecar. Every MCP call is
  * timeout-isolated so a slow database degrades the response rather than
  * stalling the ingestion loop.
+ *
+ * Session liveness is derived from `SESSION_TTL_SECONDS` by
+ * `../services/session-liveness.ts`. The TTL bounds how long a session is
+ * monitored; it never deletes or hides review evidence. See that module for the
+ * full contract.
  *
  * Deduplication layers (all preserved from the original implementation):
  *   1. identical risk-assessment id from the AI provider
@@ -36,6 +42,14 @@ import type {
 import { getAIProvider } from "../ai/provider.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
 import { notifySlack, sendEmail } from "../services/notifications.js";
+import {
+  isExpired,
+  resolveLiveness,
+  systemClock,
+  type Clock,
+  type SessionActivity,
+  type SessionLiveness,
+} from "../services/session-liveness.js";
 import { toISOStringLocal, formatLocalTime } from "../utils/time.js";
 
 const MCP_TIMEOUT_MS = 5_000;
@@ -47,6 +61,11 @@ export type { ActiveSession };
 export const AUTO_LOCK_THRESHOLD = 75;
 /** Risk score at or below which a locked session is auto-cleared. */
 export const AUTO_CLEAR_THRESHOLD = 25;
+
+/** Stable error code returned when telemetry targets an expired session. */
+export const SESSION_EXPIRED_CODE = "SESSION_EXPIRED";
+/** Stable error code returned when a terminal-state session is reactivated. */
+export const SESSION_TERMINATED_CODE = "SESSION_TERMINATED";
 
 // ─── Session state ─────────────────────────────────────────────────
 
@@ -70,6 +89,11 @@ export interface SessionState {
   recentEventFingerprints: Set<string>;
   /** ISO timestamp set only on terminate (not on delete). */
   endedAt?: string;
+  /**
+   * Server-observed time of the last accepted telemetry batch or lifecycle
+   * transition. Feeds the TTL expiry predicate; never client-supplied.
+   */
+  lastActivityAt?: string;
 }
 
 export interface GuardianRouterBundle {
@@ -78,8 +102,21 @@ export interface GuardianRouterBundle {
   activeSessions: Map<string, ActiveSession>;
 }
 
-export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
+export interface GuardianRouterOptions {
+  /** Time source for TTL expiry. Defaults to the system clock. */
+  clock?: Clock;
+}
+
+export function createGuardianRouter(
+  config: AppConfig,
+  options: GuardianRouterOptions = {},
+): GuardianRouterBundle {
   const guardianRouter = new Hono();
+
+  /** Time source for every liveness decision in this router. */
+  const clock: Clock = options.clock ?? systemClock;
+  /** Configured monitoring window, in seconds. */
+  const ttlSeconds = config.security.sessionTTLSeconds;
 
   /** In-memory live session state, authoritative for sessions that ingested events. */
   const sessionStore = new Map<string, SessionState>();
@@ -137,10 +174,34 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     let alertTriggered = false;
 
     try {
-      // 1. Ensure the session document exists.
-      await ensureMongoSession(sessionId, primaryEvent, requestId);
+      // 1. Resolve the durable session document, creating it when absent.
+      const durableSession = await ensureMongoSession(sessionId, primaryEvent, requestId);
 
-      // 2. Persist the raw telemetry.
+      // 2. Refuse telemetry for a session whose monitoring window has closed.
+      //    Extending a monitoring window is an explicit operator act
+      //    (`POST /sessions/:sessionId/reactivate`), never a side effect of
+      //    continuing to emit events — otherwise the TTL would bound nothing.
+      if (sessionLiveness(sessionId, durableSession) === "expired") {
+        console.warn(
+          `[guardian] [${requestId}] rejected ingest for expired session '${sessionId}'`,
+        );
+        return c.json(
+          {
+            success: false,
+            error:
+              `Session '${sessionId}' is expired: its most recent activity is older ` +
+              `than SESSION_TTL_SECONDS (${ttlSeconds}s). Reactivate it with ` +
+              `POST /api/v1/guardian/sessions/${sessionId}/reactivate, or deploy a new session.`,
+            code: SESSION_EXPIRED_CODE,
+            sessionId,
+            liveness: "expired" satisfies SessionLiveness,
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      // 3. Persist the raw telemetry.
       await callMcpTool(
         config,
         MCP_TOOL_NAMES.INGEST_MICRO_EVENTS,
@@ -148,7 +209,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         { requestId, timeoutMs: MCP_TIMEOUT_MS },
       );
 
-      // 3. Apply events to in-memory state.
+      // 4. Apply events to in-memory state.
       for (const event of body.events) {
         processEvent(event);
       }
@@ -161,7 +222,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         );
       }
 
-      // 4. Update durable aggregate counters.
+      // 5. Update durable aggregate counters.
       await callMcpTool(
         config,
         MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS,
@@ -178,7 +239,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         { requestId, timeoutMs: MCP_TIMEOUT_MS },
       );
 
-      // 5. Decide whether this batch warrants AI analysis.
+      // 6. Decide whether this batch warrants AI analysis.
       const hasLargePaste = body.events.some(
         (event) => event.eventType === "PASTE" && (event.payload.changeLength ?? 0) >= 100,
       );
@@ -374,6 +435,11 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     const session = sessionStore.get(sessionId);
     const activeSession = activeSessions.get(sessionId);
 
+    // Derived, never persisted. `status` stays the historical durable value —
+    // an auto-locked session reads as `locked` with `liveness: "expired"`,
+    // which says "this lock happened" without claiming it is still live.
+    const liveness = sessionLiveness(sessionId);
+
     if (session) {
       return c.json({
         success: true,
@@ -396,6 +462,8 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
           startedAt: activeSession?.deployedAt ?? "",
           deployedAt: activeSession?.deployedAt ?? "",
           status: activeSession?.status ?? session.status ?? "active",
+          liveness,
+          lastActivityAt: session.lastActivityAt ?? activeSession?.deployedAt ?? "",
           targetSystem: activeSession?.targetSystem ?? "",
         },
       });
@@ -423,6 +491,8 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
           startedAt: activeSession.deployedAt,
           deployedAt: activeSession.deployedAt,
           status: activeSession.status,
+          liveness,
+          lastActivityAt: activeSession.deployedAt,
           targetSystem: activeSession.targetSystem,
         },
       });
@@ -502,6 +572,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         status: "active",
         deployedAt,
         riskIndex: 0,
+        lastActivityAt: deployedAt,
       });
 
       console.log(
@@ -537,6 +608,11 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     const seenIds = new Set<string>();
     const allSessions: Array<Record<string, unknown>> = [];
 
+    // This endpoint is the LIVE list. A session whose monitoring window has
+    // closed is not live, whatever its durable status, so it is excluded here.
+    // It stays fully visible through GET /api/v1/sessions and
+    // GET /api/v1/sessions/:sessionId, which are the review surfaces.
+
     // Path A1 — live in-memory state (authoritative event counts).
     if (sessionStore.size > 0) {
       const entries = Array.from(sessionStore.entries()).sort((a, b) => {
@@ -546,6 +622,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
       });
 
       for (const [sessionId, state] of entries) {
+        if (sessionExpired(sessionId)) continue;
         seenIds.add(sessionId);
         const active = activeSessions.get(sessionId);
         const deployedAt =
@@ -557,6 +634,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
           matrixId: state.auditId || active?.matrixId || "",
           targetSystem: active?.targetSystem ?? "",
           status: active?.status ?? state.status ?? "active",
+          liveness: "active" satisfies SessionLiveness,
           deployedAt,
           startedAt: deployedAt,
           createdAt: deployedAt,
@@ -575,6 +653,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     // Path A2 — deployed sessions with no events yet.
     for (const [sessionId, active] of activeSessions) {
       if (seenIds.has(sessionId)) continue;
+      if (sessionExpired(sessionId)) continue;
       seenIds.add(sessionId);
       allSessions.push({
         sessionId,
@@ -583,6 +662,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
         matrixId: active.matrixId,
         targetSystem: active.targetSystem,
         status: active.status,
+        liveness: "active" satisfies SessionLiveness,
         deployedAt: active.deployedAt,
         startedAt: active.deployedAt,
         createdAt: active.deployedAt,
@@ -608,6 +688,11 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
       for (const doc of docs) {
         const sessionId = String(doc["sessionId"] ?? "");
         if (!sessionId || seenIds.has(sessionId)) continue;
+
+        // Restart recovery must honour expiry: a session that timed out while
+        // the process was down is not resurrected as actively monitored.
+        if (sessionExpired(sessionId, doc)) continue;
+
         seenIds.add(sessionId);
 
         const employeeId = String(doc["employeeId"] ?? "unknown");
@@ -629,6 +714,9 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
             status: status as ActiveSession["status"],
             deployedAt,
             riskIndex: riskScore,
+            // The durable `updatedAt` is the only activity signal that survives
+            // a restart, so recovery must carry it into the live registry.
+            lastActivityAt: String(doc["updatedAt"] ?? deployedAt),
           });
         }
 
@@ -639,6 +727,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
           matrixId,
           targetSystem: String(doc["targetSystem"] ?? ""),
           status,
+          liveness: "active" satisfies SessionLiveness,
           deployedAt,
           startedAt: deployedAt,
           createdAt: deployedAt,
@@ -663,6 +752,126 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  // POST /sessions/:sessionId/reactivate  — explicit resume after expiry
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Reopens a session's monitoring window.
+   *
+   * The TTL bounds how long a session is monitored, so resuming one is an
+   * explicit operator decision rather than a side effect of the next telemetry
+   * batch arriving. Ingest refuses an expired session with `409 SESSION_EXPIRED`
+   * and points here.
+   *
+   * Idempotent for a live session. A `terminated` session is refused: the
+   * terminal state is not reversible, exactly as in the restart-recovery path.
+   */
+  guardianRouter.post("/sessions/:sessionId/reactivate", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const requestId = randomUUID();
+
+    const state = sessionStore.get(sessionId);
+    const active = activeSessions.get(sessionId);
+
+    // Fall back to the durable record so a session that expired while the
+    // process was down can still be reopened.
+    let durable: Record<string, unknown> | null = null;
+    if (!state && !active) {
+      const review = await callMcpTool<{
+        success: boolean;
+        session?: Record<string, unknown> | null;
+      }>(config, MCP_TOOL_NAMES.GET_SESSION_REVIEW, { sessionId }, {
+        requestId,
+        timeoutMs: MCP_TIMEOUT_MS,
+      });
+      if (review.ok && review.data?.success && review.data.session) {
+        durable = review.data.session;
+      }
+    }
+
+    if (!state && !active && !durable) {
+      return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
+    }
+
+    const previousStatus = String(
+      active?.status ?? state?.status ?? durable?.["status"] ?? "active",
+    );
+    if (normalizeStatus(previousStatus) === "terminated") {
+      return c.json(
+        {
+          success: false,
+          error:
+            `Session '${sessionId}' is terminated and cannot be reactivated. ` +
+            "Deploy a new session instead.",
+          code: SESSION_TERMINATED_CODE,
+          sessionId,
+          status: "terminated",
+          correlationId: requestId,
+        },
+        409,
+      );
+    }
+
+    const reactivatedAt = toISOStringLocal(new Date(clock.now()));
+
+    // Durable status becomes `active` — the same transition the auto-clear path
+    // already performs, and it grants no new authority: the caller holds the
+    // operator key that can terminate or delete the session outright. The lock
+    // decision itself is not erased; it stays in the persisted risk assessments
+    // and the review timeline.
+    await callMcpTool(
+      config,
+      MCP_TOOL_NAMES.SET_SESSION_STATUS,
+      { sessionId, status: "active" },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    );
+
+    if (state) {
+      state.status = "active";
+      touchSession(state);
+      sessionStore.set(sessionId, state);
+    }
+
+    activeSessions.set(sessionId, {
+      sessionId,
+      employeeId: String(
+        active?.employeeId ?? state?.employeeId ?? durable?.["employeeId"] ?? "unknown",
+      ),
+      matrixId: String(
+        active?.matrixId ??
+          state?.auditId ??
+          durable?.["matrixId"] ??
+          durable?.["auditId"] ??
+          "",
+      ),
+      targetSystem: String(active?.targetSystem ?? durable?.["targetSystem"] ?? ""),
+      status: "active",
+      deployedAt: String(
+        active?.deployedAt ??
+          durable?.["deployedAt"] ??
+          durable?.["createdAt"] ??
+          reactivatedAt,
+      ),
+      riskIndex: active?.riskIndex ?? state?.lastRiskPayload?.overallRiskScore ?? 0,
+      lastActivityAt: reactivatedAt,
+    });
+
+    console.log(
+      `[guardian] [${requestId}] session '${sessionId}' reactivated ` +
+        `(ttl=${ttlSeconds}s, previous status=${previousStatus})`,
+    );
+
+    return c.json({
+      success: true,
+      sessionId,
+      status: "active",
+      liveness: "active" satisfies SessionLiveness,
+      reactivatedAt,
+      previousStatus,
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   // POST /sessions/:sessionId/terminate  — stop monitoring, keep data
   // ═══════════════════════════════════════════════════════════════
 
@@ -679,7 +888,8 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     const state = sessionStore.get(sessionId);
     if (state) {
       state.status = "terminated";
-      state.endedAt = toISOStringLocal();
+      state.endedAt = toISOStringLocal(new Date(clock.now()));
+      touchSession(state);
       sessionStore.set(sessionId, state);
       found = true;
     }
@@ -738,17 +948,20 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     sessionId: string,
     primaryEvent: MicroEvent,
     requestId: string,
-  ): Promise<void> {
-    const existing = await callMcpTool<{ success: boolean; session?: unknown }>(
-      config,
-      MCP_TOOL_NAMES.GET_SESSION_REVIEW,
-      { sessionId },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
-    );
+  ): Promise<Record<string, unknown> | null> {
+    const existing = await callMcpTool<{
+      success: boolean;
+      session?: Record<string, unknown> | null;
+    }>(config, MCP_TOOL_NAMES.GET_SESSION_REVIEW, { sessionId }, {
+      requestId,
+      timeoutMs: MCP_TIMEOUT_MS,
+    });
 
-    if (existing.ok && existing.data?.success && existing.data.session) return;
+    if (existing.ok && existing.data?.success && existing.data.session) {
+      return existing.data.session;
+    }
 
-    const created = await callMcpTool(
+    const created = await callMcpTool<{ success?: boolean }>(
       config,
       MCP_TOOL_NAMES.CREATE_SESSION,
       {
@@ -762,9 +975,84 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
       { requestId, timeoutMs: MCP_TIMEOUT_MS },
     );
 
-    if (!created.ok) {
+    if (!created.ok || !created.data?.success) {
       console.warn(`[guardian] [${requestId}] session create failed (non-fatal)`);
+      return null;
     }
+
+    // Report the creation instant so the expiry predicate has a trustworthy
+    // timestamp for a session that exists durably but has no telemetry yet.
+    return {
+      sessionId,
+      status: "active",
+      createdAt: toISOStringLocal(new Date(clock.now())),
+    };
+  }
+
+  /** Reads a string field from an untyped durable document. */
+  function readDurableString(
+    source: Record<string, unknown> | null,
+    key: string,
+  ): string | null {
+    const value = source?.[key];
+    return typeof value === "string" && value.length > 0 ? value : null;
+  }
+
+  /**
+   * The activity view of a session, assembled from every source that can carry
+   * a trustworthy "last busy" timestamp. The predicate takes the most recent
+   * usable one, so a stale durable `updatedAt` cannot expire a session that is
+   * still ingesting, and an in-memory timestamp cannot outlive a restart.
+   *
+   * Only server-generated timestamps appear here. See
+   * `../services/session-liveness.ts` for why the client-supplied telemetry
+   * timestamp is deliberately excluded.
+   */
+  function sessionActivity(
+    sessionId: string,
+    durable: Record<string, unknown> | null,
+  ): SessionActivity {
+    const state = sessionStore.get(sessionId);
+    const active = activeSessions.get(sessionId);
+
+    return {
+      lastActivityAt:
+        state?.lastActivityAt ?? active?.lastActivityAt ?? active?.deployedAt ?? null,
+      persistedUpdatedAt:
+        readDurableString(durable, "updatedAt") ??
+        readDurableString(durable, "deployedAt") ??
+        readDurableString(durable, "createdAt"),
+    };
+  }
+
+  /**
+   * Derived liveness for one session. `durable` is the session document when
+   * the caller already holds it, so the common paths do not pay for a second
+   * MCP round trip.
+   */
+  function sessionLiveness(
+    sessionId: string,
+    durable: Record<string, unknown> | null = null,
+  ): SessionLiveness {
+    return resolveLiveness(sessionActivity(sessionId, durable), ttlSeconds, clock);
+  }
+
+  /** True when the session's monitoring window has closed. */
+  function sessionExpired(
+    sessionId: string,
+    durable: Record<string, unknown> | null = null,
+  ): boolean {
+    return isExpired(sessionActivity(sessionId, durable), ttlSeconds, clock);
+  }
+
+  /**
+   * Records the server-observed activity instant for a live session.
+   *
+   * Called only after a batch survives deduplication, so a replayed batch
+   * cannot hold a session open past its TTL.
+   */
+  function touchSession(session: SessionState): void {
+    session.lastActivityAt = toISOStringLocal(new Date(clock.now()));
   }
 
   /** Dedup layer 3: fingerprint ring suppresses replayed micro-event batches. */
@@ -792,10 +1080,13 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
       sessionStore.set(event.sessionId, created);
       applyEventToSession(created, event);
       created.recentEventFingerprints.add(computeEventFingerprint(event));
+      touchSession(created);
       return;
     }
 
     const fingerprint = computeEventFingerprint(event);
+    // A suppressed replay is not activity: a replayed batch must not be able to
+    // hold a session open past its TTL.
     if (existing.recentEventFingerprints.has(fingerprint)) return;
 
     applyEventToSession(existing, event);
@@ -806,6 +1097,7 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
       existing.recentEventFingerprints = new Set(entries.slice(-128));
     }
 
+    touchSession(existing);
     sessionStore.set(event.sessionId, existing);
   }
 
@@ -814,14 +1106,17 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
     riskPayload: RiskAssessmentPayload,
     requestId: string,
   ): Promise<void> {
+    const activityAt = toISOStringLocal(new Date(clock.now()));
     const active = activeSessions.get(sessionId);
     if (active) {
       active.status = "locked";
+      active.lastActivityAt = activityAt;
       activeSessions.set(sessionId, active);
     }
     const state = sessionStore.get(sessionId);
     if (state) {
       state.status = "locked";
+      touchSession(state);
       sessionStore.set(sessionId, state);
     }
 
@@ -838,14 +1133,17 @@ export function createGuardianRouter(config: AppConfig): GuardianRouterBundle {
   }
 
   async function unlockSession(sessionId: string, requestId: string): Promise<void> {
+    const activityAt = toISOStringLocal(new Date(clock.now()));
     const active = activeSessions.get(sessionId);
     if (active) {
       active.status = "active";
+      active.lastActivityAt = activityAt;
       activeSessions.set(sessionId, active);
     }
     const state = sessionStore.get(sessionId);
     if (state) {
       state.status = "active";
+      touchSession(state);
       sessionStore.set(sessionId, state);
     }
 
