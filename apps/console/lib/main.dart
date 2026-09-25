@@ -9,6 +9,7 @@ import 'providers/scenario_provider.dart';
 import 'providers/guardian_provider.dart';
 import 'providers/review_provider.dart';
 import 'providers/identity_provider.dart';
+import 'providers/reference_corpus_provider.dart';
 
 /// Cerberus console entry point.
 ///
@@ -45,6 +46,9 @@ void main() async {
         ChangeNotifierProvider(create: (_) => GuardianProvider(apiService)),
         ChangeNotifierProvider(create: (_) => ReviewProvider(apiService)),
         ChangeNotifierProvider(create: (_) => IdentityProvider(apiService)),
+        ChangeNotifierProvider(
+          create: (_) => ReferenceCorpusProvider(apiService),
+        ),
       ],
       child: const CerberusApp(),
     ),

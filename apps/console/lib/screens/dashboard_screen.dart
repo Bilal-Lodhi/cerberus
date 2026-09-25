@@ -9,14 +9,15 @@ import '../models/guardian_model.dart';
 import '../widgets/scenario_panel.dart';
 import '../widgets/security_metrics_panel.dart';
 import '../widgets/code_workspace_panel.dart';
+import '../widgets/reference_corpus_panel.dart';
 
 /// ─── CERBERUS — Dashboard Screen ───────────────────────────────────────
 /// Root shell after identity setup. Provides:
 ///   - AppBar with operator identity badge
 ///   - Threat scenario button that opens a bottom sheet (via [ScenarioPanel])
 ///   - Left navigation drawer (active audit sessions)
-///   - Wide layout: Code Workspace | Security Metrics
-///   - Narrow layout: Tab-based switching between Terminal & Telemetry
+///   - Wide layout: Code Workspace | Security Metrics | Reference Corpus
+///   - Narrow layout: Tab-based switching between Terminal, Telemetry & Corpus
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -33,7 +34,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
 
     // Load initial data
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -733,6 +734,8 @@ class _DashboardScreenState extends State<DashboardScreen>
         ),
         // Right panel — Live Threat Telemetry
         Expanded(flex: 4, child: _buildTelemetryPanel(theme)),
+        // Far-right panel — the reference corpus the telemetry is scored against
+        Expanded(flex: 3, child: _buildReferenceCorpusPanel(theme)),
       ],
     );
   }
@@ -750,6 +753,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           tabs: const [
             Tab(icon: Icon(Icons.terminal), text: 'Terminal'),
             Tab(icon: Icon(Icons.shield), text: 'Telemetry'),
+            Tab(icon: Icon(Icons.library_books_outlined), text: 'Corpus'),
           ],
         ),
         Expanded(
@@ -758,6 +762,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             children: [
               const CodeWorkspacePanel(),
               const SecurityMetricsPanel(),
+              const ReferenceCorpusPanel(),
             ],
           ),
         ),
@@ -775,6 +780,18 @@ class _DashboardScreenState extends State<DashboardScreen>
     return Container(
       color: theme.colorScheme.surface,
       child: const SecurityMetricsPanel(),
+    );
+  }
+
+  /// The operator-managed reference corpus sits beside telemetry rather than in
+  /// the authoring sheet: it is the text that exfiltration similarity is scored
+  /// against, so it belongs with the analysis surface an operator is reading.
+  Widget _buildReferenceCorpusPanel(ThemeData theme) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: theme.dividerColor, width: 2)),
+      ),
+      child: const ReferenceCorpusPanel(),
     );
   }
 

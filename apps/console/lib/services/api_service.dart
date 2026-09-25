@@ -6,6 +6,7 @@ import '../models/health_model.dart';
 import '../models/scenario_model.dart';
 import '../models/guardian_model.dart';
 import '../models/identity_model.dart';
+import '../models/reference_document.dart';
 import '../models/severity_mix.dart';
 
 /// ─── CERBERUS — API Service ────────────────────────────────────────
@@ -587,6 +588,88 @@ class ApiService {
         'Failed to delete session: ${res.body}',
       );
     }
+  }
+
+  // ── Reference Corpus (anti-exfiltration similarity) ────────────────────────
+  /// GET /api/v1/reference-documents — the operator-managed corpus.
+  ///
+  /// Each row carries metadata and a bounded preview, never the stored content:
+  /// the corpus is read in full on every risk analysis, so echoing it back here
+  /// would make this response grow with the corpus for no operational benefit.
+  Future<List<ReferenceDocument>> listReferenceDocuments() async {
+    final uri = Uri.parse('$baseUrl/api/v1/reference-documents');
+    final response = await _client
+        .get(uri, headers: _commonHeaders())
+        .timeout(const Duration(seconds: 15));
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw ApiException(
+        response.statusCode,
+        (body['error'] as String?) ?? 'Reference corpus fetch failed',
+      );
+    }
+
+    final data = body['data'] as List<dynamic>? ?? const <dynamic>[];
+    return data
+        .map((d) => ReferenceDocument.fromJson(d as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// POST /api/v1/reference-documents — adds one document to the corpus.
+  ///
+  /// This is the only way the corpus is ever written. Cerberus has no crawler,
+  /// no bundled corpus and no external reference service, so a document here is
+  /// operator-supplied text and nothing else.
+  Future<ReferenceDocument> storeReferenceDocument({
+    required String label,
+    required String content,
+    List<String> tags = const <String>[],
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/v1/reference-documents');
+    final response = await _client
+        .post(
+          uri,
+          headers: _commonHeaders(),
+          body: jsonEncode({'label': label, 'content': content, 'tags': tags}),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode == 201) {
+      // A 201 body is the stored row, not a list row: it carries no preview and
+      // no timestamps. Callers that display the corpus re-read the list rather
+      // than rendering this.
+      return ReferenceDocument.fromJson(body);
+    }
+    throw ApiException(
+      response.statusCode,
+      (body['error'] as String?) ?? 'Reference document store failed',
+    );
+  }
+
+  /// DELETE /api/v1/reference-documents/:referenceId — removes one document.
+  Future<void> deleteReferenceDocument(String referenceId) async {
+    final uri = Uri.parse('$baseUrl/api/v1/reference-documents/$referenceId');
+    final response = await _client
+        .delete(uri, headers: _commonHeaders())
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode == 200) return;
+
+    // A rejected delete can arrive with an empty or non-JSON body (a gateway
+    // error, for instance), so the server's message is used only when it parses.
+    String message = 'Reference document delete failed';
+    try {
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      final serverMessage = body['error'] as String?;
+      if (serverMessage != null && serverMessage.isNotEmpty) {
+        message = serverMessage;
+      }
+    } catch (_) {
+      // Keep the generic message.
+    }
+    throw ApiException(response.statusCode, message);
   }
 
   /// Returns true when [payload] differs from [_lastPolledRiskPayload] by
