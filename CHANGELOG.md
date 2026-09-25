@@ -40,12 +40,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `elevated → medium`, and the third slider is a budget split
   `60% high / 40% critical`. `ApiService.authorScenario` accepts an injectable
   `http.Client` so the generated request body is tested.
+- `CERBERUS_MAX_BODY_BYTES` bounds the request body the API will buffer. The API
+  previously had **no request body size limit at all** — `@hono/node-server`
+  exposes no `bodyLimit` option and none was configured — so every route read
+  whatever the caller sent. An oversized request is now refused with
+  `413 PAYLOAD_TOO_LARGE` before the body is read, for authenticated and
+  unauthenticated callers alike. Default 8 MiB, matching the ceiling the MCP
+  adapter already applied to its own bodies.
 
 ### Changed
 
 - `README.md` and `CONTRIBUTING.md` now state where `flutter build web --release`
   writes its output: `apps/console/build/web`. `CONTRIBUTING.md` previously
   stopped at `flutter run -d chrome` and had no build step at all.
+- Request fields that reach a paid provider are now length-capped: `prompt`
+  (8 000 characters) and `roleContext` (200) on `POST /api/v1/scenarios`, and
+  `question` (2 000) on `POST /api/v1/auditor/query`. Each is refused with
+  HTTP 400 before any inference is spent. Telemetry batches are capped at
+  1 000 events per request, and identity fields at 200 characters each.
+- The auditor truncates its result set to 200 records whatever pipeline the model
+  produces, so a model-generated pipeline with no `$limit` can no longer pass
+  every session to the provider.
 - The scenario panel's third risk slider is labelled **"Severe"** rather than
   "Critical", because only 40% of its budget becomes `critical`. The panel prints
   the resulting four percentages beneath the sliders, so the split is shown
@@ -71,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `active`, and `apps/api/test/persistence-naming.test.ts` asserts the retired
   literal is absent from the API source.
 - `docs/architecture.md` no longer says the repository has no `docs/` index page.
+- `POST /api/v1/identity/set` returns HTTP 400 for a non-string field instead of
+  throwing inside the handler. A numeric `displayName` used to be cast to a
+  string and `.trim()` called on it, which surfaced as an unhandled 500.
 
 ## [0.1.0] - 2026-09-22
 

@@ -78,7 +78,7 @@ POST /api/v1/guardian/ingest
   │
   ├─ 1. ensureMongoSession()      → MCP get_session_review, then create_session
   │                                 if the session document does not exist
-  ├─ 2. MCP ingest_micro_events   → raw telemetry persisted (8 MiB body cap)
+  ├─ 2. MCP ingest_micro_events   → raw telemetry persisted (batch and body capped)
   ├─ 3. processEvent() per event  → in-memory SessionState mutated
   │                                 (fingerprint dedup applied here)
   ├─ 4. MCP update_session_counts → durable aggregate counters refreshed
@@ -349,7 +349,12 @@ Boundary by boundary:
   (`PUBLIC_PATHS` in `middleware/auth.ts`); `/` is served by the health router.
   Request bodies are treated as untrusted: shapes are validated explicitly, and
   the global error handler returns a generic 500 with a correlation id rather
-  than framework or provider internals.
+  than framework or provider internals. Bodies are bounded before they are read:
+  the `body-limit` middleware in `index.ts` rejects anything above
+  `CERBERUS_MAX_BODY_BYTES` (default 8 MiB) with `413 PAYLOAD_TOO_LARGE`, and it
+  runs before the authentication middleware so an oversized request is refused
+  whether or not the caller holds a credential. Per-field caps sit below it —
+  see [configuration.md](configuration.md#1-server).
 - **API → OpenAI.** Model output is untrusted text. It is parsed defensively
   (strip markdown fences → `JSON.parse` → repair trailing commas and control
   characters → extract the first balanced JSON object) and every field is
@@ -357,7 +362,9 @@ Boundary by boundary:
 - **API → MCP adapter.** A shared-secret bearer token
   (`CERBERUS_MCP_TOKEN`), compared in constant time. The adapter binds to
   `127.0.0.1` by default. It emits no CORS headers at all unless
-  `CERBERUS_MCP_CORS_ORIGINS` is set. Bodies are capped at 8 MiB.
+  `CERBERUS_MCP_CORS_ORIGINS` is set. Bodies are capped at 8 MiB on both sides:
+  the API refuses anything larger before buffering it, and the adapter applies
+  its own cap to what it receives.
 - **MCP adapter → MongoDB.** A single connection string from `MONGODB_URI`.
   Cerberus does not manage MongoDB authentication, network policy or encryption.
 - **CORS.** The API uses an explicit allow-list. With an empty
