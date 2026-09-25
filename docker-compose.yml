@@ -59,7 +59,21 @@ services:
       CERBERUS_DEV_MODE: ${CERBERUS_DEV_MODE:-false}
       CERBERUS_API_KEY: ${CERBERUS_API_KEY:-}
       CERBERUS_MCP_TOKEN: ${CERBERUS_MCP_TOKEN:-}
+
+      # Rotation overlap. Set the value being retired here, restart, move every
+      # client across, then unset it and restart again. Both are read by the API
+      # and by the MCP adapter, which run in this one container.
+      # See docs/operations/key-rotation.md.
+      CERBERUS_API_KEY_PREVIOUS: ${CERBERUS_API_KEY_PREVIOUS:-}
+      CERBERUS_MCP_TOKEN_PREVIOUS: ${CERBERUS_MCP_TOKEN_PREVIOUS:-}
+
       CERBERUS_CORS_ORIGINS: ${CERBERUS_CORS_ORIGINS:-}
+
+      # ── Rate limiting ──
+      # Applied after authentication, per route category. A backstop, not DDoS
+      # defence: see docs/operations/reverse-proxy.md.
+      CERBERUS_RATE_LIMIT_ENABLED: ${CERBERUS_RATE_LIMIT_ENABLED:-true}
+      CERBERUS_AI_REQUESTS_PER_MINUTE: ${CERBERUS_AI_REQUESTS_PER_MINUTE:-10}
 
       # ── AI provider (required) ──
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
