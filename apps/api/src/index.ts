@@ -28,6 +28,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { bodyLimit } from "hono/body-limit";
 import { prettyJSON } from "hono/pretty-json";
 import { randomUUID } from "node:crypto";
 
@@ -85,6 +86,36 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
     c.header("X-Correlation-Id", randomUUID());
     await next();
   });
+
+  // ── Request body size bound ─────────────────────────────────────
+  //
+  // Runs before the auth middleware so an oversized body is refused without
+  // being read into memory, whether or not the caller is authenticated.
+  // `@hono/node-server` imposes no body limit of its own and exposes no option
+  // to configure one, so without this the API buffers an arbitrarily large
+  // request before any route sees it.
+  //
+  // `onError` returns the response directly rather than throwing, so the shape
+  // stays under this file's control instead of depending on how `app.onError`
+  // treats an HTTPException.
+  const maxBodyBytes = config.security.maxRequestBodyBytes;
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: maxBodyBytes,
+      onError: (c) =>
+        c.json(
+          {
+            success: false,
+            error: `Request body exceeds the configured limit of ${maxBodyBytes} bytes.`,
+            code: "PAYLOAD_TOO_LARGE",
+            maxBytes: maxBodyBytes,
+            correlationId: c.res.headers.get("X-Correlation-Id") ?? "unknown",
+          },
+          413,
+        ),
+    }),
+  );
 
   // ── Authentication boundary ─────────────────────────────────────
   app.use("*", createAuthMiddleware(config));

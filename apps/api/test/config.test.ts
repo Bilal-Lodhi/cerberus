@@ -20,30 +20,35 @@ const MANAGED_VARS = [
   "CERBERUS_DEV_MODE",
   "NODE_ENV",
   "SESSION_TTL_SECONDS",
+  "CERBERUS_MAX_BODY_BYTES",
 ] as const;
+
+/** Puts the environment into a minimal valid state for `loadConfig()`. */
+function installMinimalEnv(saved: Map<string, string | undefined>): void {
+  for (const name of MANAGED_VARS) saved.set(name, process.env[name]);
+
+  // Dev mode keeps the two optional secrets out of the way, and NODE_ENV is
+  // cleared because dev mode is refused under production.
+  process.env["OPENAI_API_KEY"] = "test-openai-key";
+  process.env["CERBERUS_DEV_MODE"] = "true";
+  delete process.env["NODE_ENV"];
+  delete process.env["SESSION_TTL_SECONDS"];
+  delete process.env["CERBERUS_MAX_BODY_BYTES"];
+}
+
+function restoreEnv(saved: Map<string, string | undefined>): void {
+  for (const name of MANAGED_VARS) {
+    const previous = saved.get(name);
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
 
 describe("loadConfig — SESSION_TTL_SECONDS", () => {
   const saved = new Map<string, string | undefined>();
 
-  beforeEach(() => {
-    for (const name of MANAGED_VARS) saved.set(name, process.env[name]);
-
-    // Minimal valid environment. Dev mode keeps the two optional secrets out of
-    // the way so the TTL is the only variable under test, and NODE_ENV is
-    // cleared because dev mode is refused under production.
-    process.env["OPENAI_API_KEY"] = "test-openai-key";
-    process.env["CERBERUS_DEV_MODE"] = "true";
-    delete process.env["NODE_ENV"];
-    delete process.env["SESSION_TTL_SECONDS"];
-  });
-
-  afterEach(() => {
-    for (const name of MANAGED_VARS) {
-      const previous = saved.get(name);
-      if (previous === undefined) delete process.env[name];
-      else process.env[name] = previous;
-    }
-  });
+  beforeEach(() => installMinimalEnv(saved));
+  afterEach(() => restoreEnv(saved));
 
   test("defaults to 7200 seconds when unset", () => {
     assert.equal(loadConfig().security.sessionTTLSeconds, 7200);
@@ -92,5 +97,36 @@ describe("loadConfig — SESSION_TTL_SECONDS", () => {
         error.message.includes("SESSION_TTL_SECONDS") &&
         error.message.includes("7200"),
     );
+  });
+});
+
+describe("loadConfig — CERBERUS_MAX_BODY_BYTES", () => {
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => installMinimalEnv(saved));
+  afterEach(() => restoreEnv(saved));
+
+  test("defaults to 8 MiB when unset", () => {
+    assert.equal(loadConfig().security.maxRequestBodyBytes, 8 * 1024 * 1024);
+  });
+
+  test("honours an explicit value", () => {
+    process.env["CERBERUS_MAX_BODY_BYTES"] = "1024";
+    assert.equal(loadConfig().security.maxRequestBodyBytes, 1024);
+  });
+
+  test("refuses a value that is not a positive whole number of bytes", () => {
+    // A zero or negative cap would refuse every request with a body, and a
+    // fractional or suffixed value would silently mean something else.
+    for (const bad of ["0", "-1", "1.5", "8e6", "8388608abc", "abc"]) {
+      process.env["CERBERUS_MAX_BODY_BYTES"] = bad;
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigError &&
+          error.message.includes("CERBERUS_MAX_BODY_BYTES"),
+        `expected a ConfigError for CERBERUS_MAX_BODY_BYTES=${JSON.stringify(bad)}`,
+      );
+    }
   });
 });

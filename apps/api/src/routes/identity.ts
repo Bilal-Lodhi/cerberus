@@ -18,7 +18,45 @@ import type { IdentityPayload, IdentityResponse } from "../types.js";
 /** In-memory identity store (per-process, resets on restart). */
 const identityStore = new Map<string, IdentityPayload>();
 
+/**
+ * Maximum accepted length of any identity field, in characters.
+ *
+ * These strings are echoed back to the console and written into log lines, so
+ * they are bounded rather than accepted at whatever length the caller sends.
+ */
+export const MAX_IDENTITY_FIELD_CHARS = 200;
+
 const identityRouter = new Hono();
+
+/**
+ * Reads an optional trimmed string field.
+ *
+ * Returns an error for a non-string value rather than casting and calling
+ * `.trim()` on it: a numeric `displayName` used to throw inside the handler and
+ * surface as an unhandled 500 instead of a 400.
+ */
+function readIdentityField(
+  source: Record<string, unknown>,
+  key: string,
+): { value?: string; error?: string } {
+  const raw = source[key];
+  if (raw === undefined || raw === null) return {};
+
+  if (typeof raw !== "string") {
+    return { error: `Field '${key}' must be a string` };
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed.length > MAX_IDENTITY_FIELD_CHARS) {
+    return {
+      error:
+        `Field '${key}' must be at most ${MAX_IDENTITY_FIELD_CHARS} characters ` +
+        `(got ${trimmed.length}).`,
+    };
+  }
+
+  return { value: trimmed.length > 0 ? trimmed : undefined };
+}
 
 /**
  * POST /api/v1/identity/set
@@ -51,21 +89,32 @@ identityRouter.post("/set", async (c) => {
   }
 
   const bodyObj = body as Record<string, unknown>;
-  const displayName = (bodyObj["displayName"] as string | undefined)?.trim();
-  const employeeId = (bodyObj["employeeId"] as string | undefined)?.trim();
+  const displayName = readIdentityField(bodyObj, "displayName");
+  const employeeId = readIdentityField(bodyObj, "employeeId");
+  const role = readIdentityField(bodyObj, "role");
+  const department = readIdentityField(bodyObj, "department");
 
-  if (!displayName) {
+  for (const field of [displayName, employeeId, role, department]) {
+    if (field.error) {
+      return c.json(
+        { success: false, error: field.error, code: "INVALID_IDENTITY_FIELD" },
+        400,
+      );
+    }
+  }
+
+  if (!displayName.value) {
     return c.json({ success: false, error: "displayName is required" }, 400);
   }
-  if (!employeeId) {
+  if (!employeeId.value) {
     return c.json({ success: false, error: "employeeId is required" }, 400);
   }
 
   const identity: IdentityPayload = {
-    displayName,
-    employeeId,
-    role: (bodyObj["role"] as string | undefined)?.trim() || undefined,
-    department: (bodyObj["department"] as string | undefined)?.trim() || undefined,
+    displayName: displayName.value,
+    employeeId: employeeId.value,
+    role: role.value,
+    department: department.value,
   };
 
   const sessionToken = randomUUID();
@@ -74,7 +123,7 @@ identityRouter.post("/set", async (c) => {
   const response: IdentityResponse = { success: true, identity, sessionToken };
 
   console.log(
-    `[identity] registered operator "${displayName}" (${employeeId}) ` +
+    `[identity] registered operator "${identity.displayName}" (${identity.employeeId}) ` +
       `handle=${sessionToken.slice(0, 8)}…`,
   );
 
