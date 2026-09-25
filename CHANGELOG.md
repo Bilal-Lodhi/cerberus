@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The console can manage the reference corpus.** It had no surface for it at all —
+  a search for "reference" under `apps/console/lib` returned nothing — so populating
+  the corpus meant hand-writing `curl`. That stopped being defensible once the corpus
+  became load-bearing: with nothing in it, `findSimilarityMatches` always returns
+  nothing, so an operator who never populated it would see an empty match set and
+  could read that as "nothing leaked". A dashboard panel now lists, adds and removes
+  documents, validates against the API's own limits before sending, and states two
+  things rather than leaving them to be inferred: **Cerberus never populates the
+  corpus itself**, and a match is evidence about phrasing rather than about copying.
+  The assessment and the reasoning are in
+  `docs/operations/corpus-management.md`.
+- `docs/migration-v0.1-to-v0.2.md`: what changed between the two versions, which two
+  changes require action (the unique index needing a migration, and events without an
+  `eventId` now being rejected), and how to verify the upgrade.
+- `docs/release/v0.2.0-release-notes.md` and `docs/release/v0.2.0-checklist.md`.
+  **Both are drafts and nothing in them has been executed or published.** The notes
+  state the theme, the breaking changes, the upgrade path, and — plainly — what the
+  release does not claim. The checklist has every box unchecked on purpose: it is what
+  a maintainer works through when authorising a release, and pre-ticking it would
+  defeat the purpose.
 - `npm run bench`, and `docs/development/performance-baseline.md`. The benchmark
   drives the compiled API in process through `app.request()` with the persistence
   layer and AI provider stubbed, so it is reproducible anywhere with no MongoDB, no

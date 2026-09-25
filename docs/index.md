@@ -15,16 +15,17 @@ Cerberus is and how to run it, then come back here for depth.
 | [architecture.md](architecture.md) | Contributors, operators evaluating the design | Component map, telemetry and scenario data flows, the session state model, deduplication layers, the persistence model, trust boundaries, and the known gaps in this release. Written from the source, not from intent. |
 | [configuration.md](configuration.md) | Operators, contributors | Every environment variable: type, default, whether it is required, and the security implications of changing it. Includes worked local-development and production examples. |
 | [security/threat-model.md](security/threat-model.md) | Operators, security reviewers | Assets, actors, trust boundaries, what the single-key model does and does not protect against, CORS posture, fail-closed and fail-open behaviours, and data-protection considerations. |
-| [migration.md](migration.md) | Anyone with historical data or client code | Historical → current MongoDB collection names, MCP tool names and field names, plus what a one-off rename has to touch. Cerberus ships no migration tooling. |
+| [migration.md](migration.md) | Anyone with historical data or client code | The schema and data migration framework, and separately the historical → current MongoDB collection names, MCP tool names and field names. |
+| [migration-v0.1-to-v0.2.md](migration-v0.1-to-v0.2.md) | Operators upgrading from `v0.1.0` | What changed between `v0.1.0` and `v0.2.0`, which two changes require action, and how to verify the upgrade. |
 | [compatibility.md](compatibility.md) | Contributors, operators planning an upgrade | What counts as a public contract, the breaking-change and deprecation policies, versioning, supported runtimes, and the dependency and license policy with the current audit results. |
-| [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the active queue, accepted limitations and open decisions. |
+| [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the phase queue, accepted limitations and open decisions. |
 | [development/session-state-model.md](development/session-state-model.md) | Contributors, operators reasoning about restarts | Every piece of session state, its class (durable authority, reconstructable cache, ephemeral, derived), where its authority actually lives, and what a restart does to it. Written from the source. |
-| [development/performance-baseline.md](development/performance-baseline.md) | Contributors changing a hot path | How to reproduce the benchmark, the measured request-handling figures, and the two findings it produced: ingest cost grows linearly with the events a session already holds, and in-memory session state has no per-session cap. |
+| [development/performance-baseline.md](development/performance-baseline.md) | Contributors changing a hot path | How to reproduce the benchmark, the measured request-handling figures, and what it found — including one finding that was a benchmark artifact and is corrected in the document rather than deleted. |
 
 ## Operations (`docs/operations/`)
 
-Running a self-hosted deployment: rotating credentials, and — as the durability
-phase progresses — backing up, restoring and upgrading.
+Running a self-hosted deployment: rotating credentials, probing health, backing up,
+upgrading, and managing the reference corpus.
 
 | Document | Audience | What it covers |
 | --- | --- | --- |
@@ -33,16 +34,20 @@ phase progresses — backing up, restoring and upgrading.
 | [operations/upgrade.md](operations/upgrade.md) | Operators upgrading a deployment | Back up, read the migration plan, apply, restart, confirm — plus what to do when a migration refuses to run, why there are no down-migrations, and why the MCP adapter starts before the API. |
 | [operations/health-probes.md](operations/health-probes.md) | Operators, orchestrator config | Which of `/health` (liveness) and `/ready` (readiness) belongs in each probe slot and what goes wrong if they are swapped, what readiness reports, and why the probe is cached. |
 | [operations/backup-restore.md](operations/backup-restore.md) | Operators responsible for data | The backup and restore scripts, what a manifest makes verifiable, why `mongorestore` exits 0 when it restores nothing, what is deliberately not backed up, and the gaps this does not close (no scheduling, no point-in-time recovery, no off-host storage, no encryption). |
+| [operations/corpus-management.md](operations/corpus-management.md) | Operators, and anyone reading a similarity match | Why the reference corpus needed a console surface, what the panel does, what the corpus is **not** (not plagiarism detection, not complete coverage), and why the whole corpus is loaded per analysis. |
 
 ## Release preparation (`docs/release/`)
 
-These describe how `v0.1.0` was prepared and published. They are a historical
-record of that release, not instructions for a future one.
+The `v0.1.0` documents are a historical record of that release. The `v0.2.0`
+documents are a **draft** for maintainer review and nothing in them has been
+executed or published.
 
 | Document | Audience | What it covers |
 | --- | --- | --- |
 | [release/release-checklist.md](release/release-checklist.md) | Maintainers | The gates that were verified before `v0.1.0` was published, and the evidence recorded for each. |
 | [release/v0.1.0-release-notes.md](release/v0.1.0-release-notes.md) | Everyone | The published `v0.1.0` release notes, including the limitations stated at publication. |
+| [release/v0.2.0-release-notes.md](release/v0.2.0-release-notes.md) | Maintainers, then everyone | **Draft.** What `v0.2.0` would contain, its breaking changes, the upgrade path, and — stated plainly — what it does not claim. |
+| [release/v0.2.0-checklist.md](release/v0.2.0-checklist.md) | Maintainers | **Draft, every box unchecked.** The gates to work through when authorising a release, including the end-to-end checks that must be re-run rather than assumed. |
 | [release/community-health-checklist.md](release/community-health-checklist.md) | Maintainers | The community-health files and repository settings applied for the public launch. |
 | [release/repository-metadata.md](release/repository-metadata.md) | Maintainers | Repository description, topics and metadata drafts. |
 | [release/good-first-issues.md](release/good-first-issues.md) | Maintainers, new contributors | The issue candidates collected during the extraction, with the triage outcome for each. Filed candidates link to their GitHub issues. |
