@@ -107,7 +107,7 @@ strong engineering rationale recorded here:
 | E | API-key rotation has a safe documented path | Done — `CERBERUS_API_KEY_PREVIOUS` and `CERBERUS_MCP_TOKEN_PREVIOUS` overlap, both compared without short-circuiting, with the procedure in [operations/key-rotation.md](../operations/key-rotation.md) |
 | F | Schema and data migration strategy exists and is testable | Done — an ordered, idempotent, fail-before-mutating runner with a ledger, a dry-run CLI, and one real migration that repairs the duplicate identities the pre-fix ingestion path created. [operations/upgrade.md](../operations/upgrade.md) documents the procedure |
 | G | Local performance baseline exists | Not started |
-| H | Health and readiness semantics are coherent | Not started |
+| H | Health and readiness semantics are coherent | Done — `/health` is liveness and checks nothing; `/ready` checks persistence and answers 503. The MCP adapter exposes the same pair, and the Dockerfile and compose probe `/ready`. [operations/health-probes.md](../operations/health-probes.md) records which belongs in each slot |
 | I | Backup, restore and upgrade documentation exists | In progress — [operations/upgrade.md](../operations/upgrade.md) covers backup-verify, apply, confirm and rollback. A dedicated backup/restore document remains |
 | J | Corpus-management workflow usable without hand-writing raw HTTP | Not started |
 | K | No new P0/P1 correctness or security defects remain | Not started |

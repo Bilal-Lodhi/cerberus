@@ -30,6 +30,7 @@ phase progresses — backing up, restoring and upgrading.
 | [operations/key-rotation.md](operations/key-rotation.md) | Operators | The four-step overlap procedure for `CERBERUS_API_KEY` and `CERBERUS_MCP_TOKEN`, why an overlap is used instead of a hard cutover, what Cerberus refuses to do, and what an overlap does not do. |
 | [operations/reverse-proxy.md](operations/reverse-proxy.md) | Operators exposing Cerberus | What the proxy must own (TLS, per-caller limiting, unauthenticated throttling), why `X-Forwarded-For` is deliberately not trusted, a minimal nginx configuration, and what happens when you run more than one replica. |
 | [operations/upgrade.md](operations/upgrade.md) | Operators upgrading a deployment | Back up, read the migration plan, apply, restart, confirm — plus what to do when a migration refuses to run, why there are no down-migrations, and why the MCP adapter starts before the API. |
+| [operations/health-probes.md](operations/health-probes.md) | Operators, orchestrator config | Which of `/health` (liveness) and `/ready` (readiness) belongs in each probe slot and what goes wrong if they are swapped, what readiness reports, and why the probe is cached. |
 
 ## Release preparation (`docs/release/`)
 
