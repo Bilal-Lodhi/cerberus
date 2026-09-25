@@ -19,6 +19,7 @@ Cerberus is and how to run it, then come back here for depth.
 | [compatibility.md](compatibility.md) | Contributors, operators planning an upgrade | What counts as a public contract, the breaking-change and deprecation policies, versioning, supported runtimes, and the dependency and license policy with the current audit results. |
 | [development/maturity-plan.md](development/maturity-plan.md) | Contributors, maintainers | Where the project is on its way from the `v0.1.0` research prototype to a credible self-hostable platform: completed milestones, the active queue, accepted limitations and open decisions. |
 | [development/session-state-model.md](development/session-state-model.md) | Contributors, operators reasoning about restarts | Every piece of session state, its class (durable authority, reconstructable cache, ephemeral, derived), where its authority actually lives, and what a restart does to it. Written from the source. |
+| [development/performance-baseline.md](development/performance-baseline.md) | Contributors changing a hot path | How to reproduce the benchmark, the measured request-handling figures, and the two findings it produced: ingest cost grows linearly with the events a session already holds, and in-memory session state has no per-session cap. |
 
 ## Operations (`docs/operations/`)
 

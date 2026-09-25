@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `npm run bench`, and `docs/development/performance-baseline.md`. The benchmark
+  drives the compiled API in process through `app.request()` with the persistence
+  layer and AI provider stubbed, so it is reproducible anywhere with no MongoDB, no
+  network and no paid inference, and a regression is attributable to this code
+  rather than to a container's warm-up. Every case warms up before sampling, and
+  latencies are reported as p50/p95/p99 because request latency is right-skewed and
+  a mean hides the tail.
+  It found two real defects, both the same shape — work proportional to how much a
+  session already holds:
+  - **Ingest cost grows linearly with the events a session already holds.**
+    Throughput falls from 2 263 req/s against an empty session to 78 req/s against
+    one holding 5 000 events, and p50 rises from 0.44 ms to 11.53 ms. A 5 000-event
+    session is an ordinary day of telemetry, and the console sends one event per
+    request.
+  - **In-memory session state has no per-session cap.** About 1.4 KiB per event held
+    in memory; `MAX_EVENTS_PER_BATCH` bounds one request, not a session's lifetime.
+  Neither is visible from a throughput figure taken on a fresh database, which is
+  why the scaling case exists.
 - `scripts/backup-cerberus.ps1` and `scripts/restore-cerberus.ps1`, plus
   `npm run backup` and `npm run restore`. Cerberus still has no backup mechanism of
   its own — it writes to MongoDB, so the mechanism is MongoDB's — but an unverified
