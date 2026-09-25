@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet. Changes that land after `0.1.0` are recorded here.
+### Added
+
+- `docs/index.md` — an entry point for the documentation set. It lists every
+  document under `docs/` with the audience it is written for, and is linked from
+  the `README.md` documentation section.
+- `docs/development/maturity-plan.md` — the current maturity state, completed
+  milestones, the next work queue, accepted limitations and the decisions that
+  need a maintainer.
+
+### Changed
+
+- `README.md` and `CONTRIBUTING.md` now state where `flutter build web --release`
+  writes its output: `apps/console/build/web`. `CONTRIBUTING.md` previously
+  stopped at `flutter run -d chrome` and had no build step at all.
+
+### Fixed
+
+- Corrected two documentation claims that the code had already outgrown.
+  `docs/architecture.md` and `docs/migration.md` both stated that session
+  creation writes the status `in_progress`; it does not. Sessions are created as
+  `active`, and `apps/api/test/persistence-naming.test.ts` asserts the retired
+  literal is absent from the API source.
+- `docs/architecture.md` no longer says the repository has no `docs/` index page.
 
 ## [0.1.0] - 2026-09-22
 

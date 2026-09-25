@@ -171,11 +171,17 @@ details:
   replaces it with `pasteContent`; `EDIT` replaces it with `newText`; `PASTE`
   replaces it with `newText`.
 - `endedAt` is set only by terminate, never by delete.
-- Status values written by the API are `active`, `locked`, `in_progress` and
-  `terminated`. `SESSION_STATUSES` in `tool-names.ts` lists only
+- Status values written durably by the API are `active`, `locked` and
+  `terminated`. Sessions are created as `active`
+  (`guardian.ts` passes `status: "active"` to `create_session`, and
+  `MongoStore.createSession` defaults to `"active"` in `$setOnInsert`).
+  The retired historical creation value `in_progress` is never written, and
+  `normalizeStatus()` maps it to `active` if it is found in old documents;
+  `apps/api/test/persistence-naming.test.ts` asserts the literal is absent from
+  the API source. `SESSION_STATUSES` in `tool-names.ts` lists
   `active | locked | terminated` as valid for the MCP `set_session_status`
   tool, and the tool rejects anything else with a `ToolArgumentError` (HTTP 400
-  over the HTTP adapter).
+  over the HTTP adapter) — so the written set is exactly the accepted set.
 - **State is lost on restart.** MongoDB is the durable fallback. The guardian
   session list falls back to `list_sessions` only when the in-memory result is
   empty; the review router always merges both and takes the larger count for
@@ -361,5 +367,6 @@ deliberate or unresolved gaps rather than defects.
   a proxy that injects the credential.
 - **No migration tooling** for the historical schema. See
   [migration.md](migration.md).
-- **No `CODEOWNERS` file** and no `docs/` index page.
+- **No `CODEOWNERS` file**, so no review is requested automatically on any path.
+  The `docs/` index page now exists at [index.md](index.md).
 

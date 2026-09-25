@@ -145,9 +145,11 @@ full current index inventory is in
 - Historical session status values are not translated. The current MCP
   `set_session_status` tool accepts only `active`, `locked` and `terminated`
   (`SESSION_STATUSES` in `packages/mcp-mongodb/src/tool-names.ts`) and rejects
-  anything else with HTTP 400. Note that the API itself also writes
-  `in_progress` on session creation; reconcile any status vocabulary in your
-  data against what the current code actually reads.
+  anything else with HTTP 400. Current Cerberus writes only those three values:
+  sessions are created as `active`. A historical `in_progress` value is not
+  written by this codebase and is normalised to `active` when a document
+  carrying it is read back, so reconcile such values in your data deliberately
+  rather than expecting them to be preserved.
 - Historical session ids, employee ids and matrix ids are carried over
   unchanged, because they are plain strings. Their meaning may have shifted with
   the field renames above.
