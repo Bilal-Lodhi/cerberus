@@ -25,6 +25,20 @@ import { toISOStringLocal } from "../utils/time.js";
 
 const MCP_GROUNDING_TIMEOUT_MS = 5_000;
 
+/**
+ * Maximum accepted length of the operator-authored scenario prompt, in
+ * characters.
+ *
+ * This is a paid-inference boundary, not a storage limit: the prompt is sent to
+ * the model verbatim. 8 000 is the same order of magnitude the risk-analysis
+ * prompt uses to truncate terminal content, so it is comfortably above any real
+ * authoring request while keeping one request from becoming a large bill.
+ */
+export const MAX_PROMPT_CHARS = 8_000;
+
+/** Maximum accepted length of the target-system context string, in characters. */
+export const MAX_ROLE_CONTEXT_CHARS = 200;
+
 // ═══════════════════════════════════════════════════════════════════
 // Stage 1 — deterministic content pre-filter
 // ═══════════════════════════════════════════════════════════════════
@@ -188,6 +202,35 @@ export function createScenariosRouter(config: AppConfig): Hono {
     if (!body.roleContext || typeof body.roleContext !== "string") {
       return c.json(
         { success: false, error: "Field 'roleContext' is required and must be a string" },
+        400,
+      );
+    }
+
+    // Length caps come before any inference is spent. The global body limit
+    // bounds the request as a whole; these bound the two fields that are sent
+    // to a paid provider.
+    if (body.prompt.length > MAX_PROMPT_CHARS) {
+      return c.json(
+        {
+          success: false,
+          error: `Field 'prompt' must be at most ${MAX_PROMPT_CHARS} characters (got ${body.prompt.length}).`,
+          code: "PROMPT_TOO_LONG",
+          maxChars: MAX_PROMPT_CHARS,
+          correlationId: requestId,
+        },
+        400,
+      );
+    }
+
+    if (body.roleContext.length > MAX_ROLE_CONTEXT_CHARS) {
+      return c.json(
+        {
+          success: false,
+          error: `Field 'roleContext' must be at most ${MAX_ROLE_CONTEXT_CHARS} characters (got ${body.roleContext.length}).`,
+          code: "ROLE_CONTEXT_TOO_LONG",
+          maxChars: MAX_ROLE_CONTEXT_CHARS,
+          correlationId: requestId,
+        },
         400,
       );
     }

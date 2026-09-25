@@ -11,6 +11,16 @@
 
 import "dotenv/config";
 
+/**
+ * Default maximum accepted request body size, in bytes (8 MiB).
+ *
+ * Deliberately the same ceiling the MCP adapter applies to its own request
+ * bodies, so a body the API admits cannot be rejected downstream for size. It is
+ * a request-buffering bound, not a telemetry-retention policy: nothing is
+ * truncated, an oversized request is refused outright.
+ */
+export const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
+
 // ═══════════════════════════════════════════════════════════════════
 // Config Types
 // ═══════════════════════════════════════════════════════════════════
@@ -71,6 +81,13 @@ export interface CorsConfig {
 export interface SecurityConfig {
   /** Session expiry in seconds. */
   sessionTTLSeconds: number;
+  /**
+   * Maximum accepted request body size, in bytes.
+   *
+   * Enforced by the `body-limit` middleware in `index.ts` before the body is
+   * buffered, so an oversized request is refused rather than read into memory.
+   */
+  maxRequestBodyBytes: number;
   /** Max allowed paste events before auto-flagging. */
   maxPasteEventsPerSession: number;
   /** Min keystroke interval considered human (ms). */
@@ -116,8 +133,7 @@ function splitList(raw: string): string[] {
 /**
  * Development defaults for cross-origin access. Only applied when
  * CERBERUS_DEV_MODE is explicitly enabled.
- */
-const DEV_DEFAULT_CORS_ORIGINS = [
+ */const DEV_DEFAULT_CORS_ORIGINS = [
   "http://localhost:8080",
   "http://127.0.0.1:8080",
   "http://localhost:5173",
@@ -136,24 +152,25 @@ export class ConfigError extends Error {
 }
 
 /**
- * Reads a strictly positive whole number of seconds.
+ * Reads a strictly positive whole number.
  *
  * Unlike {@link readInt}, an explicitly set but unusable value is a startup
  * failure rather than a silent fallback. `SESSION_TTL_SECONDS` bounds how long
- * an operator may be monitored; quietly substituting a default the operator did
- * not choose — or silently reading `"1.5"` as `1` — would be a monitoring-scope
+ * an operator may be monitored and `CERBERUS_MAX_BODY_BYTES` bounds how much a
+ * single request may buffer; quietly substituting a default the operator did not
+ * choose — or silently reading `"1.5"` as `1` — would make either of those a
  * decision made by a typo.
  *
  * An unset variable still takes the default, so the documented default path is
  * unchanged.
  */
-function readPositiveSeconds(name: string, fallback: number): number {
+function readPositiveInt(name: string, fallback: number, unit: string): number {
   const raw = readEnv(name);
   if (!raw) return fallback;
 
   if (!/^\d+$/.test(raw)) {
     throw new ConfigError(
-      `${name} must be a whole number of seconds (got "${raw}"). ` +
+      `${name} must be a whole number ${unit} (got "${raw}"). ` +
         `Leave it unset to use the default of ${fallback}.`,
     );
   }
@@ -161,7 +178,7 @@ function readPositiveSeconds(name: string, fallback: number): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new ConfigError(
-      `${name} must be a positive integer number of seconds (got "${raw}"). ` +
+      `${name} must be a positive integer ${unit} (got "${raw}"). ` +
         `Leave it unset to use the default of ${fallback}.`,
     );
   }
@@ -233,7 +250,13 @@ export function loadConfig(): AppConfig {
 
   const security: SecurityConfig = {
     // Enforced by apps/api/src/services/session-liveness.ts on every read.
-    sessionTTLSeconds: readPositiveSeconds("SESSION_TTL_SECONDS", 7200),
+    sessionTTLSeconds: readPositiveInt("SESSION_TTL_SECONDS", 7200, "of seconds"),
+    // Enforced by the body-limit middleware in index.ts before buffering.
+    maxRequestBodyBytes: readPositiveInt(
+      "CERBERUS_MAX_BODY_BYTES",
+      DEFAULT_MAX_BODY_BYTES,
+      "of bytes",
+    ),
     maxPasteEventsPerSession: readInt("MAX_PASTE_EVENTS", 5),
     minHumanKeystrokeMs: readInt("MIN_HUMAN_KEYSTROKE_MS", 80),
     dataLeakageSimilarityThreshold: readFloat(
@@ -251,7 +274,8 @@ export function loadConfig(): AppConfig {
       `apiKey=${apiKey ? "set" : "unset"} ` +
       `mcpToken=${mcpApiKey ? "set" : "unset"} ` +
       `corsOrigins=${cors.allowedOrigins.length} ` +
-      `sessionTtl=${security.sessionTTLSeconds}s`,
+      `sessionTtl=${security.sessionTTLSeconds}s ` +
+      `maxBody=${security.maxRequestBodyBytes}B`,
   );
 
   if (devMode) {

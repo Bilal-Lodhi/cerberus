@@ -67,6 +67,16 @@ export const SESSION_EXPIRED_CODE = "SESSION_EXPIRED";
 /** Stable error code returned when a terminal-state session is reactivated. */
 export const SESSION_TERMINATED_CODE = "SESSION_TERMINATED";
 
+/**
+ * Maximum number of micro-events accepted in a single ingest batch.
+ *
+ * The console sends one event per request, so this is far above real usage. The
+ * global request body limit bounds a batch by size, but a body of many tiny
+ * events would otherwise still expand into an unbounded number of persistence
+ * writes and in-memory event objects.
+ */
+export const MAX_EVENTS_PER_BATCH = 1_000;
+
 // ─── Session state ─────────────────────────────────────────────────
 
 export interface SessionState {
@@ -156,6 +166,19 @@ export function createGuardianRouter(
     if (!Array.isArray(body.events) || body.events.length === 0) {
       return c.json(
         { success: false, error: "Field 'events' must be a non-empty array" },
+        400,
+      );
+    }
+
+    if (body.events.length > MAX_EVENTS_PER_BATCH) {
+      return c.json(
+        {
+          success: false,
+          error: `Field 'events' must contain at most ${MAX_EVENTS_PER_BATCH} entries (got ${body.events.length}).`,
+          code: "BATCH_TOO_LARGE",
+          maxEvents: MAX_EVENTS_PER_BATCH,
+          correlationId: requestId,
+        },
         400,
       );
     }

@@ -24,6 +24,26 @@ interface SessionRecord {
   overallRiskScore?: number;
 }
 
+/**
+ * Maximum accepted length of the natural-language audit question, in
+ * characters.
+ *
+ * The question is sent to a paid provider twice (once to build the pipeline,
+ * once to summarise the results), so it is bounded before any inference is
+ * spent. The global body limit bounds the request as a whole.
+ */
+export const MAX_QUESTION_CHARS = 2_000;
+
+/**
+ * Hard ceiling on the number of records the auditor will hand to the model or
+ * return to the caller, whatever the model's pipeline asks for.
+ *
+ * The model's `$limit` is a suggestion, not a control: `applySafePipeline`
+ * ignores unknown stages but a pipeline with no `$limit` at all would otherwise
+ * pass every session through. This cap is applied after the pipeline runs.
+ */
+export const MAX_AUDITOR_RESULTS = 200;
+
 export function createAuditorRouter(config: AppConfig): Hono {
   const auditorRouter = new Hono();
 
@@ -57,10 +77,25 @@ export function createAuditorRouter(config: AppConfig): Hono {
       );
     }
 
+    if (body.question.length > MAX_QUESTION_CHARS) {
+      return c.json(
+        {
+          success: false,
+          error: `Field 'question' must be at most ${MAX_QUESTION_CHARS} characters (got ${body.question.length}).`,
+          code: "QUESTION_TOO_LONG",
+          maxChars: MAX_QUESTION_CHARS,
+        },
+        400,
+      );
+    }
+
     try {
       const provider = getAIProvider(config);
       const pipeline = await provider.toMongoPipeline(body.question);
-      const records = applySafePipeline(await listSessions(requestId), pipeline);
+      const matched = applySafePipeline(await listSessions(requestId), pipeline);
+      // The model's own `$limit` is a suggestion; this ceiling is the control,
+      // so a pipeline without one cannot pass every session to the model.
+      const records = matched.slice(0, MAX_AUDITOR_RESULTS);
       const summary = await provider.summarizeSessionRecords(body.question, records);
 
       return c.json({ success: true, summary, raw: records });

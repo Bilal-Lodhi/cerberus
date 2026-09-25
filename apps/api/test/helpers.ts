@@ -37,6 +37,7 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     cors: { allowedOrigins: ["http://console.test"] },
     security: {
       sessionTTLSeconds: 7200,
+      maxRequestBodyBytes: 8 * 1024 * 1024,
       maxPasteEventsPerSession: 5,
       minHumanKeystrokeMs: 80,
       dataLeakageSimilarityThreshold: 0.75,
@@ -61,6 +62,23 @@ export function makeConfigWithTtl(
   return {
     ...base,
     security: { ...base.security, sessionTTLSeconds },
+  };
+}
+
+/**
+ * Config with a specific request body cap, for payload-limit tests.
+ *
+ * Same reasoning as {@link makeConfigWithTtl}: a small cap is set explicitly
+ * rather than by building a partial `security` object.
+ */
+export function makeConfigWithBodyLimit(
+  maxRequestBodyBytes: number,
+  overrides: Partial<AppConfig> = {},
+): AppConfig {
+  const base = makeConfig(overrides);
+  return {
+    ...base,
+    security: { ...base.security, maxRequestBodyBytes },
   };
 }
 
