@@ -16,8 +16,7 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated for the MCP oversized-body work (see `CHANGELOG.md`
-`[Unreleased]`).
+Last updated for the reference-corpus work (see `CHANGELOG.md` `[Unreleased]`).
 
 ## Current state
 
@@ -196,12 +195,32 @@ Ordered by the value of the outcome, not by effort.
    **No open items.** Every finding from this audit pass is remediated, and the
    MCP package now has its own test suite wired into `npm test`. **Complete.**
 
-2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates nothing.** The reference
-   completion source is a stub returning `[]`, so `ExfiltrationReport` matches
-   are always empty while the threshold is still parsed and documented. Either
-   give it a real, local, operator-managed reference corpus, or remove the
-   setting and stop advertising similarity matching. **Needs decision** — see
-   below.
+2. **`DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates the exfiltration matcher.**
+   **Implemented.** The reference source was a stub returning `[]`, so
+   `ExfiltrationReport` matches were always empty while the threshold was still
+   parsed and documented.
+   - The corpus is a local, operator-managed MongoDB collection
+     (`reference_documents`) managed through `POST`/`GET`/`DELETE
+     /api/v1/reference-documents`. **Cerberus never writes to it itself** — there
+     is no crawler, no bundled corpus and no third-party content.
+   - Similarity is computed **locally and deterministically**
+     (`apps/api/src/services/text-similarity.ts`: normalise → 3-token shingles →
+     Jaccard). The model's `exfiltrationReport` is replaced rather than merged,
+     because only the local comparison is reproducible from inputs an operator can
+     inspect — and because the model never sees the threshold.
+   - The threshold is the gate: pairs at or above it become `ExfiltrationMatch`
+     entries; pairs below it do not, though the best score is still reported so an
+     operator can see how close a paste came.
+   - `aiCompletionLikelihood` is always `0`: Cerberus does not attempt to
+     determine whether content was machine-generated, and a guess there would
+     present an unfounded number as a measurement.
+   - Texts under 10 tokens are not compared at all, so two short strings cannot
+     match by accident. The threshold itself is validated fail-closed to 0-1: a
+     value above 1 could never be reached and would silently disable the matcher.
+   - Verified through the full stack against real MongoDB and a stubbed provider:
+     a near-copy paste produced a match at 0.854 with the corpus label, a
+     half-overlap paste produced none at 0.474, and the provider's deliberately
+     fabricated match was discarded.
 
 ## Known gaps in this release
 
@@ -213,9 +232,9 @@ so the maturity picture is in one place.
 | Gap | Status | Note |
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` enforcement | Implemented | Issue #3. Expiry bounds liveness only; historical documents are retained. |
-| Request body size limit | Implemented | `CERBERUS_MAX_BODY_BYTES`, default 8 MiB, enforced before buffering. |
+| Request body size limit | Implemented | `CERBERUS_MAX_BODY_BYTES`, default 8 MiB, enforced before buffering on both the API and the MCP adapter. |
 | Model-output numeric bounds | Implemented | Every documented range is clamped at the parser boundary; arrays, strings and recursion depth are bounded. |
-| Exfiltration similarity matching inert | Needs decision | Below. |
+| Exfiltration similarity matching | Implemented | Local deterministic comparison against an operator-managed corpus, gated by `DATA_LEAKAGE_SIMILARITY_THRESHOLD`. |
 | Session state is in memory and lost on restart | Accepted limitation | MongoDB is the durable fallback; the review router merges both and takes the larger count per counter. Durable session truth is a larger change and is deferred. |
 | No endpoint agent | Accepted limitation | All telemetry originates from the browser console. Building one is a scope decision, not an engineering task. |
 | Single shared API key, no per-user attribution | Accepted limitation | Accounts, roles, OAuth/SSO and multi-tenancy are explicitly out of scope for the OSS baseline. |
@@ -229,17 +248,15 @@ so the maturity picture is in one place.
 
 These cannot be resolved by engineering judgement alone.
 
-1. **Reference corpus for similarity matching.** Implementing
-   `DATA_LEAKAGE_SIMILARITY_THRESHOLD` for real needs a source of reference
-   material. A local, operator-managed MongoDB collection compared with a
-   transparent deterministic algorithm (normalised token shingles and Jaccard,
-   for example) needs no external service and no spend, and is the preferred
-   direction. Anything that would require web crawling, a paid embedding
-   provider, a vector database service or automatically ingesting third-party
-   content is a product and privacy decision, not an implementation detail.
-2. **`CODEOWNERS`.** Either name owners for `apps/api/`,
+1. **`CODEOWNERS`.** Either name owners for `apps/api/`,
    `packages/mcp-mongodb/`, `apps/console/` and `docs/`, or record in
    `CONTRIBUTING.md` that a single-maintainer project does not use one.
+
+The reference-corpus decision that used to sit here was resolved by implementing
+the local design: an operator-managed collection compared with a transparent
+deterministic algorithm, no external service and no spend. Nothing that would
+require web crawling, a paid embedding provider or a vector-database service was
+introduced.
 
 Neither blocks the work above: the P0 audit is independent of both.
 

@@ -298,11 +298,16 @@ Non-object entries in any of those arrays are **dropped**, not coerced: every
 consumer indexes into them, so a `null`, string or nested array would either
 throw or fabricate a fieldless record that reads like real evidence.
 
-Two consequences worth stating plainly:
+Three consequences worth stating plainly:
 
 - **Duplicate flags do not inflate the score.** The blend depends on counted
   telemetry, not on how many `flags` the model returned. Duplicates inflate the
   payload, which is why the array is bounded, but not the number.
+- **The exfiltration report is not model output.** It is computed locally from
+  the paste content and the operator-managed reference corpus, and it is the only
+  part of the payload that is *replaced* rather than merely clamped. A similarity
+  claim is evidence, and only the local comparison can be re-derived from inputs
+  an operator can inspect.
 - **A model score is never an authoritative judgement about a person.** It is one
   input to a blended advisory number. Nothing in the codebase labels a monitored
   operator as malicious, and no automated action is taken against a person; the
@@ -324,6 +329,7 @@ Cerberus-native names, from `packages/mcp-mongodb/src/tool-names.ts`:
 | `monitored_sessions` | Session documents: identity, matrix association, target system, status, aggregate counters, terminal content. |
 | `micro_events` | Raw telemetry, one document per event. |
 | `risk_assessments` | `RiskAssessmentPayload` documents plus the enrichment context. |
+| `reference_documents` | The operator-managed reference corpus: `referenceId`, `label`, `content`, `tags`, timestamps. Read in full on every risk analysis. **Cerberus never writes here itself** — every entry arrives through `POST /api/v1/reference-documents`. |
 
 Default database: `cerberus` (`DEFAULT_DATABASE_NAME`), overridable with
 `MONGODB_DATABASE`.
@@ -345,6 +351,8 @@ idempotent for identical specifications.
 | `risk_assessments` | `{ employeeId: 1 }` | |
 | `threat_scenarios` | `{ "metadata.matrixId": 1 }` | unique |
 | `threat_scenarios` | `{ "metadata.generatedAt": -1 }` | |
+| `reference_documents` | `{ referenceId: 1 }` | unique |
+| `reference_documents` | `{ updatedAt: -1 }` | |
 
 ### MCP tool inventory
 
@@ -354,11 +362,15 @@ From `MCP_TOOL_NAMES`, present identically on both sides:
 `update_session_terminal_content`, `delete_session`, `append_micro_event`,
 `ingest_micro_events`, `store_risk_assessment`, `update_session_counts`,
 `set_session_status`, `get_session_review`, `get_employee_risk_history`,
-`list_sessions`, `health_check`.
+`list_sessions`, `store_reference_document`, `list_reference_documents`,
+`delete_reference_document`, `health_check`.
 
 `create_session` upserts on `sessionId` with `$setOnInsert`, so it is
 idempotent. `delete_session` removes the session document and cascades to
 `micro_events` and `risk_assessments` for that session.
+`store_reference_document` upserts on `referenceId`, so re-submitting the same
+document updates it rather than creating a duplicate that would double-count in
+similarity scoring.
 
 ### Auditor pipeline restriction
 
@@ -446,10 +458,17 @@ deliberate or unresolved gaps rather than defects.
 - **No endpoint agent.** Telemetry is currently produced by the console/browser
   only. The architecture above reserves the ingestion boundary for a future
   endpoint agent, but no agent implementation ships in this release.
-- **Exfiltration similarity matching is inert.**
-  `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is read from configuration, but the
-  reference-completion source returns an empty set, so `ExfiltrationReport`
-  matches are always empty. The mechanism and its contract are retained.
+- **Exfiltration similarity is local and deterministic, not model-derived.**
+  `DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates a comparison computed in-process
+  (`apps/api/src/services/text-similarity.ts`: normalise → 3-token shingles →
+  Jaccard) between paste content and the operator-managed reference corpus. The
+  risk payload's `exfiltrationReport` is **replaced** with that result rather
+  than merged with the model's, because only the local comparison is reproducible
+  from the corpus and the threshold — the model never sees the threshold.
+  `aiCompletionLikelihood` is always `0`, since Cerberus does not attempt to
+  determine whether content was machine-generated. A match means two texts share
+  phrasing; it is not a finding that anything was copied. See
+  [configuration.md](configuration.md#reference-corpus-data_leakage_similarity_threshold).
 - **Session expiry is computed, not swept.** `SESSION_TTL_SECONDS` bounds
   active-liveness only. There is no TTL index in MongoDB and no background expiry
   job: an expired session is excluded from the live list, is not restored by a

@@ -166,7 +166,7 @@ server-to-server interface.
 | `SESSION_TTL_SECONDS` | positive integer (seconds) | `7200` | No | Enforced session lifetime. See [Session lifetime](#session-lifetime-session_ttl_seconds) below. |
 | `MAX_PASTE_EVENTS` | integer | `5` | No | Paste count above which risk analysis is forced. |
 | `MIN_HUMAN_KEYSTROKE_MS` | integer | `80` | No | Inter-key delay treated as the human floor. |
-| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | float (0–1) | `0.75` | No | Similarity threshold for exfiltration matching. Currently inert — see the note below. |
+| `DATA_LEAKAGE_SIMILARITY_THRESHOLD` | float (0–1) | `0.75` | No | Enforced similarity threshold for exfiltration matching. Must be a number between 0 and 1 or the process exits with a `ConfigError`; above 1 could never be reached, so it would silently disable the matcher. See [the reference corpus](#reference-corpus-data_leakage_similarity_threshold) below. |
 
 ### Session lifetime (`SESSION_TTL_SECONDS`)
 
@@ -219,13 +219,52 @@ Security notes:
   sensitive; raising it makes ordinary fast typing look anomalous. Anomaly
   detection requires at least 10 recorded deltas and fires when more than 30% of
   them fall below this value.
-- `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is currently inert for the similarity
-  path: the reference-completion set is not populated, so exfiltration
-  similarity matching returns empty matches. The value is still parsed and
-  carried in configuration.
+- `DATA_LEAKAGE_SIMILARITY_THRESHOLD` gates the exfiltration matcher. See
+  [the reference corpus](#reference-corpus-data_leakage_similarity_threshold)
+  below for what it compares and what a match does and does not mean.
 - These thresholds are also written into authored penetration scenarios as
   `antiExfiltrationThresholds`, with per-scenario defaults in
   `apps/api/src/ai/parsers.ts`.
+
+### Reference corpus (`DATA_LEAKAGE_SIMILARITY_THRESHOLD`)
+
+Exfiltration similarity is computed **locally and deterministically**, not asked
+of the model. `DATA_LEAKAGE_SIMILARITY_THRESHOLD` is the gate: pairs scoring at or
+above it are reported as `ExfiltrationMatch` entries in the risk payload; pairs
+below it are not, though the best score found is still reported so an operator can
+see how close a paste came.
+
+The comparison is against the **operator-managed reference corpus**, a local
+MongoDB collection (`reference_documents`). Manage it through the API:
+
+```bash
+# Add (or update) a document. Omitting referenceId creates a new one.
+curl -X POST http://localhost:8080/api/v1/reference-documents \
+  -H "Authorization: Bearer $CERBERUS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"internal-ledger-snippet","content":"...reference text...","tags":["ledger"]}'
+
+curl http://localhost:8080/api/v1/reference-documents -H "Authorization: Bearer $CERBERUS_API_KEY"
+curl -X DELETE http://localhost:8080/api/v1/reference-documents/<referenceId> -H "Authorization: Bearer $CERBERUS_API_KEY"
+```
+
+The algorithm is normalise → tokenise → 3-token shingles → Jaccard, in
+`apps/api/src/services/text-similarity.ts`. It is transparent, needs no external
+service and is testable at its boundary. Texts shorter than 10 tokens are not
+compared at all, because two short strings can be identical by accident.
+
+Limits: label 200 characters, content 20 000 characters, 20 tags of 50 characters
+each, and at most 200 documents are loaded per analysis.
+
+**Cerberus never populates this collection itself.** There is no crawler, no
+bundled corpus and no third-party content — every entry arrives through the API,
+from the authenticated operator. **A match is not a finding that anything was
+copied.** It reports that two pieces of text share a measurable amount of
+phrasing. Do not treat it as plagiarism detection or as evidence of intent.
+
+`ExfiltrationReport.aiCompletionLikelihood` is always `0`: Cerberus does not
+attempt to determine whether content was machine-generated, and reporting a guess
+there would present an unfounded number as a measurement.
 
 ## 7. Notifications
 
