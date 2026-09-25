@@ -37,6 +37,7 @@ import { randomUUID } from "node:crypto";
 
 import { loadConfig, ConfigError, type AppConfig } from "./config.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
+import { createRateLimitMiddleware } from "./middleware/rate-limit.js";
 import { createScenariosRouter } from "./routes/scenarios.js";
 import { createGuardianRouter } from "./routes/guardian.js";
 import { createReviewRouter } from "./routes/review.js";
@@ -44,6 +45,7 @@ import { createAuditorRouter } from "./routes/auditor.js";
 import { createReferenceRouter } from "./routes/reference.js";
 import { healthRouter, SERVICE_NAME, SERVICE_VERSION } from "./routes/health.js";
 import { identityRouter } from "./routes/identity.js";
+import { createRateLimiter, type RateLimiter } from "./services/rate-limit.js";
 import { systemClock, type Clock } from "./services/session-liveness.js";
 
 export interface AppOptions {
@@ -53,6 +55,11 @@ export interface AppOptions {
    * rather than by sleeping.
    */
   clock?: Clock;
+  /**
+   * Overrides the rate limiter. Defaults to one driven by the same injected clock,
+   * so a test can assert the limiter's boundary exactly rather than by waiting.
+   */
+  rateLimiter?: RateLimiter;
 }
 
 /** Builds the fully-wired Hono application. */
@@ -123,6 +130,17 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
 
   // ── Authentication boundary ─────────────────────────────────────
   app.use("*", createAuthMiddleware(config));
+
+  // ── Rate limiting ───────────────────────────────────────────────
+  //
+  // After auth on purpose. A limiter placed before it would let an
+  // unauthenticated caller exhaust a category's bucket and deny service to the
+  // legitimate operator, turning a backstop into a denial-of-service amplifier.
+  // See services/rate-limit.ts.
+  if (config.rateLimit.enabled) {
+    const limiter = options.rateLimiter ?? createRateLimiter({ clock });
+    app.use("*", createRateLimitMiddleware(limiter, config));
+  }
 
   // ── Observability ───────────────────────────────────────────────
   if (config.devMode) {

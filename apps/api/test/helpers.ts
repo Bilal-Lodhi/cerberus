@@ -42,6 +42,13 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       minHumanKeystrokeMs: 80,
       dataLeakageSimilarityThreshold: 0.75,
     },
+    // Rate limiting is DISABLED in the fixture and enabled explicitly by the tests
+    // that exercise it. Several suites drive hundreds of requests through the real
+    // routes in a loop (identity registration, session TTL sweeps), so leaving the
+    // limiter on would make those tests measure the limiter instead of the
+    // behaviour they are about. rate-limit.test.ts enables it and asserts every
+    // category through the same real routes.
+    rateLimit: { enabled: false, aiRequestsPerMinute: 10 },
   };
 
   return { ...base, ...overrides };
