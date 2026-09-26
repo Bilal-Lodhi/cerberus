@@ -500,7 +500,7 @@ engineering rationale recorded here:
 | K | Migrations cover any schema/status changes | Open — depends on the vocabulary decisions below |
 | L | API/MCP compatibility preserved where reasonably possible | Open |
 | M | No P0/P1 correctness/security issue remains | Open — one confirmed P1 (terminated session is not terminal) |
-| N | Test doubles audited against real-store behavior | Partly — [test-double-contract.md](test-double-contract.md) audits them; consolidation pending |
+| N | Test doubles audited against real-store behavior | **Done** — [test-double-contract.md](test-double-contract.md) audits them, and one shared faithful double replaces four divergent ones, verified against a real MongoDB 7 |
 | O | One real-Mongo integration suite protects the highest-risk state flows | Open |
 | P | Docs, threat model and compatibility docs match implementation | Open |
 | Q | CI green | Green at the start of the phase |
@@ -518,10 +518,14 @@ rationale for rejecting it.
    [failure-semantics.md](failure-semantics.md),
    [test-double-contract.md](test-double-contract.md). Tracing the source produced
    one confirmed P1 and five P2 findings, all recorded in `CHANGELOG.md`.
-2. **A shared faithful store double and a contract suite.** Planned. Every
-   subsequent test in this phase depends on it: three of the four existing store
-   doubles return success from `set_session_status` without persisting anything,
-   which is why the P1 above survived a 481-test suite.
+2. **A shared faithful store double and a contract suite.** Done. Four independent
+   store doubles — three of which returned success from `set_session_status` without
+   persisting anything, which is why the P1 above survived a 481-test suite — are
+   replaced by one that implements the `MongoStore` method surface under the real
+   `createToolRegistry()`, so only storage is simulated. 37 contract cases run
+   against it and against a real `MongoStore` when `CERBERUS_TEST_MONGODB_URI` is
+   set. Verified on a real MongoDB 7: 546 tests, 0 skipped, 0 failed. Recorded in
+   [test-double-contract.md](test-double-contract.md) §6.
 3. **The central session transition boundary.** Planned. Domain actions with
    preconditions, a durable-first write with an atomic predicate on the expected
    status, a canonical result, and cache repair from the durable result.

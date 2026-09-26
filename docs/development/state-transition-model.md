@@ -308,7 +308,8 @@ Recorded rather than guessed:
    `SESSION_TERMINATED`?** `SESSION_TERMINATED` is currently documented as the
    reactivation refusal. Reusing it for ingest gives one meaning to one code;
    minting a second code distinguishes two operator actions. This is decided in the
-   central-boundary work, and the error model in
-   [api-errors.md](../api-errors.md) records the outcome.
+   central-boundary work, and the outcome is recorded in the error-model document
+   (`docs/api-errors.md`, not yet written) and in
+   [compatibility.md](../compatibility.md).
 3. **Should a deploy against an existing session id be a conflict rather than a
    silent no-op?** `$setOnInsert` makes it a no-op today (D6).

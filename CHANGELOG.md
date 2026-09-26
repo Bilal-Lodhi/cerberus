@@ -25,6 +25,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-process store double against the real `MongoStore`, the three divergences that
   let real defects through, and the plan for one shared faithful double plus a
   contract suite that runs against both it and a real MongoDB.
+- `apps/api/test/support/mcp-store-double.ts` — **one faithful in-process double**
+  for the MCP persistence layer, replacing four independent reimplementations that
+  each disagreed with `MongoStore` in a different way. It implements the `MongoStore`
+  *method* surface and the real `createToolRegistry()` wraps it, so tool-name
+  mapping, argument validation, the `SESSION_STATUSES` check, the bounded-string and
+  bounded-tag rules and every response shape are the production implementations;
+  counters go through the real `buildSessionCountsUpdate()`, so `$max` monotonicity
+  and the "set `status` only when supplied" rule are the real rules rather than a
+  spread-merge that looks similar. It also reproduces the adapter's error mapping —
+  404 for an unknown tool, 400 for `ToolArgumentError`, 500 otherwise — so a route's
+  behaviour on an adapter *rejection* is reachable for the first time.
+- `apps/api/test/store-contract.test.ts` — **37 named contract cases run twice**:
+  against the shared double always, and against a real `MongoStore` when
+  `CERBERUS_TEST_MONGODB_URI` is set. Sort order, the 500-event read cap, uniqueness,
+  upsert, `$setOnInsert`, `$max`, duplicate-key behaviour, timestamps, missing
+  fields, newest-first ordering, projections and cascade deletion. When the variable
+  is unset the real half is skipped **with a stated reason** rather than silently
+  passing. The suite also carries a fidelity guard asserting that every store method
+  the tool registry calls exists on both `MongoStore.prototype` and the double, so a
+  missing or renamed method is loud rather than surfacing only when a route happens
+  to call it. One case deliberately **characterises** the missing assessment identity
+  rather than endorsing it, so the fix cannot land silently.
+
+### Changed
+
+- `installFetchStub` accepts a full `Response` from its `mcpResponse` responder, so
+  the MCP adapter's status codes are reachable from a route test. A plain object
+  keeps the historical HTTP 200 behaviour, so every existing caller is unaffected.
+- `apps/api/test/session-lifecycle.test.ts`, `session-durability.test.ts`,
+  `event-idempotency.test.ts` and `reference-corpus.test.ts` now use the shared
+  double; their four local doubles are deleted. `session-durability.test.ts` is the
+  significant one: its double returned `{success: true, updated: true}` from
+  `set_session_status` **without persisting anything**, so it could not observe a
+  status write at all — which is why the confirmed P1 below survived a 481-test
+  suite. That defect is now observable from the same suite, and its regression test
+  lands with the fix.
+- `mongodb` is added to `apps/api` devDependencies for the disposable-database
+  cleanup in the real-store half of the contract suite. The lockfile change is one
+  line.
+
+### Verified
+
+- The contract suite was run twice on the same commit. Without
+  `CERBERUS_TEST_MONGODB_URI`: 512 API tests, 511 pass, 1 skipped (the real half,
+  with its reason). With it pointed at a real MongoDB 7: **546 tests, 546 pass,
+  0 skipped, 0 failed**. All 37 contract cases pass against both implementations, so
+  the double is *verified* faithful to the real store for every asserted property
+  rather than asserted to be — which is what the four doubles it replaces relied on.
 
 ### Fixed
 

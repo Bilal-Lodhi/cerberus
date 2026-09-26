@@ -21,124 +21,17 @@ import {
   pasteEvent,
   type FetchStub,
 } from "./helpers.js";
-
-/** A stateful in-memory stand-in for the MCP MongoDB adapter. */
-function statefulMcp() {
-  const sessions = new Map<string, Record<string, unknown>>();
-  const events = new Map<string, Array<Record<string, unknown>>>();
-  const assessments = new Map<string, Array<Record<string, unknown>>>();
-  /** Durable event identity, as the `(sessionId, eventId)` unique index gives. */
-  const storedEventKeys = new Set<string>();
-
-  return {
-    sessions,
-    handler(tool: string, body: Record<string, unknown>): unknown {
-      switch (tool) {
-        case "create_session": {
-          const sessionId = String(body["sessionId"]);
-          if (!sessions.has(sessionId)) {
-            sessions.set(sessionId, {
-              ...body,
-              createdAt: new Date().toISOString(),
-            });
-          }
-          return { success: true, mongoDocumentId: `doc-${sessionId}` };
-        }
-        case "get_session_review": {
-          const sessionId = String(body["sessionId"]);
-          return {
-            success: true,
-            session: sessions.get(sessionId) ?? null,
-            events: events.get(sessionId) ?? [],
-            riskAssessments: assessments.get(sessionId) ?? [],
-          };
-        }
-        case "ingest_micro_events": {
-          const batch = (body["events"] ?? []) as Array<Record<string, unknown>>;
-          const acceptedEventIds: string[] = [];
-          const duplicateEventIds: string[] = [];
-
-          for (const event of batch) {
-            const sessionId = String(event["sessionId"]);
-            const eventId = String(event["eventId"] ?? "");
-            const key = `${sessionId}::${eventId}`;
-
-            // The real store upserts on `(sessionId, eventId)`, so an event
-            // already stored is not inserted again — and the API relies on that
-            // report to avoid re-applying a replay.
-            if (storedEventKeys.has(key)) {
-              duplicateEventIds.push(eventId);
-              continue;
-            }
-
-            storedEventKeys.add(key);
-            acceptedEventIds.push(eventId);
-            const list = events.get(sessionId) ?? [];
-            list.push(event);
-            events.set(sessionId, list);
-          }
-
-          return {
-            success: true,
-            processedCount: batch.length,
-            acceptedEventIds,
-            duplicateEventIds,
-          };
-        }
-        case "update_session_counts": {
-          const sessionId = String(body["sessionId"]);
-          const counts = (body["counts"] ?? {}) as Record<string, unknown>;
-          sessions.set(sessionId, { ...(sessions.get(sessionId) ?? {}), ...counts });
-          return { success: true };
-        }
-        case "set_session_status": {
-          const sessionId = String(body["sessionId"]);
-          const existed = sessions.has(sessionId);
-          if (existed) {
-            sessions.set(sessionId, {
-              ...(sessions.get(sessionId) ?? {}),
-              status: body["status"],
-            });
-          }
-          return { success: true, status: body["status"], updated: existed };
-        }
-        case "store_risk_assessment": {
-          const report = (body["report"] ?? {}) as Record<string, unknown>;
-          const sessionId = String(report["sessionId"] ?? "");
-          const list = assessments.get(sessionId) ?? [];
-          list.push(report);
-          assessments.set(sessionId, list);
-          return { success: true, mongoDocumentId: "assessment-doc" };
-        }
-        case "delete_session": {
-          const sessionId = String(body["sessionId"]);
-          const existed = sessions.delete(sessionId);
-          events.delete(sessionId);
-          assessments.delete(sessionId);
-          return { success: true, deleted: existed };
-        }
-        case "list_sessions":
-          return { success: true, data: [...sessions.values()] };
-        case "health_check":
-          return { connected: true, healthy: true, timestamp: new Date().toISOString() };
-        default:
-          return { success: true };
-      }
-    },
-  };
-}
+import { McpStoreDouble } from "./support/mcp-store-double.js";
 
 describe("session lifecycle", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof statefulMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = statefulMcp();
-    stub = installFetchStub({
-      mcpResponse: (tool, body) => mcp.handler(tool, body),
-    });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     app = createApp(makeConfig());
   });
 
@@ -309,7 +202,7 @@ describe("session lifecycle", () => {
     // the auto-lock threshold (>= 75).
     stub.restore();
     stub = installFetchStub({
-      mcpResponse: (tool, body) => mcp.handler(tool, body),
+      mcpResponse: mcp.responder(),
       aiResponse: JSON.stringify({
         riskAssessmentId: "22222222-2222-4222-8222-222222222222",
         overallRiskScore: 95,
@@ -546,14 +439,12 @@ describe("session TTL enforcement", () => {
   const TTL_MS = TTL_SECONDS * 1000;
 
   let stub: FetchStub;
-  let mcp: ReturnType<typeof statefulMcp>;
+  let mcp: McpStoreDouble;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = statefulMcp();
-    stub = installFetchStub({
-      mcpResponse: (tool, body) => mcp.handler(tool, body),
-    });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
   });
 
   afterEach(() => {

@@ -20,6 +20,8 @@ import {
 import { makeConfigWithTtl } from "./helpers.js";
 import { authorizedHeaders, installFetchStub, makeConfig, type FetchStub } from "./helpers.js";
 
+import { McpStoreDouble } from "./support/mcp-store-double.js";
+
 /** A 40-word reference document, long enough to clear the comparable floor. */
 const REFERENCE_WORDS = Array.from({ length: 40 }, (_, i) => `ledger${i}`);
 const REFERENCE_TEXT = REFERENCE_WORDS.join(" ");
@@ -33,110 +35,6 @@ const NEAR_COPY = (() => {
 
 /** Roughly half the reference, so it shares phrasing without being a copy. */
 const HALF_OVERLAP = REFERENCE_WORDS.slice(0, 20).join(" ");
-
-/** A stateful in-memory stand-in for the MCP adapter. */
-function statefulMcp() {
-  const referenceDocuments = new Map<string, Record<string, unknown>>();
-  const sessions = new Map<string, Record<string, unknown>>();
-  const events = new Map<string, Array<Record<string, unknown>>>();
-  const assessments = new Map<string, Array<Record<string, unknown>>>();
-  /** Durable event identity, as the `(sessionId, eventId)` unique index gives. */
-  const storedEventKeys = new Set<string>();
-  let referenceStoreDown = false;
-
-  return {
-    referenceDocuments,
-    sessions,
-    assessments,
-    setReferenceStoreDown(down: boolean) {
-      referenceStoreDown = down;
-    },
-    handler(tool: string, body: Record<string, unknown>): unknown {
-      // Every reference-corpus tool, whatever its prefix.
-      if (tool.includes("reference") && referenceStoreDown) {
-        throw new Error("mongo unreachable");
-      }
-
-      switch (tool) {
-        case "store_reference_document": {
-          const referenceId = String(body["referenceId"]);
-          const existing = referenceDocuments.get(referenceId);
-          referenceDocuments.set(referenceId, {
-            ...body,
-            createdAt: existing?.["createdAt"] ?? new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-          return { success: true, referenceId };
-        }
-        case "list_reference_documents": {
-          const limit = typeof body["limit"] === "number" ? body["limit"] : 200;
-          return { success: true, data: [...referenceDocuments.values()].slice(0, limit) };
-        }
-        case "delete_reference_document": {
-          const deleted = referenceDocuments.delete(String(body["referenceId"]));
-          return { success: true, deleted };
-        }
-        case "create_session": {
-          const sessionId = String(body["sessionId"]);
-          if (!sessions.has(sessionId)) {
-            sessions.set(sessionId, { ...body, createdAt: new Date().toISOString() });
-          }
-          return { success: true, mongoDocumentId: `doc-${sessionId}` };
-        }
-        case "get_session_review": {
-          const sessionId = String(body["sessionId"]);
-          return {
-            success: true,
-            session: sessions.get(sessionId) ?? null,
-            events: events.get(sessionId) ?? [],
-            riskAssessments: assessments.get(sessionId) ?? [],
-          };
-        }
-        case "ingest_micro_events": {
-          const batch = (body["events"] ?? []) as Array<Record<string, unknown>>;
-          const acceptedEventIds: string[] = [];
-          const duplicateEventIds: string[] = [];
-
-          for (const event of batch) {
-            const sessionId = String(event["sessionId"]);
-            const eventId = String(event["eventId"] ?? "");
-            const key = `${sessionId}::${eventId}`;
-            if (storedEventKeys.has(key)) {
-              duplicateEventIds.push(eventId);
-              continue;
-            }
-            storedEventKeys.add(key);
-            acceptedEventIds.push(eventId);
-            const list = events.get(sessionId) ?? [];
-            list.push(event);
-            events.set(sessionId, list);
-          }
-
-          return {
-            success: true,
-            processedCount: batch.length,
-            acceptedEventIds,
-            duplicateEventIds,
-          };
-        }
-        case "update_session_counts":
-          return { success: true };
-        case "set_session_status":
-          return { success: true, updated: true };
-        case "store_risk_assessment": {
-          const report = (body["report"] ?? {}) as Record<string, unknown>;
-          const sessionId = String(report["sessionId"] ?? "");
-          const list = assessments.get(sessionId) ?? [];
-          list.push(report);
-          assessments.set(sessionId, list);
-          return { success: true, mongoDocumentId: "assessment-doc" };
-        }
-        default:
-          return { success: true };
-      }
-    },
-  };
-}
 
 /** A PASTE event whose content is real prose, so it clears the token floor. */
 function prosePasteEvent(sessionId: string, text: string): Record<string, unknown> {
@@ -161,13 +59,13 @@ function prosePasteEvent(sessionId: string, text: string): Record<string, unknow
 
 describe("reference corpus routes", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof statefulMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = statefulMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     app = createApp(makeConfig());
   });
 
@@ -313,7 +211,7 @@ describe("reference corpus routes", () => {
   });
 
   test("reports 503 when the corpus store is unreachable", async () => {
-    mcp.setReferenceStoreDown(true);
+    mcp.failToolsMatching("reference");
 
     const post = await addDocument({ label: "a", content: REFERENCE_TEXT });
     assert.equal(post.status, 503);
@@ -332,13 +230,13 @@ describe("reference corpus routes", () => {
 
 describe("exfiltration matching through ingest", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof statefulMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = statefulMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     // TTL large enough that nothing expires mid-test.
     app = createApp(makeConfigWithTtl(3600));
   });
@@ -414,7 +312,7 @@ describe("exfiltration matching through ingest", () => {
 
   test("an unreachable corpus degrades to no matches, and analysis still succeeds", async () => {
     await addReference(REFERENCE_TEXT);
-    mcp.setReferenceStoreDown(true);
+    mcp.failToolsMatching("reference");
 
     const report = await ingestAndReadReport("ses-corpus-down", NEAR_COPY);
 
