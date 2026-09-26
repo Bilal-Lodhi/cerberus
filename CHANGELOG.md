@@ -130,6 +130,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserved workspace**; and a restart of one process does not disturb the other's view. Each
   concurrency assertion is the invariant that must hold under any interleaving, rather than a
   guess about which process wins.
+- **`docs/development/idempotency-model.md` — the paid-route decision and design.** The two paid
+  routes spend money on every request they accept and keep no durable record of a request, so a
+  retry after a lost response spends again. The document measures the exposure **from the source**
+  (`POST /api/v1/scenarios` makes **two** paid calls per request — a semantic classifier and then
+  matrix authoring; `POST /api/v1/auditor/query` makes one), names the three ordinary ways a
+  response is lost, bounds the blast radius, and **re-accepts the risk for this phase** with the
+  cost stated rather than implying the gap does not exist.
+
+  It also carries the design that would close it — one `operation_claims` collection, a unique
+  index on `(routeFamily, keyHash)` as the whole of the mutual exclusion, a TTL index for bounded
+  retention, a request fingerprint, and an opt-in `Idempotency-Key` header so an existing client
+  is unaffected — plus the exact pending-operation and process-death semantics (a claim past its
+  timeout is abandoned; a crash between the provider's response and the record write leaves an
+  **unknown outcome**, stated rather than hidden), and the eight assertions that would prove it.
+  Nothing here claims exactly-once billing.
 - **The process whose terminal transition applied owns `terminalContent`.**
   `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
   and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating
