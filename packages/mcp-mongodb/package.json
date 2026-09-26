@@ -1,6 +1,6 @@
 {
   "name": "@cerberus/mcp-mongodb",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Cerberus Model Context Protocol server for MongoDB — persistence layer for telemetry and risk assessments.",

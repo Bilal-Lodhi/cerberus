@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.5.0] - 2026-09-26
+
+The theme is **multi-writer consistency and trust boundaries**: the live session list and detail
+reconcile against durable truth on every request, a stale process cache cannot override a newer
+durable status, aggregate counters are a batch delta applied with `$inc` so two API processes
+accepting distinct events both count, the process whose terminal transition applied owns
+`terminalContent`, and the release-verification drill is reproducible in CI. **No schema migration
+ships with this release.**
+
+See [docs/release/v0.5.0-release-notes.md](docs/release/v0.5.0-release-notes.md) for the full scope
+and, stated plainly, ten things the release does not claim.
+
 ### Added
 
 - **`npm run verify:packages` — the private-package guard.**
