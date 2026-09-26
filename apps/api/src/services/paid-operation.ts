@@ -354,19 +354,55 @@ export async function completePaidOperation(
     ...(context.reclaimed ? { reclaimed: true } : {}),
   };
 
-  // `completed: false` means the completion matched no claim: the lease expired and another
-  // process reclaimed the record. That means **a second execution exists**, and it is
-  // reported rather than swallowed — the one state this mechanism cannot rule out.
-  if (!response.ok || response.data?.["completed"] !== true) {
+  if (response.ok && response.data?.["completed"] === true) {
+    logger.info(LOG_EVENTS.IDEMPOTENCY_COMPLETED, fields);
+    return;
+  }
+
+  // ── The completion did not land, and the two ways that happens differ ──
+  //
+  // `completed: false` means the write **reached the store** and matched no claim: the lease
+  // expired and another process reclaimed the record. That means a second execution exists,
+  // and it is reported rather than swallowed — but nothing is written, because the record
+  // belongs to the reclaimer now and overwriting it would be a lie about who owns it.
+  if (response.ok) {
     logger.warn(LOG_EVENTS.IDEMPOTENCY_COMPLETION_LOST, {
       ...fields,
       dependency: "mcp",
-      classification: response.ok ? "claim-not-ours" : "write-failed",
+      classification: "claim-not-ours",
     });
     return;
   }
 
-  logger.info(LOG_EVENTS.IDEMPOTENCY_COMPLETED, fields);
+  // The write did **not** reach the store. The provider has already succeeded, so this is
+  // the ambiguous window: the money is spent and there is no record of the result.
+  //
+  // Leaving the claim `pending` would be the worst answer. It would sit there until its lease
+  // expired, and the next retry would reclaim it and **spend again** — on an operation that
+  // had already run. So an attempt is made to record a failure that says exactly what
+  // happened: non-retryable, carrying a small truthful substitute for the result that could
+  // not be retained. A same-key retry then answers from that record instead of re-executing.
+  //
+  // If the store is unreachable for this write too, the attempt fails as well and the record
+  // stays `pending` — which is the residual window §3.11 documents and this cannot close. It
+  // is reported as `completion-lost` either way, because an operator needs to see it.
+  logger.warn(LOG_EVENTS.IDEMPOTENCY_COMPLETION_LOST, {
+    ...fields,
+    dependency: "mcp",
+    classification: "write-failed",
+  });
+
+  await failPaidOperation(config, context, "result-persist-failed", {
+    status: 503,
+    body: {
+      success: false,
+      error:
+        "This operation completed at the provider, but Cerberus could not record the result, " +
+        "so it cannot be replayed. Re-executing would spend again on an operation that " +
+        "already ran, so it is not repeated: retry with a new key if the result is needed.",
+      code: "IDEMPOTENCY_STATE_UNAVAILABLE",
+    },
+  });
 }
 
 /**

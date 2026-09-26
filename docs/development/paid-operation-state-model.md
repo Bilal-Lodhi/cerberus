@@ -332,11 +332,13 @@ result: { status: number, body: object }
 - **Bounded.** A serialised result above `MAX_STORED_RESULT_BYTES` (4 MiB) is not stored;
   the record is marked completed with `resultOmitted: "too-large"`, and a replay answers
   `503 IDEMPOTENCY_STATE_UNAVAILABLE` saying the prior result was too large to retain.
-  This branch is **defensive and unreachable at the documented bounds**: the auditor's
-  `raw` array is capped at 200 records and the summary at 1 200 output tokens, and a test
-  asserts a maximal payload serialises far below the ceiling. Storing an unbounded model
-  response in a record whose whole purpose is bounded retention would be the one way this
-  collection could grow without limit.
+  This branch is **defensive and unreachable through the routes**: the provider's output is
+  bounded by the parsers long before the route sees it, the auditor's `raw` array is capped at
+  200 records, and a test drives a matrix with fields as large as the parser will allow and
+  asserts it is stored **whole**. The branch is therefore tested **directly**, at the service
+  boundary, rather than left unexercised — see `paid-operation-recovery.test.ts`. Storing an
+  unbounded model response in a record whose whole purpose is bounded retention would be the
+  one way this collection could grow without limit.
 - **No `resultRef` shortcut exists for either route.** The scenarios matrix is persisted
   best-effort and may not be there, and the auditor persists nothing. Pointing a replay
   at durable storage would therefore be a replay that sometimes answers "gone".
@@ -427,6 +429,7 @@ Every window, including the one that cannot be closed:
 | Provider timeout / transport failure / 429 / 5xx | `failed`, `retryable: true` | reclaim and execute again |
 | Provider fatal error (401/403 — misconfiguration) | `failed`, `retryable: true` | reclaim and execute again once the credential is fixed |
 | Provider succeeded, then **result persistence failed** | `failed`, `retryable: false`, `errorCategory: "result-persist-failed"` | **replays the failure**, does not spend again |
+| Provider succeeded, then the result persistence failed **and the store refused the failure write too** | `pending`, lease running | after the lease, **reclaim and execute again** — the residual window, asserted in `paid-operation-recovery.test.ts` |
 | Process dies after provider success, before the completion write | `pending`, lease running | after the lease, **reclaim and execute again** — the ambiguous window |
 | Completion write rejected because the claim was reclaimed | the reclaimer's record | the reclaimer's outcome |
 | Replay read fails | unchanged | `503 IDEMPOTENCY_STATE_UNAVAILABLE` |
@@ -698,6 +701,7 @@ done?".
 | Atomic claim, replay, conflict, in-progress | **Implemented** | `MongoStore.claimPaidOperation`, `claim_paid_operation`; 11 contract cases in `store-contract.test.ts`, run against the double **and** a real MongoDB |
 | Reclaim of a stale or retryable claim | **Implemented** | the same contract cases; the reclaim predicate carries the fingerprint, so a stale record for another request cannot be taken |
 | Conditional completion and failure, and the lost-completion signal | **Implemented** | `completePaidOperation` / `failPaidOperation`; the stale-claim-id contract case asserts a lost completion is reported rather than swallowed |
+| Failure injection: provider quota, transport, a failed completion write, an unreadable claim, and the residual window | **Implemented** | `paid-operation-recovery.test.ts` (13 cases, each asserting **both** what the caller is told and what the durable record says) |
 | The `400 INVALID_IDEMPOTENCY_KEY` response | **Implemented** | `scenarios-idempotency.test.ts`, `auditor-idempotency.test.ts` |
 | `/scenarios` durable claim and replay | **Implemented** | `scenarios-idempotency.test.ts` (19 cases: replay, conflict, pending, stale reclaim, failure, redaction, correlation identity) |
 | `/auditor/query` durable claim and replay | **Implemented** | `auditor-idempotency.test.ts` (13 cases) |

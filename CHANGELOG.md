@@ -11,8 +11,33 @@ The theme is **durable idempotency and side-effect safety** for the two routes t
 money. **Nothing is published**: no tag, no npm package, no container image and no hosted
 deployment. This is an experimental research system and is not production ready.
 
+### Fixed
+
+- **A completion write that failed left the claim `pending`, so a retry would spend a second
+  time.** When the provider succeeded and the completion write did not reach the store, the
+  route logged the lost completion and returned — leaving the record `pending` until its lease
+  expired. The next retry then reclaimed it and executed again, **on an operation that had
+  already run**. The route now records a failure that says exactly what happened:
+  `result-persist-failed`, `retryable: false`, carrying a small truthful substitute for the
+  result that could not be retained. A same-key retry answers from that record instead of
+  re-executing. When the store refuses that failure write too, the record does stay `pending`
+  — the residual window §3.11 documents — and that half is asserted explicitly rather than
+  described.
+
 ### Added
 
+- **`apps/api/test/paid-operation-recovery.test.ts` — failure injection on the claim.** The
+  states a healthy system never reaches: a provider quota error and a provider transport
+  failure (both retryable, both re-executing on retry); **a provider success whose completion
+  write failed**, recorded non-retryable so a retry replays rather than re-spends; the residual
+  window where the store refuses both writes; an over-large result, recorded completed with a
+  truthful substitute; a replay whose claim read fails; a claim that answers with an unknown
+  outcome (a build-skew case, refused rather than executed); a claim that answers without a
+  claim id (refused, because a claim that cannot be completed would leave the record pending
+  with the money already spent); a store unreachable before the claim; two sequential identical
+  requests; and the redaction guarantee. Every case asserts **both** what the caller is told
+  and what the durable record says, so a route that reported the right thing while leaving the
+  record in a state that would re-spend still fails.
 - **`apps/api/test/integration/multi-process-idempotency.test.ts` — two API processes, one real
   MongoDB, one idempotency key.** The only place the central invariant is asserted rather than
   argued: **exactly one** of two racing claimants executes. Twelve cases cover both paid
