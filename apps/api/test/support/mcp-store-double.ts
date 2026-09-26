@@ -48,8 +48,10 @@ import { randomUUID } from "node:crypto";
 
 import {
   ReferenceCorpusLimitError,
+  buildSessionCountsDeltaUpdate,
   buildSessionCountsUpdate,
   compact,
+  type SessionCountsDelta,
   type SessionCountsUpdate,
   type SessionDeletionReport,
 } from "../../../../packages/mcp-mongodb/src/mongo-client.js";
@@ -423,6 +425,7 @@ export class McpStoreDouble {
   async updateSessionCounts(
     sessionId: string,
     counts: SessionCountsUpdate,
+    options: { delta?: SessionCountsDelta } = {},
   ): Promise<void> {
     const document = this.sessions.get(sessionId);
     if (!document) return;
@@ -430,11 +433,33 @@ export class McpStoreDouble {
     const update = buildSessionCountsUpdate(counts) as {
       $set?: StoredDocument;
       $max?: StoredDocument;
+      $inc?: Record<string, number>;
     };
+
+    if (options.delta) {
+      const increment = buildSessionCountsDeltaUpdate(options.delta)["$inc"] as
+        | Record<string, number>
+        | undefined;
+      if (increment) {
+        // The same conflict rule as the real store: a field cannot be touched through two
+        // operators in one update, so it leaves `$max` for `$inc`. A double that kept both
+        // would apply them in an order of its own choosing and agree with neither.
+        if (update.$max) {
+          for (const key of Object.keys(increment)) delete update.$max[key];
+        }
+        update.$inc = increment;
+      }
+    }
 
     if (update.$max) {
       for (const [field, value] of Object.entries(update.$max)) {
         applyMax(document, field, value);
+      }
+    }
+    if (update.$inc) {
+      for (const [field, value] of Object.entries(update.$inc)) {
+        const current = document[field];
+        document[field] = (typeof current === "number" ? current : 0) + value;
       }
     }
     if (update.$set) {

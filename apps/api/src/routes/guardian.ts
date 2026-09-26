@@ -77,8 +77,7 @@ import {
   readDurableString,
   readFocusLossCount,
   type DurableSessionView,
-} from "../services/session-read-model.js";
-import {
+} from "../services/session-read-model.js";import {
   reconcileLiveDetail,
   reconcileLiveList,
   type LocalLiveDetail,
@@ -543,6 +542,11 @@ export function createGuardianRouter(
       //    then applied in memory, because dropping telemetry is worse than a
       //    possible over-count in a session whose events were never stored.
       hydrateSessionFromDurable(sessionId, primaryEvent, durableSession);
+      // Snapshot before applying, so the durable write below can send what this batch
+      // actually **added** rather than an absolute total. An absolute total is what made two
+      // processes accepting distinct events lose one of the two batches; see
+      // `writeDurableCounters`.
+      const countersBefore = countersOf(sessionStore.get(sessionId));
       for (const event of body.events) {
         if (acceptedSet && !acceptedSet.has(event.eventId)) continue;
         processEvent(event);
@@ -561,8 +565,10 @@ export function createGuardianRouter(
         );
       }
 
+      const batchDelta = counterDelta(countersBefore, countersOf(session));
+
       // 5. Update durable aggregate counters.
-      await writeDurableCounters(session, requestId);
+      await writeDurableCounters(session, requestId, batchDelta);
 
       // 6. Decide whether this batch warrants AI analysis.
       const hasLargePaste = body.events.some(
@@ -799,6 +805,9 @@ export function createGuardianRouter(
             //
             // Written only when the assessment is durable, so the durable peak never
             // exceeds the durable evidence for it.
+            //
+            // No delta: the batch's counts were already written above, and sending them
+            // twice would double-count. This call exists for the **peak** alone.
             await writeDurableCounters(session, requestId);
           }
 
@@ -1732,21 +1741,57 @@ export function createGuardianRouter(
   }
 
   /**
-   * Writes the durable aggregate counters from the current in-memory session state.
+   * Writes the durable aggregate counters for one batch.
    *
-   * Called twice on an analysed batch — before the analysis, so a batch that does not
-   * trigger one still records its counters, and again after a **durable** assessment, so
-   * the durable `peakRiskScore` is the score this batch produced rather than the previous
-   * batch's. See the comment at the second call site.
+   * ── Counters are sent as a delta, and that is the multi-writer fix ────
    *
-   * `eventCount` is the hydrated lifetime total, not `events.length`, which is only what
-   * this process has seen since it started. `focusLossCount` is sent because it was once
-   * omitted: MongoDB never learned it, and a restart reset it to 0, which silently
-   * disabled the focus-loss analysis trigger and its score penalty.
+   * The counters used to be sent as **absolute totals** and applied with `$max`. That is
+   * monotonic — which is what stopped a restarted process from replacing the durable totals
+   * with its post-restart ones — but it is not correct under more than one writer:
+   *
+   *   A hydrates 10, accepts 5, writes `$max` 15
+   *   B hydrates 10, accepts 3, writes `$max` 13
+   *   durable = 15, true total = 18
+   *
+   * Neither process sees the other's batch, so the aggregate converged to the largest single
+   * process's total rather than the sum, and the missing counts were never recovered.
+   *
+   * `countsDelta` is applied with `$inc`, so the delta is a property of the batch rather than
+   * of the writer's memory: it cannot be "low" after a restart, it cannot be lost to a
+   * concurrent write, and a replayed batch contributes nothing because the delta covers only
+   * the events the store reported as **newly inserted**. See
+   * `buildSessionCountsDeltaUpdate`.
+   *
+   * `peakRiskScore` stays absolute and `$max`-applied: it is a maximum, so the larger value is
+   * the correct one and no concurrent write can lower it.
+   *
+   * Called twice on an analysed batch — once with the batch's delta, so a batch that does not
+   * trigger an analysis still records its counts, and again after a **durable** assessment with
+   * an empty delta and the new peak, so the durable `peakRiskScore` is the score this batch
+   * produced rather than the previous batch's. Sending the delta twice would double-count, which
+   * is why the second call passes none.
    */
+  /**
+   * The five monotonic counters, as a batch delta.
+   *
+   * Declared here rather than imported from the store package: the API's build project pins
+   * `rootDir` to `src`, so a source import across the workspace boundary is a compile error.
+   * The contract is the tool's `countsDelta` argument, and `store-contract.test.ts` asserts
+   * that both stores apply it identically — which is where a drift between this shape and the
+   * store's would be caught.
+   */
+  interface CounterDelta {
+    eventCount: number;
+    pasteCount: number;
+    tabSwitchCount: number;
+    focusLossCount: number;
+    copyAttemptCount: number;
+  }
+
   async function writeDurableCounters(
     session: SessionState,
     requestId: string,
+    delta?: CounterDelta,
   ): Promise<void> {
     await callMcpTool(
       config,
@@ -1754,16 +1799,40 @@ export function createGuardianRouter(
       {
         sessionId: session.sessionId,
         counts: {
-          eventCount: session.eventCount,
-          pasteCount: session.pasteCount,
-          tabSwitchCount: session.tabSwitchCount,
-          focusLossCount: session.focusLossCount,
-          copyAttemptCount: session.copyAttemptCount,
           peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
         },
+        ...(delta ? { countsDelta: delta } : {}),
       },
       { requestId, timeoutMs: MCP_TIMEOUT_MS },
     );
+  }
+
+  /** The five monotonic counters, snapshotted so a batch's delta can be measured. */
+  function countersOf(session: SessionState | undefined): CounterDelta {
+    return {
+      eventCount: session?.eventCount ?? 0,
+      pasteCount: session?.pasteCount ?? 0,
+      tabSwitchCount: session?.tabSwitchCount ?? 0,
+      focusLossCount: session?.focusLossCount ?? 0,
+      copyAttemptCount: session?.copyAttemptCount ?? 0,
+    };
+  }
+
+  /**
+   * What one batch actually added.
+   *
+   * Measured from the session state before and after the accepted events were applied, rather
+   * than derived from the event types: a delta computed a second way could disagree with what
+   * was applied, and the two would drift the first time an event type is added.
+   */
+  function counterDelta(before: CounterDelta, after: CounterDelta): CounterDelta {
+    return {
+      eventCount: Math.max(0, after.eventCount - before.eventCount),
+      pasteCount: Math.max(0, after.pasteCount - before.pasteCount),
+      tabSwitchCount: Math.max(0, after.tabSwitchCount - before.tabSwitchCount),
+      focusLossCount: Math.max(0, after.focusLossCount - before.focusLossCount),
+      copyAttemptCount: Math.max(0, after.copyAttemptCount - before.copyAttemptCount),
+    };
   }
 
   /**

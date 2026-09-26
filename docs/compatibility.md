@@ -81,6 +81,7 @@ it is recorded below. The record is in
 | `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `statusSource: "durable" \| "process-local"` | added |
 | `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `reconciled: boolean` | added |
 | `update_session_terminal_content` | optional `expectedStatuses` compare-and-set predicate and `onlyIfAbsent` gate; response gains `updated` | added |
+| `update_session_counts` | optional `countsDelta`, applied with `$inc`; `counts` keeps `$max` | added |
 
 Four changes are **observable** rather than additive, and each is a correction to a statement
 that was false:
@@ -102,6 +103,18 @@ that was false:
   to be preserved *before* the transition, so a `404` terminate had already written content for
   a session that does not exist. Only the **write** moved; the workspace is still read while the
   session is live.
+
+One further change is a **correctness fix to a durable value**, stated separately because it is
+the one a deployment is most likely to notice:
+
+- **The aggregate counters now rise by the right amount.** They were sent as absolute totals and
+  applied with `$max`, so with two API processes accepting distinct events the durable total
+  converged to the largest single process's total rather than the sum — a session with 10
+  events, 5 accepted by one process and 3 by another, read `15` instead of `18`. They are now
+  sent as a batch delta and applied with `$inc`, so both processes count. A deployment that has
+  been running more than one replica may therefore see a counter **increase** relative to what
+  the old behaviour reported; that is the missing events being counted, not double-counting.
+  Counters are monotonic either way — a negative or non-finite delta is dropped.
 
 `update_session_terminal_content` also reports `updated`. `success` keeps its meaning — the call
 was handled — so a caller reading only `success` is unaffected, and without either gate the write

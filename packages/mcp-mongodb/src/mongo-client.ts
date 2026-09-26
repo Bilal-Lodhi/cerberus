@@ -200,6 +200,69 @@ export function buildSessionCountsUpdate(counts: SessionCountsUpdate): Document 
   return update;
 }
 
+/**
+ * A batch's **newly accepted** counts, applied additively.
+ *
+ * ── Why an additive mode exists ───────────────────────────────────────
+ *
+ * `$max` on an absolute total is monotonic, which is what stopped a restarted process from
+ * replacing the durable totals with its post-restart ones. It is **not** correct under more
+ * than one writer, and the gap is exact:
+ *
+ *   process A hydrates `eventCount: 10`, accepts 5 events, writes `$max` 15
+ *   process B hydrates `eventCount: 10`, accepts 3 events, writes `$max` 13
+ *   durable = max(15, 13) = 15      true total = 10 + 5 + 3 = 18
+ *
+ * Neither process ever sees the other's batch, so the durable aggregate converges to the
+ * largest single process's total rather than to the sum, and the missing counts are never
+ * recovered — a later batch by either process continues from its own baseline.
+ *
+ * An increment has none of that. The delta is a property of the batch, not of the writer's
+ * memory, so it cannot be "low" after a restart and it cannot be lost to a concurrent write:
+ * MongoDB applies `$inc` atomically per document, so two processes accepting distinct events
+ * both count. A replayed batch contributes nothing, because the route sends the delta for the
+ * events the store reported as **newly inserted**.
+ *
+ * ── The monotonic guard ───────────────────────────────────────────────
+ *
+ * A counter must never decrease, so a negative or non-finite delta is dropped rather than
+ * applied. That keeps the storage layer the guarantee rather than the caller's bookkeeping,
+ * exactly as `$max` does on the absolute path.
+ */
+export interface SessionCountsDelta {
+  eventCount?: number;
+  pasteCount?: number;
+  tabSwitchCount?: number;
+  focusLossCount?: number;
+  /** Deprecated spelling of {@link focusLossCount}. Both map to one durable field. */
+  fullscreenExitCount?: number;
+  copyAttemptCount?: number;
+}
+
+/** The `$inc` document for an additive counter write. */
+export function buildSessionCountsDeltaUpdate(delta: SessionCountsDelta): Document {
+  const { focusLossCount, fullscreenExitCount, ...rest } = delta;
+
+  const counters: Record<string, number> = {};
+  for (const [key, value] of Object.entries(compact(rest))) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      counters[key] = Math.floor(value);
+    }
+  }
+
+  const focusCandidates = [focusLossCount, fullscreenExitCount].filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
+  if (focusCandidates.length > 0) {
+    counters[FOCUS_LOSS_FIELD] = Math.floor(Math.max(...focusCandidates));
+  }
+
+  const update: Document = {};
+  if (Object.keys(counters).length > 0) update["$inc"] = counters;
+  return update;
+}
+
 export class MongoStore {
   private client: MongoClient;
   private db: Db | null = null;
@@ -585,11 +648,31 @@ export class MongoStore {
   async updateSessionCounts(
     sessionId: string,
     counts: SessionCountsUpdate,
+    options: { delta?: SessionCountsDelta } = {},
   ): Promise<void> {
-    await this.collection("sessions").updateOne(
-      { sessionId },
-      buildSessionCountsUpdate(counts),
-    );
+    const update = buildSessionCountsUpdate(counts);
+
+    if (options.delta) {
+      const increment = buildSessionCountsDeltaUpdate(options.delta)["$inc"] as
+        | Record<string, number>
+        | undefined;
+
+      if (increment) {
+        // MongoDB refuses an update that touches one path through two operators, so a field
+        // present in both is removed from `$max` rather than making the whole write fail.
+        // The increment is the correct one for it: an absolute total and a delta are not two
+        // opinions about the same field, and `$max` on a stale absolute is what loses a
+        // concurrent writer's events.
+        const maxed = update["$max"] as Record<string, unknown> | undefined;
+        if (maxed) {
+          for (const key of Object.keys(increment)) delete maxed[key];
+          if (Object.keys(maxed).length === 0) delete update["$max"];
+        }
+        update["$inc"] = increment;
+      }
+    }
+
+    await this.collection("sessions").updateOne({ sessionId }, update);
   }
 
   /**
