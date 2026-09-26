@@ -7,7 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`npm run verify:packages` — the private-package guard.**
+  `packages/mcp-mongodb` shipped without `"private": true` through four releases, so the
+  only thing preventing an accidental registry upload of it was nobody typing the command.
+  Every other mistake in this repository is recoverable by a later commit; a registry upload
+  is not. Every workspace package must now be unpublishable by construction — `"private":
+  true`, or an entry in the guard's allowlist **with a reason**. A workspace entry that
+  resolves to no directory, a directory with no manifest, a duplicate package name, an
+  allowlist entry with no reason, and a **stale** allowlist entry each fail the guard, because
+  each is a way for the guarantee to be turned off while it still reports OK. The guard's
+  refusals are asserted over disposable fixture trees by
+  `apps/api/test/release/private-packages.test.ts`.
+- **The release-verification drill is reproducible in CI.**
+  `.github/workflows/release-verification.yml` runs `npm run verify:release` on
+  `workflow_dispatch` against a `mongo:7` service container, with `contents: read`, no paid
+  provider call, no repository secret, a job timeout, and an assertion that **no step was
+  skipped**. The harness was previously a command a maintainer ran on their own machine: the
+  evidence existed, but nobody else could produce it. The workflow never tags, publishes or
+  creates a release.
+
+### Changed
+
+- **`"private": true` on `packages/mcp-mongodb`.** No observable API change: the package was
+  never published, and this makes publishing it impossible rather than merely unintended.
+- **`apps/api/tsconfig.test.json` sets `allowJs`.** Some release guards live in
+  `scripts/release/*.mjs` and are tested from the API test tree; without this the import is a
+  compile error and a guard's refusals go untested. `checkJs` stays off, so the JavaScript is
+  inferred rather than type-checked.
 
 ## [0.4.0] - 2026-09-26
 

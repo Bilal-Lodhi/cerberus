@@ -123,6 +123,13 @@ const STEPS = [
     why: "no tracked credential file, no retired identity, and no publishing command here",
   },
   {
+    name: "private-packages",
+    script: "verify:packages",
+    why:
+      "every workspace package refuses registry publication by construction, so an upload " +
+      "cannot happen by accident",
+  },
+  {
     name: "attribution-guard",
     script: "verify:attribution",
     why:
