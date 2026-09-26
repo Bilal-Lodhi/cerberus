@@ -167,12 +167,20 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
 
   [MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS]: {
     name: MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS,
-    description: "Update the live aggregate counters on a session document.",
+    description:
+      "Update the live aggregate counters on a session document. `counts` holds absolute " +
+      "totals and is applied with `$max`, so a counter never decreases. `countsDelta` holds " +
+      "the newly accepted counts of one batch and is applied with `$inc`, which is what makes " +
+      "two processes accepting distinct events both count — see `buildSessionCountsDeltaUpdate`.",
     inputSchema: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
         counts: { type: "object" },
+        countsDelta: {
+          type: "object",
+          description: "Counts to add. Negative or non-finite values are ignored.",
+        },
       },
       required: ["sessionId", "counts"],
     },
@@ -566,20 +574,46 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
     [MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS]: async (body) => {
       const sessionId = requireString(body, "sessionId");
       const counts = requireObject(body, "counts");
-      await store.updateSessionCounts(sessionId, {
-        eventCount: (counts["eventCount"] as number) ?? 0,
-        pasteCount: counts["pasteCount"] as number | undefined,
-        tabSwitchCount: counts["tabSwitchCount"] as number | undefined,
-        // Both spellings are accepted and map to one durable field. `focusLossCount` is
-        // canonical; `fullscreenExitCount` is the deprecated name, kept because this tool
-        // is a published interface and the counter is the same number under either name.
-        // See `buildSessionCountsUpdate`.
-        focusLossCount: counts["focusLossCount"] as number | undefined,
-        fullscreenExitCount: counts["fullscreenExitCount"] as number | undefined,
-        copyAttemptCount: counts["copyAttemptCount"] as number | undefined,
-        peakRiskScore: counts["peakRiskScore"] as number | undefined,
-        status: counts["status"] as string | undefined,
-      });
+
+      // Optional additive mode. Absent keeps the previous behaviour exactly, so an existing
+      // MCP caller is unaffected.
+      const rawDelta = body["countsDelta"];
+      let delta: Record<string, unknown> | undefined;
+      if (rawDelta !== undefined && rawDelta !== null) {
+        delta = requireObject(body, "countsDelta");
+      }
+
+      await store.updateSessionCounts(
+        sessionId,
+        {
+          eventCount: (counts["eventCount"] as number) ?? 0,
+          pasteCount: counts["pasteCount"] as number | undefined,
+          tabSwitchCount: counts["tabSwitchCount"] as number | undefined,
+          // Both spellings are accepted and map to one durable field. `focusLossCount` is
+          // canonical; `fullscreenExitCount` is the deprecated name, kept because this tool
+          // is a published interface and the counter is the same number under either name.
+          // See `buildSessionCountsUpdate`.
+          focusLossCount: counts["focusLossCount"] as number | undefined,
+          fullscreenExitCount: counts["fullscreenExitCount"] as number | undefined,
+          copyAttemptCount: counts["copyAttemptCount"] as number | undefined,
+          peakRiskScore: counts["peakRiskScore"] as number | undefined,
+          status: counts["status"] as string | undefined,
+        },
+        {
+          ...(delta
+            ? {
+                delta: {
+                  eventCount: delta["eventCount"] as number | undefined,
+                  pasteCount: delta["pasteCount"] as number | undefined,
+                  tabSwitchCount: delta["tabSwitchCount"] as number | undefined,
+                  focusLossCount: delta["focusLossCount"] as number | undefined,
+                  fullscreenExitCount: delta["fullscreenExitCount"] as number | undefined,
+                  copyAttemptCount: delta["copyAttemptCount"] as number | undefined,
+                },
+              }
+            : {}),
+        },
+      );
       return { success: true };
     },
 

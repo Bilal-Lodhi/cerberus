@@ -74,7 +74,7 @@ reconciliation exists to remove.
 | **Lifecycle status** (`active`/`locked`/`terminated`) | Durable authoritative | Yes | B's cached status — **including `active` for a durably `terminated` session** | The batched durable query on every live-list request, and the document read on every live-detail request; also a transition (the boundary reconciles from its durable read) and a restart | **No** — it is a false statement about whether monitoring continues | **Zero on both live surfaces** | **No** — `set_session_status` is predicated on the observed status, so a stale transition reports `SESSION_CONFLICT` |
 | **Lock state** | Durable authoritative | Yes | As lifecycle status: it *is* `status === "locked"` | As lifecycle status | No | As lifecycle status | No — same predicate |
 | **Liveness** (`active`/`expired`) | Derived | N/A — never stored | A value derived from B's own activity view, which is memory-based when B has the session in `sessionStore` | Nothing caches it; recomputed per read, from the **more recent** of the local and durable activity instants, so neither side can move the window | Yes at the TTL boundary, no when it contradicts a durable `updatedAt` | Zero on both live surfaces | N/A |
-| **`eventCount`** | Durable authoritative | Yes | B's hydrated total plus what B has itself seen — **can be lower than durable** | `$max` at the store; the merge on both live surfaces; hydration on the first ingest of the session in B | Yes — bounded, and it can only be behind, never wrong-high | One request on both live surfaces; until B hydrates on the ingest path | **No** — `$max` refuses a lower total |
+| **`eventCount`** | Durable authoritative | Yes | B's hydrated total plus what B has itself seen — **can be lower than durable** | `$inc` of the batch delta at the store; the merge on both live surfaces; hydration on the first ingest of the session in B | Yes — bounded, and it can only be behind, never wrong-high | One request on both live surfaces | **No** — a delta is a property of the batch, so it cannot be lower than what it added, and the store drops a negative one |
 | **`pasteCount`, `tabSwitchCount`, `focusLossCount`, `copyAttemptCount`** | Durable authoritative | Yes | As `eventCount` | As `eventCount` | Yes, as `eventCount` | As `eventCount` | No — `$max` |
 | **`peakRiskScore`** | Durable authoritative | Yes | On the memory paths, B's own latest payload score — **`0` for a session another process scored** | `$max` at the store; both live surfaces take `max(local, durable)` | **No** — "this session was never risky" is a false negative | One request on both live surfaces | **No** — `$max` |
 | **`last activity`** (`updatedAt`) | Durable authoritative | Yes | B's own `lastActivityAt` when B ingested more recently, otherwise the durable `updatedAt` | Any durable read | Yes — both are server clocks and the TTL predicate takes the more recent | One batch interval, or B's process lifetime | No — a stale process does not write `updatedAt` unless it writes something else |
@@ -187,6 +187,49 @@ executes the provider call again. Two processes racing the same request both exe
 Nothing here claims exactly-once billing. The honest statement today is: **at-least-once
 execution, with no deduplication across a lost response.**
 
+### 5.5 Counters lost a concurrent writer's events — fixed
+
+The counters were sent to the store as **absolute totals** and applied with `$max`. That is
+monotonic, which is what stopped a restarted process from replacing the durable totals with its
+post-restart ones — but it is not correct under two writers, and the loss is exact:
+
+```
+process A hydrates eventCount: 10, accepts 5 events, writes $max 15
+process B hydrates eventCount: 10, accepts 3 events, writes $max 13
+durable = max(15, 13) = 15          true total = 10 + 5 + 3 = 18
+```
+
+Neither process ever sees the other's batch, so the durable aggregate converged to the **largest
+single process's total** rather than to the sum, and the missing counts were never recovered: a
+later batch by either process continued from its own baseline. That under-report is not
+cosmetic — the counters gate the analysis triggers and appear on the review panel.
+
+**Fixed: the counters are sent as a batch delta and applied with `$inc`.**
+
+| | Absolute total + `$max` | Batch delta + `$inc` |
+| --- | --- | --- |
+| Survives a restart | Yes — a lower absolute cannot overwrite a higher one | Yes — a delta is a property of the batch, so it cannot be "low" |
+| Two writers accepting distinct events | **No** — one batch is lost | Yes — `$inc` is applied per document |
+| A replayed batch | Not counted (the route applies only newly inserted events) | Not counted, for the same reason |
+| A counter decreasing | Refused by `$max` | Refused by dropping a negative or non-finite delta |
+
+The delta is measured from the session state **before and after** the accepted events were
+applied, rather than derived from the event types: a delta computed a second way could disagree
+with what was applied, and the two would drift the first time an event type is added.
+
+`peakRiskScore` stays absolute and `$max`-applied, because it is a maximum rather than a total:
+the larger value is the correct one, and no concurrent write can lower it.
+
+The wire shape is additive. `update_session_counts` gains an optional `countsDelta`; with it
+absent, `counts` keeps `$max` and an existing MCP caller is unaffected. When a field appears in
+both, it leaves `$max` for `$inc` — MongoDB refuses an update that touches one path through two
+operators, and an absolute total and a delta are not two opinions about the same field.
+
+**Evidence.** `store-contract.test.ts` asserts two deltas summing to their total against both
+the double and a real MongoDB — the deterministic case `$max` fails. And
+`test/integration/multi-process.test.ts` runs **two real API processes against one real
+MongoDB**, including two ingests issued together with `Promise.all`, and asserts the sum.
+
 ## 6. Enforcement status
 
 Which rules from §3 hold today, and where.
@@ -198,7 +241,8 @@ Which rules from §3 hold today, and where.
 | Durable wins for **status** on the live **detail** | the same module, wired into `GET /sessions/:sessionId`; the document is read on every request | **Enforced** |
 | Durable wins for **counters** | `buildSessionCountsUpdate` applies `$max`; hydration seeds before the first event | **Enforced** on any path that hydrates |
 | Durable wins for **counters** on both live surfaces | the merge takes `max(local, durable)` | **Enforced** |
-| A stale process cannot lower a counter | `$max` at the store | **Enforced** |
+| A stale process cannot lower a counter | `$inc` of a non-negative delta; a negative or non-finite one is dropped | **Enforced** |
+| Two processes accepting distinct events both count | `$inc` applied per document, with the delta measured from the batch | **Enforced** — asserted against a real MongoDB with two processes |
 | A stale process cannot regress a status | `expectedStatuses` compare-and-set | **Enforced** |
 | A stale process cannot overwrite `terminalContent` | `updateSessionTerminalContent` takes `expectedStatuses` and `onlyIfAbsent`; the terminate route writes after the claim, gated on it | **Enforced** |
 | A read repairs the cache only **toward** the document | `SessionTransitionCache.reconcileStatus` — status only, never the activity instant, never seeding | **Enforced** |

@@ -273,7 +273,24 @@ describe("focusLossCount durability", () => {
     resetAIProvider();
   });
 
-  test("the counter is included in the durable counts payload", async () => {
+  /** The batch delta the API sent, which the store applies with `$inc`. */
+  function lastDeltaPayload(): Record<string, unknown> {
+    const call = [...stub.calls]
+      .reverse()
+      .find((entry) => entry.url.endsWith("/tools/update_session_counts"));
+    assert.ok(call, "update_session_counts was never called");
+    return ((call!.body as { countsDelta?: Record<string, unknown> }).countsDelta ??
+      {}) as Record<string, unknown>;
+  }
+
+  /** The counter the **document** now holds, after the store applied the delta. */
+  function durableFocusLossCount(sessionId: string): number {
+    const document = mcp.sessions.get(sessionId);
+    assert.ok(document, `no durable document for ${sessionId}`);
+    return Number(document["focusLossCount"] ?? 0);
+  }
+
+  test("the counter reaches the durable document as a batch delta", async () => {
     // It drives the analysis trigger and the score penalty, and it was simply
     // absent from this payload — so MongoDB never learned it.
     const res = await app.request("/api/v1/guardian/ingest", {
@@ -287,16 +304,15 @@ describe("focusLossCount durability", () => {
     });
     assert.equal(res.status, 200);
 
-    const countsCall = stub.calls.find((call) =>
-      call.url.endsWith("/tools/update_session_counts"),
-    );
-    assert.ok(countsCall, "update_session_counts was never called");
-
-    const counts = (countsCall!.body as { counts: Record<string, unknown> }).counts;
     assert.equal(
-      counts["focusLossCount"],
+      lastDeltaPayload()["focusLossCount"],
       1,
-      "focusLossCount is missing from the durable counts payload",
+      "focusLossCount is missing from the batch delta",
+    );
+    assert.equal(
+      durableFocusLossCount("ses-fs"),
+      1,
+      "the counter never reached the document",
     );
   });
 
@@ -310,11 +326,8 @@ describe("focusLossCount durability", () => {
       }),
     });
 
-    const countsCall = stub.calls.find((call) =>
-      call.url.endsWith("/tools/update_session_counts"),
-    );
-    const counts = (countsCall!.body as { counts: Record<string, unknown> }).counts;
-    assert.equal(counts["focusLossCount"], 1);
+    assert.equal(lastDeltaPayload()["focusLossCount"], 1);
+    assert.equal(durableFocusLossCount("ses-blur"), 1);
   });
 
   test("a restarted process reports the durable counter from the session list", async () => {
@@ -435,22 +448,55 @@ describe("counter hydration across a restart", () => {
     return (call!.body as { counts: Record<string, unknown> }).counts;
   }
 
+  /** The batch delta the API sent, which the store applies with `$inc`. */
+  function lastDeltaPayload(): Record<string, unknown> {
+    const call = [...stub.calls]
+      .reverse()
+      .find((entry) => entry.url.endsWith("/tools/update_session_counts"));
+    assert.ok(call, "update_session_counts was never called");
+    return ((call!.body as { countsDelta?: Record<string, unknown> }).countsDelta ??
+      {}) as Record<string, unknown>;
+  }
+
+  /**
+   * The counters the **document** now holds.
+   *
+   * These tests used to assert the wire payload, because an absolute total in the payload was
+   * the contract. The counters are now sent as a delta and the store applies them with `$inc`,
+   * so the payload is no longer where the total lives — asserting the document is both the
+   * stronger claim and the one that survives the next change to the wire shape.
+   */
+  function durableCounters(sessionId: string): Record<string, number> {
+    const document = mcp.sessions.get(sessionId);
+    assert.ok(document, `no durable document for ${sessionId}`);
+    return {
+      eventCount: Number(document["eventCount"] ?? 0),
+      pasteCount: Number(document["pasteCount"] ?? 0),
+      tabSwitchCount: Number(document["tabSwitchCount"] ?? 0),
+      focusLossCount: Number(document["focusLossCount"] ?? 0),
+      copyAttemptCount: Number(document["copyAttemptCount"] ?? 0),
+    };
+  }
+
   test("the first batch after a restart does not reset the counters", async () => {
     seed("ses-hydrate");
     const fresh = createApp(makeConfigWithTtl(3600));
 
     await ingest(fresh, "ses-hydrate", "e1");
 
-    const counts = lastCountsPayload();
+    const durable = durableCounters("ses-hydrate");
     assert.equal(
-      counts["eventCount"],
+      durable.eventCount,
       DURABLE.eventCount + 1,
       "the durable event total was replaced by the post-restart count",
     );
-    assert.equal(counts["pasteCount"], DURABLE.pasteCount);
-    assert.equal(counts["tabSwitchCount"], DURABLE.tabSwitchCount);
-    assert.equal(counts["focusLossCount"], DURABLE.focusLossCount);
-    assert.equal(counts["copyAttemptCount"], DURABLE.copyAttemptCount);
+    // The batch held no paste, tab switch, focus loss or copy attempt, so those totals are
+    // untouched. Sent as a delta they cannot be lowered at all — which is a stronger
+    // guarantee than the `$max` that used to stand behind an absolute total.
+    assert.equal(durable.pasteCount, DURABLE.pasteCount);
+    assert.equal(durable.tabSwitchCount, DURABLE.tabSwitchCount);
+    assert.equal(durable.focusLossCount, DURABLE.focusLossCount);
+    assert.equal(durable.copyAttemptCount, DURABLE.copyAttemptCount);
   });
 
   test("the counters accumulate on top of the durable totals", async () => {
@@ -462,7 +508,7 @@ describe("counter hydration across a restart", () => {
     await ingest(fresh, "ses-accumulate", "e2", "KEYSTROKE", 200);
     await ingest(fresh, "ses-accumulate", "e3", "KEYSTROKE", 300);
 
-    assert.equal(lastCountsPayload()["eventCount"], DURABLE.eventCount + 3);
+    assert.equal(durableCounters("ses-accumulate").eventCount, DURABLE.eventCount + 3);
   });
 
   test("a hydrated session keeps its durable status", async () => {
@@ -508,36 +554,48 @@ describe("counter hydration across a restart", () => {
     const fresh = createApp(makeConfigWithTtl(3600));
 
     await ingest(fresh, "ses-no-reseed", "e1", "KEYSTROKE", 100);
-    const afterFirst = lastCountsPayload()["eventCount"] as number;
+    const afterFirst = durableCounters("ses-no-reseed").eventCount;
 
-    // The stub merges counts into the document, so the durable value is now
-    // higher. A second hydration would re-read it and double-count.
+    // A second hydration would re-read the document and double-count. A delta cannot: it is
+    // measured from the batch, not from the document, so re-seeding is not even in the path.
     await ingest(fresh, "ses-no-reseed", "e2", "KEYSTROKE", 200);
 
-    assert.equal(lastCountsPayload()["eventCount"], afterFirst + 1);
+    assert.equal(
+      durableCounters("ses-no-reseed").eventCount,
+      afterFirst + 1,
+      "a second batch counted more than the one event it carried",
+    );
   });
 
-  test("the durable counters are monotonic at the storage layer", async () => {
-    // Even without hydration, `$max` means a lower value cannot overwrite a
-    // higher one. The builder is asserted directly in persistence-naming.test.ts;
-    // this checks the API's payload never carries a value below the durable floor.
+  test("every counter delta is non-negative, so a durable total cannot fall", async () => {
+    // The monotonicity guarantee moved from `$max` on an absolute total to a clamped
+    // non-negative delta applied with `$inc`. Both refuse a decrease; only the second is
+    // correct when two processes accept distinct events, which
+    // `integration/multi-process.test.ts` asserts against a real MongoDB.
     seed("ses-monotonic");
     const fresh = createApp(makeConfigWithTtl(3600));
 
     await ingest(fresh, "ses-monotonic", "e1");
 
-    const counts = lastCountsPayload();
-    for (const key of [
+    const counters = [
       "eventCount",
       "pasteCount",
       "tabSwitchCount",
       "focusLossCount",
       "copyAttemptCount",
-    ] as const) {
+    ] as const;
+
+    const delta = lastDeltaPayload();
+    for (const key of counters) {
       assert.ok(
-        (counts[key] as number) >= DURABLE[key],
-        `${key} was sent below its durable floor`,
+        Number(delta[key] ?? 0) >= 0,
+        `${key} carried a negative delta, which would lower a durable total`,
       );
+    }
+
+    const durable = durableCounters("ses-monotonic");
+    for (const key of counters) {
+      assert.ok(durable[key] >= DURABLE[key], `${key} fell below its durable floor`);
     }
   });
 

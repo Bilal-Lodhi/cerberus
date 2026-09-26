@@ -36,6 +36,7 @@ import { MongoClient } from "mongodb";
 
 import {
   MongoStore,
+  type SessionCountsDelta,
   type SessionCountsUpdate,
   type SessionDeletionReport,
 } from "../../../packages/mcp-mongodb/src/mongo-client.js";
@@ -59,7 +60,11 @@ export interface ContractStore {
   ): Promise<boolean>;
   deleteSession(sessionId: string): Promise<SessionDeletionReport>;
   listSessions(): Promise<StoredDocument[]>;
-  updateSessionCounts(sessionId: string, counts: SessionCountsUpdate): Promise<void>;
+  updateSessionCounts(
+    sessionId: string,
+    counts: SessionCountsUpdate,
+    options?: { delta?: SessionCountsDelta },
+  ): Promise<void>;
   setSessionStatus(
     sessionId: string,
     status: string,
@@ -341,6 +346,114 @@ export const CONTRACT_CASES: ContractCase[] = [
       });
       const session = await store.getSession("does-not-exist-" + ids.sessionId);
       assert.equal(session, null, "a counter update created a session document");
+    },
+  },
+
+  // ── updateSessionCounts: the additive delta ──────────────────────
+  //
+  // These are the cases the multi-writer guarantee rests on. `$max` on an absolute total is
+  // monotonic but loses a concurrent writer's events: two processes that hydrate the same
+  // baseline and each accept a batch converge to the larger batch rather than the sum. `$inc`
+  // on a batch delta has neither problem, and both stores must apply it identically.
+  {
+    name: "countsDelta adds to the stored total, and two deltas both count",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+
+      // Two writers, each having hydrated the same baseline and each accepting a batch. This
+      // is the sequence that `$max` gets wrong: it would keep 5 and lose the 3.
+      await store.updateSessionCounts(ids.sessionId, { eventCount: 0 }, { delta: { eventCount: 5 } });
+      await store.updateSessionCounts(ids.sessionId, { eventCount: 0 }, { delta: { eventCount: 3 } });
+
+      const session = await store.getSession(ids.sessionId);
+      assert.equal(
+        session?.["eventCount"],
+        8,
+        "a concurrent writer's events were lost from the aggregate",
+      );
+    },
+  },
+  {
+    name: "countsDelta is ignored when it is negative or not finite",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.updateSessionCounts(ids.sessionId, { eventCount: 0 }, { delta: { eventCount: 10 } });
+
+      // A counter must never decrease, so the storage layer refuses rather than trusting the
+      // caller's arithmetic — the same property `$max` provides on the absolute path.
+      await store.updateSessionCounts(
+        ids.sessionId,
+        { eventCount: 0 },
+        { delta: { eventCount: -5, pasteCount: Number.NaN } },
+      );
+
+      const session = await store.getSession(ids.sessionId);
+      assert.equal(session?.["eventCount"], 10, "a negative delta lowered a counter");
+      assert.equal(session?.["pasteCount"], undefined, "a NaN delta created a counter");
+    },
+  },
+  {
+    name: "a field in both counts and countsDelta is incremented, not conflicted",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.updateSessionCounts(ids.sessionId, { eventCount: 4 }, { delta: { eventCount: 4 } });
+
+      // MongoDB refuses an update that touches one path through two operators. The store
+      // removes the field from `$max` so the increment wins — an absolute total and a delta
+      // are not two opinions about the same field.
+      const session = await store.getSession(ids.sessionId);
+      assert.equal(session?.["eventCount"], 4, "the delta was not applied");
+    },
+  },
+  {
+    name: "countsDelta on an absent counter creates it from zero",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.updateSessionCounts(ids.sessionId, { eventCount: 0 }, { delta: { focusLossCount: 2 } });
+
+      const session = await store.getSession(ids.sessionId);
+      assert.equal(session?.["focusLossCount"], 2);
+    },
+  },
+  {
+    name: "peakRiskScore is still a maximum when a delta is supplied alongside it",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.updateSessionCounts(
+        ids.sessionId,
+        { eventCount: 0, peakRiskScore: 90 },
+        { delta: { eventCount: 1 } },
+      );
+      await store.updateSessionCounts(
+        ids.sessionId,
+        { eventCount: 0, peakRiskScore: 20 },
+        { delta: { eventCount: 1 } },
+      );
+
+      const session = await store.getSession(ids.sessionId);
+      assert.equal(session?.["eventCount"], 2, "the deltas did not accumulate");
+      // A peak is not a total: the larger value is the correct one, so this stays `$max`.
+      assert.equal(session?.["peakRiskScore"], 90, "a peak regressed");
     },
   },
 

@@ -92,6 +92,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scored no longer reads as `0`. `peakRiskScore` is a peak, so the maximum is its documented
   meaning, and the other two follow it because they always have. See `docs/compatibility.md`
   §1b.
+- **Aggregate counters are sent as a batch delta and applied with `$inc`, so two processes
+  accepting distinct events both count.** They were sent as **absolute totals** and applied with
+  `$max`. That is monotonic — which is what stopped a restarted process from replacing the durable
+  totals with its post-restart ones — but it is not correct under two writers, and the loss was
+  exact:
+
+  ```
+  A hydrates eventCount: 10, accepts 5 events, writes $max 15
+  B hydrates eventCount: 10, accepts 3 events, writes $max 13
+  durable = max(15, 13) = 15          true total = 10 + 5 + 3 = 18
+  ```
+
+  Neither process ever saw the other's batch, so the durable aggregate converged to the largest
+  single process's total rather than the sum, and the missing counts were never recovered — a
+  later batch by either process continued from its own baseline. The counters gate the analysis
+  triggers and appear on the review panel, so this was not cosmetic.
+
+  The delta is measured from the session state **before and after** the accepted events were
+  applied, rather than derived from the event types, so it cannot drift from what was actually
+  applied. A negative or non-finite delta is dropped, so a counter still cannot decrease.
+  `peakRiskScore` stays absolute and `$max`-applied, because a maximum is not a total.
+
+  `update_session_counts` gains an optional `countsDelta`; with it absent, `counts` keeps `$max`
+  and an existing MCP caller is unaffected. When a field appears in both it leaves `$max` for
+  `$inc`, because MongoDB refuses an update that touches one path through two operators. See
+  `docs/compatibility.md` §1b.
+- **A two-process integration harness against a real MongoDB.**
+  `test/integration/multi-process.test.ts` runs **two API processes, the real tool registry and
+  the real MongoDB driver against one set of documents** — the combination the in-process
+  multi-writer suites cannot reach, because `$max`, a compare-and-set that matches nothing, and
+  `$inc` per document are all driver behaviours. Eight flows: two processes accepting distinct
+  events both count; two ingests issued together with `Promise.all` still sum; the same event sent
+  to both is counted once; a session one process created is visible to the other's live list and
+  detail; a status one process set is reported on every surface of the other; the other's ingest
+  is refused for a terminated session; **two concurrent terminates leave one durable truth and one
+  preserved workspace**; and a restart of one process does not disturb the other's view. Each
+  concurrency assertion is the invariant that must hold under any interleaving, rather than a
+  guess about which process wins.
 - **The process whose terminal transition applied owns `terminalContent`.**
   `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
   and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating
