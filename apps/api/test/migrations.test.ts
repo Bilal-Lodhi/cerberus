@@ -174,7 +174,9 @@ interface FakeDb {
   db: Db;
   ledger: Array<Record<string, unknown>>;
   deletedIdBatches: unknown[][];
+  riskAssessmentDeletedIdBatches: unknown[][];
   aggregateCalls: () => number;
+  riskAssessmentAggregateCalls: () => number;
 }
 
 /**
@@ -182,6 +184,9 @@ interface FakeDb {
  *
  * Deliberately narrow: if a migration reaches for an operation this does not have,
  * the test fails loudly rather than the fake silently returning nothing.
+ *
+ * Each collection's `aggregate`/`deleteMany` is tracked separately, so a test can
+ * assert what one migration touched without the other's calls being counted.
  */
 function fakeDb(options: {
   applied?: Array<Record<string, unknown>>;
@@ -190,10 +195,18 @@ function fakeDb(options: {
     count: number;
     docs: Array<Record<string, unknown>>;
   }>;
+  /** Duplicate groups for `risk_assessments`, keyed by `riskAssessmentId`. */
+  riskAssessmentGroups?: Array<{
+    _id: string;
+    count: number;
+    docs: Array<Record<string, unknown>>;
+  }>;
 } = {}): FakeDb {
   const ledger = [...(options.applied ?? [])];
   const deletedIdBatches: unknown[][] = [];
+  const riskAssessmentDeletedIdBatches: unknown[][] = [];
   let aggregateCalls = 0;
+  let riskAssessmentAggregateCalls = 0;
 
   const microEvents = {
     aggregate() {
@@ -202,6 +215,17 @@ function fakeDb(options: {
     },
     async deleteMany(filter: { _id: { $in: unknown[] } }) {
       deletedIdBatches.push(filter._id.$in);
+      return { deletedCount: filter._id.$in.length };
+    },
+  };
+
+  const riskAssessments = {
+    aggregate() {
+      riskAssessmentAggregateCalls++;
+      return { toArray: async () => options.riskAssessmentGroups ?? [] };
+    },
+    async deleteMany(filter: { _id: { $in: unknown[] } }) {
+      riskAssessmentDeletedIdBatches.push(filter._id.$in);
       return { deletedCount: filter._id.$in.length };
     },
   };
@@ -229,17 +253,43 @@ function fakeDb(options: {
   const db = {
     collection(name: string) {
       if (name === "micro_events") return microEvents;
+      if (name === "risk_assessments") return riskAssessments;
       if (name === MIGRATIONS_COLLECTION) return schemaMigrations;
       throw new Error(`the fake Db has no collection named '${name}'`);
     },
   } as unknown as Db;
 
-  return { db, ledger, deletedIdBatches, aggregateCalls: () => aggregateCalls };
+  return {
+    db,
+    ledger,
+    deletedIdBatches,
+    riskAssessmentDeletedIdBatches,
+    aggregateCalls: () => aggregateCalls,
+    riskAssessmentAggregateCalls: () => riskAssessmentAggregateCalls,
+  };
+}
+
+/** A risk-assessment document, for the identity migration. */
+function assessment(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    _id: id,
+    riskAssessmentId: "risk-1",
+    sessionId: "ses-1",
+    overallRiskScore: 40,
+    _generatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    ...overrides,
+  };
 }
 
 function appliedEntry(migrationId: string, appliedAt = new Date("2026-01-01T00:00:00.000Z")) {
   return { migrationId, description: "recorded", appliedAt };
 }
+
+/** The migrations a full run applies, in order. */
+const APPLIED_BOTH = [
+  "0001-dedupe-micro-event-identity",
+  "0002-dedupe-risk-assessment-identity",
+];
 
 describe("planMigrations", () => {
   test("a fresh database has every migration pending", async () => {
@@ -295,10 +345,11 @@ describe("runMigrations", () => {
 
     const result = await runMigrations(db);
 
-    assert.deepEqual(result.applied, ["0001-dedupe-micro-event-identity"]);
+    assert.deepEqual(result.applied, APPLIED_BOTH);
     assert.deepEqual(deletedIdBatches, [["b"]]);
-    assert.equal(ledger.length, 1);
+    assert.equal(ledger.length, 2);
     assert.equal(ledger[0]["migrationId"], "0001-dedupe-micro-event-identity");
+    assert.equal(ledger[1]["migrationId"], "0002-dedupe-risk-assessment-identity");
     assert.ok(ledger[0]["appliedAt"] instanceof Date);
   });
 
@@ -334,7 +385,7 @@ describe("runMigrations", () => {
     const first = await runMigrations(db);
     const second = await runMigrations(db);
 
-    assert.deepEqual(first.applied, ["0001-dedupe-micro-event-identity"]);
+    assert.deepEqual(first.applied, APPLIED_BOTH);
     assert.deepEqual(second.applied, []);
     assert.equal(deletedIdBatches.length, 1, "the second run deleted again");
   });
@@ -377,9 +428,64 @@ describe("runMigrations", () => {
 
     const result = await runMigrations(db);
 
-    assert.deepEqual(result.applied, ["0001-dedupe-micro-event-identity"]);
-    assert.equal(ledger.length, 1);
+    assert.deepEqual(result.applied, APPLIED_BOTH);
+    assert.equal(ledger.length, 2);
     assert.match(String(ledger[0]["detail"]), /no duplicate event identities found/);
+    assert.match(
+      String(ledger[1]["detail"]),
+      /no duplicate risk-assessment identities found/,
+    );
+  });
+
+  test("the risk-assessment identity migration removes duplicates, ignoring _generatedAt", async () => {
+    // Two copies of one assessment written by a retry differ only in `_generatedAt`,
+    // which is when the copy *arrived* rather than part of the assessment. Treating
+    // that as a disagreement would make the migration refuse on exactly the case it
+    // exists to repair.
+    const { db, ledger, riskAssessmentDeletedIdBatches } = fakeDb({
+      riskAssessmentGroups: [
+        {
+          _id: "risk-1",
+          count: 2,
+          docs: [
+            assessment("a", { _generatedAt: new Date("2026-01-01T00:00:00.000Z") }),
+            assessment("b", { _generatedAt: new Date("2026-02-01T00:00:00.000Z") }),
+          ],
+        },
+      ],
+    });
+
+    const result = await runMigrations(db);
+
+    assert.deepEqual(result.applied, APPLIED_BOTH);
+    assert.deepEqual(riskAssessmentDeletedIdBatches, [["b"]], "the earliest copy is kept");
+    assert.match(String(ledger[1]["detail"]), /removed 1 duplicate document\(s\)/);
+  });
+
+  test("the risk-assessment migration refuses when two copies disagree", async () => {
+    // Different payloads under one id are a data-integrity problem, not a duplicate:
+    // removing either would destroy whichever version the operator wanted.
+    const { db, ledger, riskAssessmentDeletedIdBatches } = fakeDb({
+      riskAssessmentGroups: [
+        {
+          _id: "risk-1",
+          count: 2,
+          docs: [
+            assessment("a"),
+            assessment("b", { overallRiskScore: 99 }),
+          ],
+        },
+      ],
+    });
+
+    await assert.rejects(
+      () => runMigrations(db),
+      (error: unknown) =>
+        error instanceof MigrationConflictError && error.message.includes("risk-1"),
+    );
+
+    assert.deepEqual(riskAssessmentDeletedIdBatches, [], "a conflict deleted something");
+    assert.equal(ledger.length, 1, "0001 was recorded, 0002 was not");
   });
 
   test("a conflict refuses, deletes nothing, and is not recorded", async () => {

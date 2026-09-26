@@ -435,8 +435,18 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
 
     [MCP_TOOL_NAMES.STORE_RISK_ASSESSMENT]: async (body) => {
       const report = requireObject(body, "report");
-      const mongoDocumentId = await store.storeRiskAssessment(report);
-      return { success: true, mongoDocumentId };
+      const { documentId, riskAssessmentId, inserted } =
+        await store.storeRiskAssessment(report);
+      return {
+        success: true,
+        mongoDocumentId: documentId,
+        riskAssessmentId,
+        // Additive: `false` means this incident's assessment was already stored, so a
+        // retry after an ambiguous response did not create a second row. `success`
+        // stays true either way — the evidence exists, which is what the caller asked
+        // for.
+        inserted,
+      };
     },
 
     [MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS]: async (body) => {

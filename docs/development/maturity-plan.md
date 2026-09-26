@@ -497,7 +497,7 @@ engineering rationale recorded here:
 | H | State mutations concurrency-tested | **Done** — four deterministic concurrency cases: terminate racing auto-lock, two terminates racing, two ingests racing, and a duplicate event across two concurrent batches |
 | I | Route-level retry/idempotency contracts documented | Open |
 | J | Stale-cache/newer-DB behaviour deterministic | **Done** — three tests: the durable status decides over the cache, a refusal reconciles the cache, and a durable lock the cache does not know about is applied rather than ignored |
-| K | Migrations cover any schema/status changes | Open — depends on the vocabulary decisions below |
+| K | Migrations cover any schema/status changes | **Done so far** — migration `0002` covers the durable risk-assessment identity, and `classifyDuplicateGroups` is now parameterised on the volatile field so a future collection can reuse it. The `focusLossCount` rename, if taken, still needs one |
 | L | API/MCP compatibility preserved where reasonably possible | **Done so far** — every MCP change this cycle is an added optional argument, and the new error codes are additive. `terminate`'s `503` replaces a misleading `404` |
 | M | No P0/P1 correctness/security issue remains | **Done** — the confirmed P1 (a terminated session was not terminal) is fixed, with regression tests. Remaining known items are P2 |
 | N | Test doubles audited against real-store behavior | **Done** — [test-double-contract.md](test-double-contract.md) audits them, and one shared faithful double replaces four divergent ones, verified against a real MongoDB 7 |

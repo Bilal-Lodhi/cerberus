@@ -6,7 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
 ### Added
+
+- **Durable risk-assessment identity, so the paid analysis path stores one row per
+  incident.** `risk_assessments` gained a unique index on `riskAssessmentId` and
+  `MongoStore.storeRiskAssessment` is now idempotent on it: a second store of the same
+  id reports `inserted: false` and creates nothing. Before this it was a plain insert
+  with no index, so a re-analysis after a restart wrote a **second row for one
+  incident** — inflating `riskSummary` on the review surface and double-counting in the
+  auditor. The module header of `guardian.ts` had described this dedup layer as
+  implemented when it was not; the claim is now true.
+
+  The duplicate-key path is handled rather than pre-checked, because a read-then-insert
+  would race: two concurrent analyses of one incident would both see nothing and both
+  insert. The unique index is the arbiter, and the duplicate-key error is the *expected*
+  outcome of a retry. `isDuplicateKeyError` classifies it from the driver's error code
+  rather than by matching a message.
+
+- **Migration `0002-dedupe-risk-assessment-identity`**, which removes pre-existing
+  duplicate assessments so the unique index can be created — the same ordering
+  constraint as `0001`: migrations run before indexes, because the index cannot be
+  created while duplicates exist and the failure would be an opaque duplicate-key error
+  at startup rather than a repair. Two copies that disagree on anything but `_id` and
+  `_generatedAt` are **not** duplicates: the migration refuses, names the ids and
+  deletes nothing. `classifyDuplicateGroups` gained an `ignoredFields` parameter so the
+  volatile field can differ by collection — `_ingestedAt` for an event, `_generatedAt`
+  for an assessment — because passing the wrong one turns a repairable duplicate into a
+  refusal.
 
 - **Two response fields that say whether a step actually succeeded.** Both were
   previously indistinguishable from success:
@@ -624,6 +651,32 @@ Published 2026-09-22 as a pre-release; this section describes the state of the
 repository at extraction.
 
 ### Added
+
+- **Durable risk-assessment identity, so the paid analysis path stores one row per
+  incident.** `risk_assessments` gained a unique index on `riskAssessmentId` and
+  `MongoStore.storeRiskAssessment` is now idempotent on it: a second store of the same
+  id reports `inserted: false` and creates nothing. Before this it was a plain insert
+  with no index, so a re-analysis after a restart wrote a **second row for one
+  incident** — inflating `riskSummary` on the review surface and double-counting in the
+  auditor. The module header of `guardian.ts` had described this dedup layer as
+  implemented when it was not; the claim is now true.
+
+  The duplicate-key path is handled rather than pre-checked, because a read-then-insert
+  would race: two concurrent analyses of one incident would both see nothing and both
+  insert. The unique index is the arbiter, and the duplicate-key error is the *expected*
+  outcome of a retry. `isDuplicateKeyError` classifies it from the driver's error code
+  rather than by matching a message.
+
+- **Migration `0002-dedupe-risk-assessment-identity`**, which removes pre-existing
+  duplicate assessments so the unique index can be created — the same ordering
+  constraint as `0001`: migrations run before indexes, because the index cannot be
+  created while duplicates exist and the failure would be an opaque duplicate-key error
+  at startup rather than a repair. Two copies that disagree on anything but `_id` and
+  `_generatedAt` are **not** duplicates: the migration refuses, names the ids and
+  deletes nothing. `classifyDuplicateGroups` gained an `ignoredFields` parameter so the
+  volatile field can differ by collection — `_ingestedAt` for an event, `_generatedAt`
+  for an assessment — because passing the wrong one turns a repairable duplicate into a
+  refusal.
 
 - API-key authentication middleware for the HTTP API, comparing the presented
   credential against `CERBERUS_API_KEY` in constant time. The middleware accepts

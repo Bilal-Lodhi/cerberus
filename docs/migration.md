@@ -42,6 +42,11 @@ turn a repairable database into one that will not start.
 | Id | Rewrites data | What it does |
 | --- | --- | --- |
 | `0001-dedupe-micro-event-identity` | yes | Removes `micro_events` documents that share `(sessionId, eventId)` **and are otherwise identical**, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
+| `0002-dedupe-risk-assessment-identity` | yes | Removes `risk_assessments` documents that share a `riskAssessmentId` **and are otherwise identical** apart from `_generatedAt`, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
+
+The volatile field differs by collection — `_ingestedAt` for an event, `_generatedAt`
+for an assessment — so `classifyDuplicateGroups` takes the ignored fields as a
+parameter. Passing the wrong one turns a repairable duplicate into a refusal.
 
 ### Collections
 

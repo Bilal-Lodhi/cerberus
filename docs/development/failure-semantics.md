@@ -189,9 +189,9 @@ The client sees a timeout and retries the same batch.
 - Analysis: dedup layer 2 (code hash) suppresses re-analysis **when the code is
   unchanged and the process did not restart**. After a restart
   `lastAnalyzedCodeHash` is `""`, so the retry re-pays.
-- Assessment: `storeRiskAssessment` is a plain `insertOne` with **no unique index
-  on `riskAssessmentId`** and no dedup in the route, so a re-analysis writes a
-  **second assessment row** for the same incident.
+- Assessment: **fixed.** `risk_assessments` carries a unique index on
+  `riskAssessmentId` and `storeRiskAssessment` is idempotent on it, so a re-analysis
+  writes one row per incident. See §3.9.
 
 ### 3.7 Retry arrives after an ambiguous response
 
@@ -202,7 +202,7 @@ Covered by §3.6. The net guarantee is:
 | An event is stored at most once | **yes** — unique `(sessionId, eventId)` |
 | Counters are not inflated by a retry | **yes** — only newly-inserted events are applied |
 | A retry does not re-spend on analysis | **only within one process and only if the workspace is unchanged** |
-| A retry does not duplicate the assessment | **no** |
+| A retry does not duplicate the assessment | **yes** — unique `riskAssessmentId`, with the duplicate-key path handled rather than pre-checked |
 | A retry does not re-notify | **no** — the notification has no dedup key |
 
 ### 3.8 Optional notification fails
@@ -217,32 +217,38 @@ then never persisted (§3.4). The notification cannot corrupt durable telemetry
 state — it is fire-and-forget with respect to correctness — but it can describe a
 state that does not durably exist.
 
-### 3.9 Documented-but-absent dedup layer
+### 3.9 Documented-but-absent dedup layer — **now implemented**
 
-The module header of `apps/api/src/routes/guardian.ts` lists four deduplication
-layers:
-
-```
- *   1. identical risk-assessment id from the AI provider
- *   2. code-hash equality — skip re-analysis when the workspace is unchanged
- *   3. micro-event fingerprint ring (last 128) — suppress replayed batches
- *   4. behavioural counter blend — repeated violations amplify the score
-```
-
-Layer 1 **is not implemented.** Nothing in the ingest path reads
-`riskAssessmentId` for comparison, and `riskAssessments` carries no unique index
-on it:
+The module header of `apps/api/src/routes/guardian.ts` listed four deduplication
+layers, and layer 1 — "identical risk-assessment id from the AI provider" — **was not
+implemented**. Nothing in the ingest path compared `riskAssessmentId`, and
+`risk_assessments` carried no unique index on it:
 
 ```
 riskAssessments.createIndex({ sessionId: 1, generatedAt: -1 })
 riskAssessments.createIndex({ employeeId: 1 })
 ```
 
-So the header overstates the deduplication the code performs. Layers 2, 3 and 4
-exist and are exercised; layer 1 is a claim with no implementation behind it. It is
-either implemented or the header is corrected — and since the assessment write is
-the one durable artefact of the paid path, implementing it is the more valuable of
-the two.
+**Fixed.** `risk_assessments` now carries a unique index on `riskAssessmentId` and
+`storeRiskAssessment` is idempotent on it, so a re-analysis of one incident stores one
+row. Migration `0002-dedupe-risk-assessment-identity` removes any pre-existing
+duplicates first — the same ordering constraint as migration 0001, because the index
+cannot be created while duplicates exist. The header claim is restored, now that it is
+true.
+
+Two properties of the fix are worth stating:
+
+- **The duplicate-key path is handled rather than pre-checked.** A read-then-insert
+  would race: two concurrent analyses of one incident would both see nothing and both
+  insert. The unique index is the arbiter, and a duplicate-key error is the *expected*
+  outcome of a retry — so it is caught and reported as `inserted: false`, not as a
+  failure. `isDuplicateKeyError` classifies it from the driver's error code (11000)
+  rather than by matching a message, which is localised and version-dependent.
+- **An assessment with no `riskAssessmentId` still gets one.** There is no identity to
+  be idempotent on, so a retry stores a second row — the pre-existing behaviour for that
+  shape. `parseRiskAssessment` always supplies an id at the provider boundary, so this
+  is a fallback rather than a supported shape, and the contract suite asserts it
+  explicitly.
 
 ## 4. The remaining operations
 
@@ -356,7 +362,7 @@ database with a pending migration is either not yet serving or already migrated.
 | Counter advancement | **Monotonic.** `$max` at the storage layer, so no caller and no restart can lower a durable total. |
 | Status change | **Durable-first, validated and predicate-checked.** The durable status is read, the transition is validated against the table, the write applies only while the stored status is one it is legal from, and the caches are repaired from the durable outcome. A write that did not match is `SESSION_CONFLICT`; a store that did not answer is `SESSION_STORE_UNAVAILABLE`. **No cache can assert a status MongoDB does not hold.** |
 | Status-change refusal | **The durable status is never changed and the requested change is never applied.** The cache *is* reconciled to the durable value the refusal read, so a divergence is corrected rather than reported. |
-| Assessment storage | **Written before any side effect, and its outcome reported.** A failed write means no status change and no notification, so a lock always has recorded evidence. What is still **not** guaranteed is uniqueness: a retry after a restart can write a second row for one incident, because there is no unique index on `riskAssessmentId`. |
+| Assessment storage | **Written before any side effect, reported, and idempotent on `riskAssessmentId`.** A failed write means no status change and no notification, so a lock always has recorded evidence, and a retry cannot write a second row for one incident. |
 | Notification | **Best effort, and last.** Not durable, not retried, not ordered, no dedup key. It cannot affect the durable state, and it is no longer sent for an assessment that was not stored. |
 | Scenario authoring | **Honest reporting.** The response states whether persistence succeeded. |
 | Deletion | **Reported when the store does not answer** (`503`, nothing changed). A partial deletion — the session document removed but its events or assessments not — is still reported as complete, because the MCP tool reports only the session's `deletedCount`. |
@@ -381,10 +387,14 @@ not a documentation change.
 6. **`delete` reports a durable failure rather than success.** **Done** for an
    unreachable store (`503`, nothing changed). A *partial* deletion is still reported as
    complete; that needs the MCP tool to report per-collection counts, and is open.
-7. **The assessment write becomes idempotent on `riskAssessmentId`.** Open. Closes
-   §3.6's duplicate-row window and makes the documented dedup layer 1 real, or removes
-   the claim from the header. The contract suite currently **characterises** the gap,
-   so the fix cannot land silently.
+7. **The assessment write becomes idempotent on `riskAssessmentId`.** **Done** — closes
+   §3.6's duplicate-row window and makes the documented dedup layer 1 real. Migration
+   0002 removes pre-existing duplicates; the contract suite verified the gap by
+   *characterising* it and now verifies the fix, so neither could land silently.
+8. **A partial deletion is reported as complete.** Open. `deleteSession` removes the
+   session, its events and its assessments under one `Promise.all`, and the MCP tool
+   reports only the session's `deletedCount`. Fixing it needs the tool to report
+   per-collection counts.
 
 Not planned, and why:
 
