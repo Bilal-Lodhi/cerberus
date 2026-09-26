@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Two response fields that say whether a step actually succeeded.** Both were
+  previously indistinguishable from success:
+  - `telemetryPersisted` — whether the persistence layer answered for the events
+    write. When it is `false`, **`acceptedCount` and `duplicateCount` are omitted**,
+    because a number the server knows is unverified is worse than no number. A failed
+    events write used to return `acceptedCount: <batch size>` and `duplicateCount: 0`,
+    which is byte-for-byte what a fully successful ingest returns. `processedCount`
+    keeps its meaning — the batch size the caller sent — so nothing is lost.
+  - `assessmentPersisted` — whether the `riskPayload` in the response is durable.
+    Absent when no analysis ran. `false` means the paid analysis completed and its
+    persistence did not, so the payload exists only in the response body and in this
+    process's memory.
+
+  Both are additive. `apps/api/src/routes/guardian.ts` also tracks
+  `lastRiskPayloadStored` in memory, so the code-hash dedup branch reports the reused
+  payload truthfully instead of claiming a stored assessment for one whose write
+  failed.
+
 - **A central session transition boundary** — `apps/api/src/services/session-transition.ts`
   — so a session lifecycle status changes in exactly one place. Status was previously
   written by five paths (deploy, ingest's auto-lock, ingest's auto-clear, reactivate,
@@ -132,6 +150,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The ingest write order put side effects before durable evidence.** The risk
+  assessment was written **last** — after the notification and the status change — so a
+  process death in that window left a durably `locked` session with a delivered alert
+  and **no recorded justification**. The order is now: paid analysis → paid
+  recommendation → **assessment write** → status transition → notification.
+
+  If the assessment write fails, the status is deliberately **not** changed and no
+  notification is sent: a lock whose justification was never recorded is exactly the
+  failure this ordering exists to prevent, and an alert describing an incident with no
+  review record is worse than no alert. Telemetry is unaffected — it is already durable,
+  and the next batch with a changed workspace retries the whole path.
+- **A failed delete was reported as a successful one.** `DELETE
+  /api/v1/guardian/sessions/:id` cleared the caches first and consulted the durable
+  result only to compute `deleted`, so an unreachable store returned
+  `200 success: true` for a session that was still there — and a restart brought it
+  back. It also returned `404 "not found"` for a session that exists, a different wrong
+  answer to the same failure. The durable deletion is now attempted first; a store that
+  does not answer is `503 SESSION_STORE_UNAVAILABLE` and nothing is changed.
 - **P1 — a terminated session is not terminal.** `POST /api/v1/guardian/ingest`
   checked only whether the session's monitoring window had expired, never its status,
   and `lockSession()` had no precondition either. A `terminated` session that had not
@@ -194,21 +230,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 These were found by tracing the source for the documents above, and each is
 reproduced or traced rather than inferred. They are listed here so the change that
-fixes one can reference it. Three of the original six — the P1 above, the
-last-writer-wins status race, and the uninspected status-write result — are fixed by
-the transition boundary and are described under `Fixed`.
+fixes one can reference it. Five of the original six — the P1 above, the
+last-writer-wins status race, the uninspected status-write result, the undisclosed
+failed events write, and the assessment-after-side-effects order — are now fixed and
+are described under `Fixed`.
 
-- **P2 — a failed `ingest_micro_events` is indistinguishable from a fully
-  successful one.** `acceptedCount === processedCount` and `duplicateCount === 0`
-  mean both "stored, all new" and "the store never answered".
-- **P2 — the risk assessment is persisted after the notification and the status
-  write.** The order is paid analysis → paid recommendation → notification →
-  status → assessment, so a process death in that window leaves a durable lock and a
-  delivered alert with no recorded evidence.
 - **P2 — `GET /api/v1/guardian/sessions/:sessionId` has no durable fallback.** It
   reads the two in-memory maps only, so immediately after a restart it answers `404`
   for a session that exists until something calls the live list, which is the path
   that rebuilds the registry. The review route is durable and is unaffected.
+- **P2 — the risk assessment write is not idempotent.** `storeRiskAssessment` is a
+  plain insert with no unique index on `riskAssessmentId` and no dedup in the route, so
+  a re-analysis after a restart writes a second row for one incident. The contract
+  suite **characterises** this rather than endorsing it, so the fix cannot land
+  silently.
 
 ## [0.2.0] - 2026-09-25
 

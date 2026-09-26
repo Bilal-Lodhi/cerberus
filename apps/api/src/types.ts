@@ -313,15 +313,40 @@ export interface IngestMicroEventResponse {
   success: boolean;
   processedCount: number;
   /**
+   * Whether the persistence layer answered for the events write.
+   *
+   * `callMcpTool` never throws, so a failed `ingest_micro_events` is not an error
+   * path in the route — it simply produces no accepted-set report. When that happens
+   * this is `false` and **`acceptedCount` and `duplicateCount` are omitted**, because
+   * a number the server knows is unverified is worse than no number: before this
+   * field existed, a failed write reported `acceptedCount: <batch size>` and
+   * `duplicateCount: 0`, which is indistinguishable from a fully successful ingest.
+   *
+   * `processedCount` always keeps its meaning — the size of the batch the caller
+   * sent — so nothing is lost.
+   */
+  telemetryPersisted: boolean;
+  /**
    * How many events in the batch were newly persisted.
    *
-   * Additive: `processedCount` remains the batch size. `acceptedCount` is how much
-   * of it was new, so a caller retrying after a network ambiguity can tell that
-   * its events were already stored.
+   * Present only when {@link telemetryPersisted} is true. Additive to
+   * `processedCount`, which remains the batch size, so a caller retrying after a
+   * network ambiguity can see that its events were already stored.
    */
   acceptedCount?: number;
   /** How many events were already present — a retry or a replay. */
   duplicateCount?: number;
+  /**
+   * Whether the `riskPayload` in this response is durable.
+   *
+   * Absent when no analysis ran, because then the question does not apply. `false`
+   * means the paid analysis completed but its persistence did not, so the payload
+   * exists only in this response body and in this process's memory. In that case the
+   * session's status is deliberately **not** changed and no notification is sent:
+   * a lock whose justification was never recorded is the failure this ordering exists
+   * to prevent.
+   */
+  assessmentPersisted?: boolean;
   riskPayload: RiskAssessmentPayload | null;
   /** Whether the exfiltration threshold was breached */
   alertTriggered: boolean;

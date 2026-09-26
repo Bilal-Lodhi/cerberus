@@ -210,9 +210,9 @@ describe("durable event idempotency", () => {
     assert.equal(lastCounts("ses-distinct")["eventCount"], 2);
   });
 
-  test("when persistence is unavailable every event is still applied", async () => {
-    // There is no accepted-set report, and dropping telemetry is worse than a
-    // possible over-count in a session whose events were never stored.
+  test("when persistence is unavailable every event is still applied in memory", async () => {
+    // Dropping telemetry is worse than a possible over-count in a session whose events
+    // were never stored, so the batch is still applied in memory.
     stub.restore();
     stub = installFetchStub({
       mcpResponse: () => {
@@ -225,6 +225,57 @@ describe("durable event idempotency", () => {
 
     assert.equal(result.status, 200);
     assert.equal(result.body.success, true);
-    assert.equal(result.body.acceptedCount, 1, "the fallback should report the batch as accepted");
+    assert.equal(result.body.processedCount, 1);
+  });
+
+  test("a failed events write is reported, not disguised as a full success", async () => {
+    // The counts used to fall back to `acceptedCount: <batch size>` and
+    // `duplicateCount: 0`, which is byte-for-byte what a fully successful ingest
+    // returns — so a caller could not tell that its telemetry was never stored.
+    stub.restore();
+    stub = installFetchStub({
+      mcpResponse: () => {
+        throw new Error("mongo unreachable");
+      },
+    });
+
+    const app = newApp();
+    const result = await ingest(app, [
+      event("ses-honest", "e1", 100),
+      event("ses-honest", "e2", 200),
+    ]);
+
+    assert.equal(result.body.telemetryPersisted, false, "a failed write was reported as persisted");
+    assert.equal(
+      result.body.acceptedCount,
+      undefined,
+      "a count was reported for a write the store never confirmed",
+    );
+    assert.equal(result.body.duplicateCount, undefined);
+    // `processedCount` keeps its meaning, so nothing is lost.
+    assert.equal(result.body.processedCount, 2);
+  });
+
+  test("a successful ingest reports persisted telemetry and both counts", async () => {
+    const app = newApp();
+    const result = await ingest(app, [
+      event("ses-persisted", "e1", 100),
+      event("ses-persisted", "e2", 200),
+    ]);
+
+    assert.equal(result.body.telemetryPersisted, true);
+    assert.equal(result.body.acceptedCount, 2);
+    assert.equal(result.body.duplicateCount, 0);
+  });
+
+  test("a retry reports persisted telemetry with the duplicates it found", async () => {
+    const app = newApp();
+    const batch = [event("ses-retry-report", "e1", 100)];
+    await ingest(app, batch);
+    const retry = await ingest(app, batch);
+
+    assert.equal(retry.body.telemetryPersisted, true);
+    assert.equal(retry.body.acceptedCount, 0);
+    assert.equal(retry.body.duplicateCount, 1);
   });
 });
