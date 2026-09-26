@@ -117,7 +117,7 @@ void main() {
     expect(harness.corpus.isAtCapacity, isFalse);
   });
 
-  test('the read ceiling is reported once the corpus reaches it', () async {
+  test('the ceiling is reported once the corpus reaches it', () async {
     final harness = build(
       handler: (_) async => json({
         'success': true,
@@ -134,6 +134,76 @@ void main() {
     expect(harness.corpus.documents, hasLength(maxReferenceDocuments));
     expect(harness.corpus.isAtCapacity, isTrue);
   });
+
+  testWidgets(
+    'the full-corpus notice does not describe the retired read-ceiling behaviour',
+    (WidgetTester tester) async {
+      // The panel used to say a new document "would be stored but never read", which was
+      // true when the ceiling was a *read* ceiling and is false now: the server refuses the
+      // create outright. A stale sentence here would contradict the release notes on a
+      // headline behaviour change, so the wording is asserted rather than left to review.
+      final client = MockClient(
+        (request) async => json({
+          'success': true,
+          'total': maxReferenceDocuments,
+          'data': List.generate(
+            maxReferenceDocuments,
+            (index) => row(referenceId: 'ref-$index'),
+          ),
+        }, 200),
+      );
+      final api = ApiService(
+        baseUrl: 'http://api.test',
+        apiKey: 'test-key',
+        client: client,
+      );
+      final corpus = ReferenceCorpusProvider(api);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChangeNotifierProvider<ReferenceCorpusProvider>.value(
+              value: corpus,
+              child: const ReferenceCorpusPanel(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(
+        corpus.isAtCapacity,
+        isTrue,
+        reason: 'the panel is not at capacity',
+      );
+
+      final notice = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((widget) => widget.data ?? '')
+          .firstWhere(
+            (text) => text.contains('REFERENCE_CORPUS_LIMIT_REACHED'),
+            orElse: () => '',
+          );
+
+      expect(
+        notice,
+        isNotEmpty,
+        reason: 'no full-corpus notice naming the stable code is shown',
+      );
+
+      // It must not claim the retired outcome.
+      final lowered = notice.toLowerCase();
+      expect(lowered, isNot(contains('never read')));
+      expect(lowered, isNot(contains('read ceiling')));
+      expect(lowered, isNot(contains('stored but')));
+
+      // It must state the actual behaviour.
+      expect(lowered, contains('nothing is stored'));
+      expect(lowered, contains('updating an existing document'));
+      expect(lowered, contains('remove a document'));
+    },
+  );
 
   // ── Adding ──────────────────────────────────────────────────────────────────
 

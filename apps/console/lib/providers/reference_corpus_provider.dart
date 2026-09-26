@@ -27,11 +27,16 @@ class ReferenceCorpusProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
-  /// True once the corpus has reached the API's read ceiling.
+  /// True once the corpus has reached the server-enforced ceiling.
   ///
-  /// Not a store rejection — the API stores a document past this point but
-  /// never lists or compares it — so the panel disables the add and says why,
-  /// instead of accepting text the operator would never see again.
+  /// The server **refuses** a create past this point with
+  /// `REFERENCE_CORPUS_LIMIT_REACHED`; it does not store the document and then exclude it
+  /// from comparison. The panel disables the add and says so, and it still handles the
+  /// server's own refusal, because another operator may fill the corpus between this panel
+  /// loading and the add.
+  ///
+  /// Updating an existing document remains allowed at the ceiling — an update does not grow
+  /// the corpus.
   bool get isAtCapacity => _documents.length >= maxReferenceDocuments;
 
   // ── Load ────────────────────────────────────────────────────────────────────

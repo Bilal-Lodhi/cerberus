@@ -30,13 +30,20 @@ const int maxReferenceTags = 20;
 /// Maximum length of a single tag.
 const int maxReferenceTagChars = 50;
 
-/// How many documents the API will list and compare.
+/// How many documents the corpus may hold, and how many the API will list.
 ///
-/// This is a **read** ceiling, not a store rejection: the list route and the
-/// risk-analysis path both load at most this many documents, newest first. A
-/// document added past it is stored but never listed here and never compared,
-/// which is why the panel warns at the ceiling instead of quietly accepting the
-/// add and letting the operator believe it is in force.
+/// This is a **store-enforced ceiling**, not only a read bound. The server refuses a create
+/// past it with `409 REFERENCE_CORPUS_LIMIT_REACHED`, so nothing is stored and nothing is
+/// silently excluded from comparison. The same number also bounds the list route and the
+/// risk-analysis read, which is why one constant serves both.
+///
+/// It used to be a *read* ceiling alone: a document added past it was stored and then never
+/// listed or compared, so the operator saw a successful add and detection saw nothing. The
+/// panel warned at the ceiling to compensate for that. Now the server refuses, and the
+/// panel states the refusal rather than warning about an invisible outcome.
+///
+/// Updating an existing document is always allowed, at any size: an update does not grow
+/// the corpus, so the ceiling must not block correcting a document in a full corpus.
 const int maxReferenceDocuments = 200;
 
 /// One corpus document as the list endpoint returns it.
