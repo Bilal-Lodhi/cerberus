@@ -22,76 +22,7 @@ import {
   type FetchStub,
 } from "./helpers.js";
 
-/** A stateful MCP stand-in with a durable `(sessionId, eventId)` identity. */
-function idempotentMcp() {
-  const sessions = new Map<string, Record<string, unknown>>();
-  const storedEventKeys = new Set<string>();
-
-  return {
-    sessions,
-    storedEventKeys,
-    seedSession(doc: Record<string, unknown>) {
-      sessions.set(String(doc["sessionId"]), doc);
-    },
-    /** Pre-stores an event, as a previous process would have. */
-    seedStoredEvent(sessionId: string, eventId: string) {
-      storedEventKeys.add(`${sessionId}::${eventId}`);
-    },
-    handler(tool: string, body: Record<string, unknown>): unknown {
-      switch (tool) {
-        case "create_session": {
-          const sessionId = String(body["sessionId"]);
-          if (!sessions.has(sessionId)) {
-            sessions.set(sessionId, { ...body, createdAt: new Date().toISOString() });
-          }
-          return { success: true, mongoDocumentId: `doc-${sessionId}` };
-        }
-        case "get_session_review": {
-          const sessionId = String(body["sessionId"]);
-          return { success: true, session: sessions.get(sessionId) ?? null, events: [], riskAssessments: [] };
-        }
-        case "ingest_micro_events": {
-          const batch = (body["events"] ?? []) as Array<Record<string, unknown>>;
-          const acceptedEventIds: string[] = [];
-          const duplicateEventIds: string[] = [];
-
-          for (const event of batch) {
-            const sessionId = String(event["sessionId"]);
-            const eventId = String(event["eventId"] ?? "");
-            const key = `${sessionId}::${eventId}`;
-            if (storedEventKeys.has(key)) {
-              duplicateEventIds.push(eventId);
-              continue;
-            }
-            storedEventKeys.add(key);
-            acceptedEventIds.push(eventId);
-          }
-
-          return {
-            success: true,
-            processedCount: batch.length,
-            acceptedEventIds,
-            duplicateEventIds,
-          };
-        }
-        case "update_session_counts": {
-          const sessionId = String(body["sessionId"]);
-          const counts = (body["counts"] ?? {}) as Record<string, unknown>;
-          sessions.set(sessionId, { ...(sessions.get(sessionId) ?? {}), ...counts });
-          return { success: true };
-        }
-        case "set_session_status":
-          return { success: true, updated: true };
-        case "list_sessions":
-          return { success: true, data: [...sessions.values()] };
-        case "list_reference_documents":
-          return { success: true, data: [] };
-        default:
-          return { success: true };
-      }
-    },
-  };
-}
+import { McpStoreDouble } from "./support/mcp-store-double.js";
 
 function event(sessionId: string, eventId: string, deltaMs = 120): Record<string, unknown> {
   return {
@@ -122,12 +53,12 @@ interface IngestBody {
 
 describe("durable event idempotency", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof idempotentMcp>;
+  let mcp: McpStoreDouble;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = idempotentMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
   });
 
   afterEach(() => {
@@ -188,8 +119,8 @@ describe("durable event idempotency", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    mcp.seedStoredEvent("ses-restart-retry", "e1");
-    mcp.seedStoredEvent("ses-restart-retry", "e2");
+    mcp.seedEvent("ses-restart-retry", { eventId: "e1", sessionId: "ses-restart-retry" });
+    mcp.seedEvent("ses-restart-retry", { eventId: "e2", sessionId: "ses-restart-retry" });
 
     // A brand-new process with an empty fingerprint ring. The in-process dedup
     // layer cannot help here; the durable identity is what must hold.
@@ -218,7 +149,7 @@ describe("durable event idempotency", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
-    mcp.seedStoredEvent("ses-partial", "e1");
+    mcp.seedEvent("ses-partial", { eventId: "e1", sessionId: "ses-partial" });
 
     const app = newApp();
     const result = await ingest(app, [

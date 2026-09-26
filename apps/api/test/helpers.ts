@@ -106,9 +106,22 @@ export interface FetchStub {
  *   - `http://mcp.test/tools/*`  → the supplied MCP tool result
  *   - `https://api.openai.com/*` → a canned chat completion
  *   - anything else              → 404
+ *
+ * `mcpResponse` may return either a plain object, which is wrapped in an HTTP 200
+ * as before, or a full `Response`, which is used as-is. The second form is what
+ * lets a test reach the MCP adapter's real status codes — 400 for an invalid
+ * argument, 404 for an unknown tool, 500 for a tool failure — through a route.
+ * While every stub answered 200 unconditionally, `callMcpTool`'s non-2xx branch
+ * was unreachable from any route test.
+ *
+ * Throwing from `mcpResponse` still models a transport failure: the rejected
+ * promise is caught by `callMcpTool` and surfaces as `{ok: false}` with no status.
  */
 export function installFetchStub(options: {
-  mcpResponse?: (tool: string, body: Record<string, unknown>) => unknown;
+  mcpResponse?: (
+    tool: string,
+    body: Record<string, unknown>,
+  ) => unknown | Response | Promise<unknown | Response>;
   aiResponse?: string;
   /** Sequential AI replies; the last entry repeats once exhausted. */
   aiResponses?: string[];
@@ -172,7 +185,11 @@ export function installFetchStub(options: {
       const tool = url.slice("http://mcp.test/tools/".length);
       mcpTools.push(tool);
       const body = (parsedBody ?? {}) as Record<string, unknown>;
-      return new Response(JSON.stringify(mcpResponse(tool, body)), {
+      const result = await mcpResponse(tool, body);
+      // A responder that models the adapter returns a Response with its own
+      // status; a plain object keeps the historical 200 behaviour.
+      if (result instanceof Response) return result;
+      return new Response(JSON.stringify(result), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });

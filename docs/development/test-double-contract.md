@@ -48,6 +48,11 @@ of them agrees with `MongoStore`.
 
 ## 3. Contract matrix
 
+**This section is a historical record of the doubles as they were when the audit
+was written.** D1–D4 have since been deleted and replaced by the shared double in
+§5; the matrix is kept because the divergences it names are the reason that work
+happened, and because a future double should be measured against the same columns.
+
 `MongoStore` is the reference. A `✔` means the double matches the real behaviour,
 `✘` means it does not, and `–` means the double does not implement the tool at all
 (so it falls through to the stub's default, which is discussed in §4).
@@ -153,28 +158,53 @@ double that fails the contract.**
   test can prove a caller does not depend on it;
 - `set_session_status` persisting the status **and** returning
   `updated: matchedCount > 0`, so a write for an unknown session is observable;
-- `create_session` as a true `$setOnInsert`;
+- `create_session` as a true `$setOnInsert`, including that the server owns
+  `createdAt` / `updatedAt` and a caller-supplied value is ignored;
 - reference documents newest-first with `createdAt` preserved on upsert;
-- an unknown tool **throwing**, so an unmodelled call is loud;
-- a `simulateFailure(tool)` hook, so partial-failure windows in
-  [failure-semantics.md](failure-semantics.md) are reachable deterministically.
+- an unknown tool **rejected with 404**, so an unmodelled call is loud;
+- the adapter's error mapping — 404 for an unknown tool, 400 for
+  `ToolArgumentError`, 500 otherwise — so a route's behaviour on an adapter
+  *rejection* is reachable for the first time;
+- `failToolTransport` / `failToolWithStatus` / `failToolsMatching` hooks, so the
+  partial-failure windows in [failure-semantics.md](failure-semantics.md) are
+  reachable deterministically.
+
+Two structural choices do more for fidelity than any amount of care in the
+implementation, and both are worth stating plainly because they are what make this
+double different from the four it replaces:
+
+1. **The tool layer is not faked at all.** The double implements the `MongoStore`
+   *method* surface and the real `createToolRegistry()` wraps it, so tool-name
+   mapping, argument validation, the `SESSION_STATUSES` check, the bounded-string
+   and bounded-tag rules and every response shape are the production
+   implementations. Only storage is simulated.
+2. **The update documents are the production ones.** Counters go through the real
+   `buildSessionCountsUpdate()`, so `$max` monotonicity and the "set `status` only
+   when supplied" rule are the real rules rather than a spread-merge that happens to
+   look similar.
 
 It must not model: BSON, indexes, `ordered: false`, or transactions. Those belong
 to the real-database suite.
 
 ### 5.2 A contract suite run twice
 
-`apps/api/test/store-contract.test.ts` exports an array of named assertions —
-`sortOrder`, `limit`, `uniqueness`, `upsert`, `$max`, `$setOnInsert`,
-`duplicateKey`, `timestamps`, `missingFields`, `newestFirst`, `terminalFiltering` —
-and runs them against:
+`apps/api/test/store-contract.test.ts` declares 37 named contract cases and runs
+them against:
 
 1. the shared double, always;
 2. a real `MongoStore`, **when `CERBERUS_TEST_MONGODB_URI` is set**, and skipped
    with an explicit reason when it is not.
 
-A double that cannot satisfy the contract is not used. That is the enforcement
+The cases cover sort order, the 500-event read cap, uniqueness, upsert,
+`$setOnInsert`, `$max`, duplicate-key behaviour, timestamps, missing fields,
+newest-first ordering, projections, terminal filtering and cascade deletion. A
+double that cannot satisfy the contract is not used. That is the enforcement
 mechanism, and it is why the contract lives in one file rather than in prose.
+
+The suite also carries a **fidelity guard**: it asserts that every store method the
+tool registry calls exists on both `MongoStore.prototype` and the double, so a
+missing or renamed method is loud and immediate rather than surfacing only when a
+route happens to call it.
 
 ### 5.3 The real-Mongo integration suite
 
@@ -194,21 +224,67 @@ bounded CI job provides a `mongo:7` service container so the suite actually runs
 without it the job would be green for the wrong reason, which is the failure mode
 this document exists to prevent.
 
-### 5.4 Ordering
+### 5.4 Ordering, and what is done
 
-| Step | Work | Why here |
+| Step | Work | State |
 | --- | --- | --- |
-| 1 | This audit | establishes the contract and the gaps |
-| 2 | Shared double + contract suite against the double | makes every subsequent test trustworthy |
-| 3 | Central transition boundary, tested against the shared double | needs step 2 to be meaningful |
-| 4 | Real-Mongo integration suite + bounded CI job | needs step 3's flows to exist |
-| 5 | Migrate D1–D5 onto the shared double; delete the originals | no test may keep a double that fails the contract |
+| 1 | This audit | **Done** |
+| 2 | Shared double + contract suite | **Done** — 37 cases, verified against a real MongoDB 7 |
+| 3 | Central transition boundary, tested against the shared double | Planned |
+| 4 | Real-Mongo integration suite + bounded CI job | Planned |
+| 5 | Migrate D1–D5 onto the shared double; delete the originals | **D1–D4 done**; D5 is addressed with the benchmark work |
 
-### 5.5 What is deliberately not planned
+### 5.5 What the migration changed
+
+D1–D4 were deleted, and their suites now construct the shared double directly:
+
+| Suite | Was | Now |
+| --- | --- | --- |
+| `session-lifecycle.test.ts` | D1 — insertion-order assessments, `$set` counters, unbounded event reads | shared double |
+| `session-durability.test.ts` | D2 — `set_session_status` returning `updated: true` without persisting | shared double |
+| `event-idempotency.test.ts` | D3 — `get_session_review` always returning no events | shared double |
+| `reference-corpus.test.ts` | D4 — insertion-order corpus, no reference-failure family | shared double |
+
+`session-durability.test.ts` is the one that matters most. Its double returned
+`{success: true, updated: true}` from `set_session_status` **without persisting
+anything and without checking that the session existed**, which is why the suite
+could not see the confirmed P1 in
+[state-transition-model.md](state-transition-model.md) §3.1 — a terminated session
+being resurrected to `locked` by a later ingest. The shared double persists the
+status and reports `matchedCount`, so that defect is now observable from the same
+suite, and the regression test for it lands with the fix.
+
+D5 — the benchmark double in `scripts/bench/run-bench.mjs` — is deliberately left
+for the benchmark work rather than migrated here. It has two properties the shared
+double must not have: it retains nothing for the memory case, and it is the
+instrument whose own unfaithfulness has twice produced a false finding
+([performance-baseline.md](performance-baseline.md)). Changing an instrument while
+also changing what it measures would make neither attributable.
+
+### 5.6 What is deliberately not planned
 
 - **No mock of the MongoDB driver.** `MongoStore` is the thing under test in the
   integration suite; mocking the driver would test the mock.
 - **No HTTP-level replay of the MCP adapter in unit tests.** The adapter has its
   own suite; the API's contract is `callMcpTool`, which D0 covers.
 - **No golden-fixture store.** A recorded set of responses would freeze the current
-  behaviour, including its defects.
+  behaviour, including its defects. Where a defect must be pinned — the missing
+  assessment identity — the contract suite asserts the defect **explicitly**, so the
+  fix cannot land silently.
+
+## 6. Verified result
+
+The contract suite was run twice against a real `mongo:7`, on the same commit:
+
+| Configuration | Result |
+| --- | --- |
+| `CERBERUS_TEST_MONGODB_URI` unset | 512 API tests, 511 pass, **1 skipped** (the real half, with its stated reason) |
+| `CERBERUS_TEST_MONGODB_URI=mongodb://127.0.0.1:27170` | 546 API tests, **546 pass, 0 skipped, 0 failed** |
+
+All 37 contract cases pass against both implementations, so the double is
+*verified* faithful to the real store for every property the contract asserts —
+rather than asserted to be, which is what the previous four doubles relied on.
+
+The one case that fails on neither is the characterisation of the missing
+assessment identity: it passes on both, which is the point — the defect is real and
+not an artefact of the double.

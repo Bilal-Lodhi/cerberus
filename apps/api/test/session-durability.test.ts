@@ -20,134 +20,23 @@ import {
   type FetchStub,
 } from "./helpers.js";
 
-interface Assessment {
-  riskAssessmentId: string;
-  sessionId: string;
-  employeeId: string;
-  auditId: string;
-  overallRiskScore: number;
-  dimensionScores: Record<string, number>;
-  flags: unknown[];
-  exfiltrationReport: null;
-  behavioralAnomalies: unknown[];
-  generatedAt: string;
-  codeSnapshot?: string;
-}
+import { McpStoreDouble } from "./support/mcp-store-double.js";
 
 /**
- * A stateful MCP stand-in that orders assessments the way MongoDB does.
+ * Seeds a risk assessment through the shared store double.
  *
- * `getRiskAssessments()` sorts `{ generatedAt: -1 }`, so the stub returns
- * newest-first. That single difference is what exposes the ordering bug.
+ * Positional for brevity: the suites below seed dozens of assessments to pin the
+ * ordering and recovery behaviour, and the field names add nothing at the call
+ * site. The double's own `seedAssessment` takes an options object.
  */
-function mongoOrderedMcp() {
-  const sessions = new Map<string, Record<string, unknown>>();
-  const events = new Map<string, Array<Record<string, unknown>>>();
-  const assessments = new Map<string, Assessment[]>();
-  /** Durable event identity, as the `(sessionId, eventId)` unique index gives. */
-  const storedEventKeys = new Set<string>();
-
-  return {
-    sessions,
-    assessments,
-    /** Inserts a session document directly, as a previous process would have. */
-    seedSession(doc: Record<string, unknown>) {
-      sessions.set(String(doc["sessionId"]), doc);
-    },
-    /** Appends an assessment, oldest first, as ingestion would. */
-    seedAssessment(sessionId: string, score: number, generatedAt: string, codeSnapshot?: string) {
-      const list = assessments.get(sessionId) ?? [];
-      list.push({
-        riskAssessmentId: `risk-${score}-${generatedAt}`,
-        sessionId,
-        employeeId: "op-trader-001",
-        auditId: "audit-2026-q1",
-        overallRiskScore: score,
-        dimensionScores: { dataExfiltration: score },
-        flags: [],
-        exfiltrationReport: null,
-        behavioralAnomalies: [],
-        generatedAt,
-        codeSnapshot,
-      });
-      assessments.set(sessionId, list);
-    },
-    handler(tool: string, body: Record<string, unknown>): unknown {
-      switch (tool) {
-        case "create_session": {
-          const sessionId = String(body["sessionId"]);
-          if (!sessions.has(sessionId)) {
-            sessions.set(sessionId, { ...body, createdAt: new Date().toISOString() });
-          }
-          return { success: true, mongoDocumentId: `doc-${sessionId}` };
-        }
-        case "get_session_review": {
-          const sessionId = String(body["sessionId"]);
-          // Newest first, exactly as MongoStore.getRiskAssessments returns them.
-          const reports = [...(assessments.get(sessionId) ?? [])].sort(
-            (a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt),
-          );
-          return {
-            success: true,
-            session: sessions.get(sessionId) ?? null,
-            events: events.get(sessionId) ?? [],
-            riskAssessments: reports,
-          };
-        }
-        case "ingest_micro_events": {
-          const batch = (body["events"] ?? []) as Array<Record<string, unknown>>;
-          const acceptedEventIds: string[] = [];
-          const duplicateEventIds: string[] = [];
-
-          for (const event of batch) {
-            const sessionId = String(event["sessionId"]);
-            const eventId = String(event["eventId"] ?? "");
-            const key = `${sessionId}::${eventId}`;
-            if (storedEventKeys.has(key)) {
-              duplicateEventIds.push(eventId);
-              continue;
-            }
-            storedEventKeys.add(key);
-            acceptedEventIds.push(eventId);
-            const list = events.get(sessionId) ?? [];
-            list.push(event);
-            events.set(sessionId, list);
-          }
-
-          return {
-            success: true,
-            processedCount: batch.length,
-            acceptedEventIds,
-            duplicateEventIds,
-          };
-        }
-        case "update_session_counts": {
-          const sessionId = String(body["sessionId"]);
-          const counts = (body["counts"] ?? {}) as Record<string, unknown>;
-          sessions.set(sessionId, { ...(sessions.get(sessionId) ?? {}), ...counts });
-          return { success: true };
-        }
-        case "set_session_status":
-          return { success: true, updated: true };
-        case "store_risk_assessment": {
-          const report = (body["report"] ?? {}) as Record<string, unknown>;
-          const sessionId = String(report["sessionId"] ?? "");
-          const list = assessments.get(sessionId) ?? [];
-          list.push(report as unknown as Assessment);
-          assessments.set(sessionId, list);
-          return { success: true, mongoDocumentId: "assessment-doc" };
-        }
-        case "list_sessions":
-          return { success: true, data: [...sessions.values()] };
-        case "list_reference_documents":
-          return { success: true, data: [] };
-        case "health_check":
-          return { connected: true, healthy: true, timestamp: new Date().toISOString() };
-        default:
-          return { success: true };
-      }
-    },
-  };
+function seedAssessment(
+  store: McpStoreDouble,
+  sessionId: string,
+  overallRiskScore: number,
+  generatedAt: string,
+  codeSnapshot?: string,
+): void {
+  store.seedAssessment(sessionId, { overallRiskScore, generatedAt, codeSnapshot });
 }
 
 /**
@@ -184,13 +73,13 @@ function keystrokeEvent(
 
 describe("review ordering against a newest-first store", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof mongoOrderedMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = mongoOrderedMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     app = createApp(makeConfigWithTtl(3600));
   });
 
@@ -202,9 +91,9 @@ describe("review ordering against a newest-first store", () => {
   test("finalRiskScore is the newest assessment, not the oldest", async () => {
     mcp.seedSession({ sessionId: "ses-order", status: "active", employeeId: "op-trader-001" });
     // Oldest first, as ingestion writes them.
-    mcp.seedAssessment("ses-order", 10, "2026-01-01T00:00:00.000Z");
-    mcp.seedAssessment("ses-order", 40, "2026-01-02T00:00:00.000Z");
-    mcp.seedAssessment("ses-order", 88, "2026-01-03T00:00:00.000Z");
+    seedAssessment(mcp, "ses-order", 10, "2026-01-01T00:00:00.000Z");
+    seedAssessment(mcp, "ses-order", 40, "2026-01-02T00:00:00.000Z");
+    seedAssessment(mcp, "ses-order", 88, "2026-01-03T00:00:00.000Z");
 
     const res = await app.request("/api/v1/sessions/ses-order", {
       headers: authorizedHeaders(),
@@ -231,8 +120,8 @@ describe("review ordering against a newest-first store", () => {
     // The newest score is low, so the session is not flagged — even though an
     // older assessment exceeded the threshold. Reading the oldest would flag it.
     mcp.seedSession({ sessionId: "ses-derive", status: "active", employeeId: "op-trader-001" });
-    mcp.seedAssessment("ses-derive", 90, "2026-01-01T00:00:00.000Z");
-    mcp.seedAssessment("ses-derive", 5, "2026-01-02T00:00:00.000Z");
+    seedAssessment(mcp, "ses-derive", 90, "2026-01-01T00:00:00.000Z");
+    seedAssessment(mcp, "ses-derive", 5, "2026-01-02T00:00:00.000Z");
 
     const res = await app.request("/api/v1/sessions/ses-derive", {
       headers: authorizedHeaders(),
@@ -250,7 +139,7 @@ describe("review ordering against a newest-first store", () => {
   test("a locked session stays locked regardless of the newest score", async () => {
     // Lifecycle states are authoritative; ordering must not override them.
     mcp.seedSession({ sessionId: "ses-locked", status: "locked", employeeId: "op-trader-001" });
-    mcp.seedAssessment("ses-locked", 5, "2026-01-02T00:00:00.000Z");
+    seedAssessment(mcp, "ses-locked", 5, "2026-01-02T00:00:00.000Z");
 
     const res = await app.request("/api/v1/sessions/ses-locked", {
       headers: authorizedHeaders(),
@@ -261,8 +150,8 @@ describe("review ordering against a newest-first store", () => {
 
   test("the session list reports the newest score with newest-first input", async () => {
     mcp.seedSession({ sessionId: "ses-list", status: "active", employeeId: "op-trader-001" });
-    mcp.seedAssessment("ses-list", 12, "2026-01-01T00:00:00.000Z");
-    mcp.seedAssessment("ses-list", 79, "2026-01-02T00:00:00.000Z");
+    seedAssessment(mcp, "ses-list", 12, "2026-01-01T00:00:00.000Z");
+    seedAssessment(mcp, "ses-list", 79, "2026-01-02T00:00:00.000Z");
 
     const res = await app.request("/api/v1/sessions", { headers: authorizedHeaders() });
     const body = (await res.json()) as { data: Array<Record<string, unknown>> };
@@ -277,8 +166,8 @@ describe("review ordering against a newest-first store", () => {
     // A NaN comparator would leave the order unspecified; unparseable timestamps
     // must not make the result depend on the engine's sort implementation.
     mcp.seedSession({ sessionId: "ses-bad-time", status: "active", employeeId: "op-trader-001" });
-    mcp.seedAssessment("ses-bad-time", 10, "not-a-date");
-    mcp.seedAssessment("ses-bad-time", 70, "2026-01-02T00:00:00.000Z");
+    seedAssessment(mcp, "ses-bad-time", 10, "not-a-date");
+    seedAssessment(mcp, "ses-bad-time", 70, "2026-01-02T00:00:00.000Z");
 
     const res = await app.request("/api/v1/sessions/ses-bad-time", {
       headers: authorizedHeaders(),
@@ -290,13 +179,13 @@ describe("review ordering against a newest-first store", () => {
 
 describe("terminal content recovery after a restart", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof mongoOrderedMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = mongoOrderedMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     app = createApp(makeConfigWithTtl(3600));
   });
 
@@ -309,8 +198,8 @@ describe("terminal content recovery after a restart", () => {
     // `monitored_sessions.terminalContent` is never written — no route calls
     // `update_session_terminal_content` — so this is the real post-restart shape.
     mcp.seedSession({ sessionId: "ses-recover", status: "active", employeeId: "op-trader-001" });
-    mcp.seedAssessment("ses-recover", 20, "2026-01-01T00:00:00.000Z", "OLD WORKSPACE");
-    mcp.seedAssessment("ses-recover", 60, "2026-01-02T00:00:00.000Z", "CURRENT WORKSPACE");
+    seedAssessment(mcp, "ses-recover", 20, "2026-01-01T00:00:00.000Z", "OLD WORKSPACE");
+    seedAssessment(mcp, "ses-recover", 60, "2026-01-02T00:00:00.000Z", "CURRENT WORKSPACE");
 
     const res = await app.request("/api/v1/sessions/ses-recover", {
       headers: authorizedHeaders(),
@@ -331,7 +220,7 @@ describe("terminal content recovery after a restart", () => {
       employeeId: "op-trader-001",
       terminalContent: "FROM THE SESSION DOCUMENT",
     });
-    mcp.seedAssessment("ses-prefer", 60, "2026-01-02T00:00:00.000Z", "FROM THE ASSESSMENT");
+    seedAssessment(mcp, "ses-prefer", 60, "2026-01-02T00:00:00.000Z", "FROM THE ASSESSMENT");
 
     const res = await app.request("/api/v1/sessions/ses-prefer", {
       headers: authorizedHeaders(),
@@ -357,7 +246,7 @@ describe("terminal content recovery after a restart", () => {
       employeeId: "op-trader-001",
       terminalContent: "",
     });
-    mcp.seedAssessment("ses-empty", 60, "2026-01-02T00:00:00.000Z", "RECOVERED");
+    seedAssessment(mcp, "ses-empty", 60, "2026-01-02T00:00:00.000Z", "RECOVERED");
 
     const res = await app.request("/api/v1/sessions/ses-empty", {
       headers: authorizedHeaders(),
@@ -369,13 +258,13 @@ describe("terminal content recovery after a restart", () => {
 
 describe("fullscreenExitCount durability", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof mongoOrderedMcp>;
+  let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = mongoOrderedMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
     app = createApp(makeConfigWithTtl(3600));
   });
 
@@ -478,7 +367,7 @@ describe("fullscreenExitCount durability", () => {
 
 describe("counter hydration across a restart", () => {
   let stub: FetchStub;
-  let mcp: ReturnType<typeof mongoOrderedMcp>;
+  let mcp: McpStoreDouble;
 
   /** The counters a previous process left behind. */
   const DURABLE = {
@@ -492,8 +381,8 @@ describe("counter hydration across a restart", () => {
 
   beforeEach(() => {
     resetAIProvider();
-    mcp = mongoOrderedMcp();
-    stub = installFetchStub({ mcpResponse: (tool, body) => mcp.handler(tool, body) });
+    mcp = new McpStoreDouble();
+    stub = installFetchStub({ mcpResponse: mcp.responder() });
   });
 
   afterEach(() => {
@@ -656,11 +545,14 @@ describe("counter hydration across a restart", () => {
     // Hydration is best-effort: the storage layer's `$max` is the backstop, so a
     // failed read must degrade rather than fail the batch.
     mcp.seedSession({ sessionId: "ses-no-hydrate", status: "active" });
+    // Only the session read fails, so this isolates a failed hydration rather than
+    // an unreachable sidecar: the counter write still lands, and `$max` is what
+    // keeps the durable total from being lowered by the un-hydrated in-memory value.
     stub.restore();
     stub = installFetchStub({
-      mcpResponse: (tool, body) => {
+      mcpResponse: async (tool, body) => {
         if (tool === "get_session_review") throw new Error("mongo unreachable");
-        return mcp.handler(tool, body);
+        return mcp.responder()(tool, body);
       },
     });
 
