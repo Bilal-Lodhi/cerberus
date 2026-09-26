@@ -353,10 +353,24 @@ export class McpStoreDouble {
    * The return value is load-bearing: the route distinguishes "status changed" from
    * "no such session" with it, and three of the four doubles this replaces returned
    * `true` unconditionally — which made that distinction untestable.
+   *
+   * `expectedStatuses` models the real compare-and-set predicate. An empty array is
+   * "no predicate", not "match nothing", exactly as the real store treats it.
    */
-  async setSessionStatus(sessionId: string, status: string): Promise<boolean> {
+  async setSessionStatus(
+    sessionId: string,
+    status: string,
+    options: { expectedStatuses?: readonly string[] } = {},
+  ): Promise<boolean> {
     const document = this.sessions.get(sessionId);
     if (!document) return false;
+
+    const expected = options.expectedStatuses;
+    if (expected && expected.length > 0) {
+      const current = document["status"];
+      if (typeof current !== "string" || !expected.includes(current)) return false;
+    }
+
     document["status"] = status;
     document["updatedAt"] = new Date();
     return true;
@@ -404,6 +418,16 @@ export class McpStoreDouble {
    * collection can hold far more than 500 events for a session, and the oldest are
    * simply not returned. A double without this cap made a benchmark attribute the
    * re-serialisation of a growing array to the application.
+   *
+   * ── `limit: 0` means NO LIMIT, and that is modelled rather than corrected ──
+   *
+   * MongoDB's `.limit(0)` is documented as "no limit", and `MongoStore` passes the
+   * caller's value straight to the driver. So a caller that asks this store for zero
+   * events gets **every** event. That is a footgun, and the "0 means none" contract
+   * deliberately lives one layer up, in `get_session_review`, which skips the query
+   * rather than passing 0 down. A double that returned nothing for 0 would hide the
+   * footgun from every test and make the tool-layer guard look redundant — which is
+   * exactly how the previous four doubles hid real behaviour.
    */
   async getSessionEvents(
     sessionId: string,
@@ -413,10 +437,13 @@ export class McpStoreDouble {
     if (options?.eventType) {
       list = list.filter((event) => event["eventType"] === options.eventType);
     }
-    return [...list]
-      .sort((a, b) => timeOf(b["timestamp"]) - timeOf(a["timestamp"]))
-      .slice(0, options?.limit ?? 500)
-      .map((event) => ({ ...event }));
+
+    const sorted = [...list].sort(
+      (a, b) => timeOf(b["timestamp"]) - timeOf(a["timestamp"]),
+    );
+    const limit = options?.limit ?? 500;
+    const capped = limit === 0 ? sorted : sorted.slice(0, limit);
+    return capped.map((event) => ({ ...event }));
   }
 
   async countEventType(sessionId: string, eventType: string): Promise<number> {

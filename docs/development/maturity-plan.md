@@ -150,7 +150,7 @@ in the document rather than deleted. See
 | The 200-document corpus ceiling is a read ceiling, not a store rejection — a 201st document is stored and then invisible | A rough edge, documented; the console prevents reaching it |
 | `update_session_terminal_content` is a published MCP capability the API never calls | Not dead code — the MCP server is a public interface — but the API does not use it, and the review path recovers the workspace from the newest assessment's `codeSnapshot` |
 | `WINDOW_BLUR` increments the fullscreen-exit counter, so the counter means "focus was lost" | Renaming it changes scoring and console wording; a contract change, not a defect |
-| Ingest carries up to 500 events from the review fetch on every request | A bounded optimisation opportunity, measured and recorded |
+| Ingest carries up to 500 events from the review fetch on every request | **Fixed** — `get_session_review` gained optional `eventsLimit` / `includeAssessments` arguments, and ingest passes `0` / `false` because it consults only the session document. The list path's per-session fetch is measured and reduced under exit criterion G |
 
 Work is ordered P0 first: durable session truth and restart consistency, replay
 and idempotency, key rotation, rate limiting, migration safety. Then P1:

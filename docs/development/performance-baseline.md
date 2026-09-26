@@ -92,11 +92,20 @@ The same single-event request, against sessions holding different amounts of his
 session and one holding 500 or more events, then stays flat from 500 to 5 000. That
 is the shape of a bounded cost, not a growing one.
 
-The step is the review fetch: `get_session_review` returns up to 500 events, so an
-ingest against a session with history carries that response while one against a fresh
-session carries nothing. **It is a real, bounded cost and a real optimisation
+The step is the review fetch: `get_session_review` returned up to 500 events, so an
+ingest against a session with history carried that response while one against a fresh
+session carried nothing. **It was a real, bounded cost and a real optimisation
 opportunity** — ingest does not need 500 events to decide whether to analyse — but it
 is a constant, not a scaling problem.
+
+**That opportunity has since been taken.** `get_session_review` gained optional
+`eventsLimit` and `includeAssessments` arguments, and ingest now passes `0` and
+`false`: it consults only the session document, so the response no longer carries the
+session's history at all. The step in the table above is the *pre-change* shape and is
+kept as the record of what was measured; the benchmark in
+`scripts/bench/run-bench.mjs` still drives the old request shape and will be updated
+with the review-fetch work (exit criterion G), which also covers the per-session fetch
+on the list path.
 
 ### Memory
 

@@ -54,7 +54,11 @@ export interface ContractStore {
   deleteSession(sessionId: string): Promise<boolean>;
   listSessions(): Promise<StoredDocument[]>;
   updateSessionCounts(sessionId: string, counts: SessionCountsUpdate): Promise<void>;
-  setSessionStatus(sessionId: string, status: string): Promise<boolean>;
+  setSessionStatus(
+    sessionId: string,
+    status: string,
+    options?: { expectedStatuses?: readonly string[] },
+  ): Promise<boolean>;
   ingestMicroEvents(
     events: StoredDocument[],
   ): Promise<{ acceptedEventIds: string[]; duplicateEventIds: string[] }>;
@@ -370,6 +374,89 @@ export const CONTRACT_CASES: ContractCase[] = [
       assert.ok((updatedAt as Date).getTime() >= before);
     },
   },
+  {
+    name: "setSessionStatus with expectedStatuses is a compare-and-set",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+
+      // The stored status is `active`, so a transition expecting `active` applies.
+      const applied = await store.setSessionStatus(ids.sessionId, "locked", {
+        expectedStatuses: ["active"],
+      });
+      assert.equal(applied, true, "the compare-and-set refused a status it should match");
+      assert.equal((await store.getSession(ids.sessionId))?.["status"], "locked");
+
+      // The stored status is now `locked`, so a transition still expecting `active`
+      // must NOT apply — and must report that it did not.
+      const lost = await store.setSessionStatus(ids.sessionId, "terminated", {
+        expectedStatuses: ["active"],
+      });
+      assert.equal(
+        lost,
+        false,
+        "the compare-and-set overwrote a status it did not expect — a concurrent transition would be lost",
+      );
+      assert.equal(
+        (await store.getSession(ids.sessionId))?.["status"],
+        "locked",
+        "the refused write changed the stored status anyway",
+      );
+    },
+  },
+  {
+    name: "setSessionStatus with expectedStatuses accepts any listed status",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.setSessionStatus(ids.sessionId, "locked");
+
+      const applied = await store.setSessionStatus(ids.sessionId, "terminated", {
+        expectedStatuses: ["active", "locked"],
+      });
+      assert.equal(applied, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["status"], "terminated");
+    },
+  },
+  {
+    name: "setSessionStatus with an empty expectedStatuses is unconditional",
+    async run(store, ids) {
+      // An empty `$in` matches nothing, so treating `[]` as a predicate would turn a
+      // caller's empty list into a silent no-op instead of the write it asked for.
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.setSessionStatus(ids.sessionId, "locked");
+
+      const applied = await store.setSessionStatus(ids.sessionId, "active", {
+        expectedStatuses: [],
+      });
+      assert.equal(applied, true, "an empty predicate was treated as 'match nothing'");
+      assert.equal((await store.getSession(ids.sessionId))?.["status"], "active");
+    },
+  },
+  {
+    name: "setSessionStatus without a predicate stays unconditional",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.setSessionStatus(ids.sessionId, "locked");
+      const applied = await store.setSessionStatus(ids.sessionId, "active");
+      assert.equal(applied, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["status"], "active");
+    },
+  },
 
   // ── Event identity ───────────────────────────────────────────────
   {
@@ -533,6 +620,35 @@ export const CONTRACT_CASES: ContractCase[] = [
     name: "getSessionEvents for an unknown session is empty, not an error",
     async run(store, ids) {
       assert.deepEqual(await store.getSessionEvents("no-such-" + ids.sessionId), []);
+    },
+  },
+  {
+    name: "getSessionEvents treats a limit of 0 as 'no limit', as the driver does",
+    async run(store, ids) {
+      // This pins a footgun rather than a feature. MongoDB's `.limit(0)` means "no
+      // limit", and `MongoStore` passes the caller's value straight through — so a
+      // caller that asks this store for zero events gets **every** event. The
+      // "0 means none" contract deliberately lives one layer up, in
+      // `get_session_review`, which skips the query instead of passing 0 down.
+      //
+      // A double that returned nothing for 0 would hide this from every test and make
+      // the tool-layer guard look redundant.
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.ingestMicroEvents([
+        microEvent(ids.sessionId, "e1"),
+        microEvent(ids.sessionId, "e2", { payload: { deltaMs: 200 } }),
+      ]);
+
+      const all = await store.getSessionEvents(ids.sessionId, { limit: 0 });
+      assert.equal(
+        all.length,
+        2,
+        "the store returned fewer than every event for limit 0 — it does not model `.limit(0)`",
+      );
     },
   },
 
@@ -948,6 +1064,130 @@ describe("store double fidelity", () => {
     const response = await double.responder()("set_session_status", {
       sessionId: "s",
       status: "not-a-status",
+    });
+    assert.equal(response.status, 400);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// Tool-layer read bounds
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * `get_session_review` is the one read every mutation path makes, and by default it
+ * returns up to 500 micro-events plus every risk assessment. A caller that wants
+ * only the session document — ingest, and every lifecycle transition — was paying
+ * for all of it and discarding it.
+ *
+ * These exercise the **real tool registry** through the double's responder, so they
+ * test the production argument handling and not a reimplementation of it.
+ */
+describe("session review read bounds", () => {
+  /** Seeds a session with more events and assessments than a review needs. */
+  async function seeded(): Promise<{ double: McpStoreDouble; sessionId: string }> {
+    const double = new McpStoreDouble();
+    const sessionId = "ses-bounds";
+    await double.createSession({
+      sessionId,
+      employeeId: "op-1",
+      auditId: "audit-1",
+    });
+    await double.ingestMicroEvents(
+      Array.from({ length: 20 }, (_unused, index) =>
+        microEvent(sessionId, `e-${index}`, {
+          timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        }),
+      ),
+    );
+    await double.storeRiskAssessment(
+      riskReport(sessionId, { generatedAt: "2026-01-01T00:00:00.000Z", score: 40 }),
+    );
+    return { double, sessionId };
+  }
+
+  async function review(
+    double: McpStoreDouble,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await double.responder()("get_session_review", body);
+    assert.equal(response.status, 200);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  test("the default returns the events and the assessments, as before", async () => {
+    const { double, sessionId } = await seeded();
+    const result = await review(double, { sessionId });
+
+    assert.equal((result["events"] as unknown[]).length, 20);
+    assert.equal((result["riskAssessments"] as unknown[]).length, 1);
+    assert.ok(result["session"], "the session document was not returned");
+  });
+
+  test("eventsLimit: 0 skips the events query rather than asking for none", async () => {
+    const { double, sessionId } = await seeded();
+    const result = await review(double, { sessionId, eventsLimit: 0 });
+
+    assert.deepEqual(
+      result["events"],
+      [],
+      "eventsLimit: 0 returned events — the tool passed 0 to the store, where it means 'no limit'",
+    );
+    // The assessments are unaffected: the two bounds are independent.
+    assert.equal((result["riskAssessments"] as unknown[]).length, 1);
+  });
+
+  test("includeAssessments: false skips the assessment query", async () => {
+    const { double, sessionId } = await seeded();
+    const result = await review(double, { sessionId, includeAssessments: false });
+
+    assert.deepEqual(result["riskAssessments"], []);
+    assert.equal((result["events"] as unknown[]).length, 20);
+  });
+
+  test("both bounds together return only the session document", async () => {
+    const { double, sessionId } = await seeded();
+    const result = await review(double, {
+      sessionId,
+      eventsLimit: 0,
+      includeAssessments: false,
+    });
+
+    assert.deepEqual(result["events"], []);
+    assert.deepEqual(result["riskAssessments"], []);
+    assert.equal((result["session"] as Record<string, unknown>)["sessionId"], sessionId);
+  });
+
+  test("eventsLimit bounds the read to the newest N events", async () => {
+    const { double, sessionId } = await seeded();
+    const result = await review(double, { sessionId, eventsLimit: 3 });
+
+    const events = result["events"] as Array<Record<string, unknown>>;
+    assert.equal(events.length, 3);
+    assert.equal(events[0]["eventId"], "e-19", "the bounded read is not newest-first");
+  });
+
+  test("a negative or non-numeric eventsLimit is rejected, not silently defaulted", async () => {
+    const { double, sessionId } = await seeded();
+
+    for (const eventsLimit of [-1, "many", Number.NaN]) {
+      const response = await double.responder()("get_session_review", {
+        sessionId,
+        eventsLimit,
+      });
+      assert.equal(
+        response.status,
+        400,
+        `eventsLimit ${String(eventsLimit)} was accepted instead of rejected`,
+      );
+    }
+  });
+
+  test("an expectedStatuses entry outside the vocabulary is rejected", async () => {
+    const double = new McpStoreDouble();
+    const response = await double.responder()("set_session_status", {
+      sessionId: "s",
+      status: "locked",
+      expectedStatuses: ["in_progress"],
     });
     assert.equal(response.status, 400);
   });

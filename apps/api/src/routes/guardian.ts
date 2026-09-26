@@ -922,15 +922,22 @@ export function createGuardianRouter(
 
     // Fall back to the durable record so a session that expired while the
     // process was down can still be reopened.
+    // Fall back to the durable record so a session that expired while the
+    // process was down can still be reopened.
     let durable: Record<string, unknown> | null = null;
     if (!state && !active) {
+      // Only the session document is consulted, so neither the events nor the
+      // assessments are asked for. See `ensureMongoSession` for why `eventsLimit: 0`
+      // rather than a small number.
       const review = await callMcpTool<{
         success: boolean;
         session?: Record<string, unknown> | null;
-      }>(config, MCP_TOOL_NAMES.GET_SESSION_REVIEW, { sessionId }, {
-        requestId,
-        timeoutMs: MCP_TIMEOUT_MS,
-      });
+      }>(
+        config,
+        MCP_TOOL_NAMES.GET_SESSION_REVIEW,
+        { sessionId, eventsLimit: 0, includeAssessments: false },
+        { requestId, timeoutMs: MCP_TIMEOUT_MS },
+      );
       if (review.ok && review.data?.success && review.data.session) {
         durable = review.data.session;
       }
@@ -1096,13 +1103,22 @@ export function createGuardianRouter(
     primaryEvent: MicroEvent,
     requestId: string,
   ): Promise<Record<string, unknown> | null> {
+    // Only the session document is used here, so neither the events nor the
+    // assessments are asked for. By default this call would carry up to 500
+    // micro-events plus every risk assessment on **every ingest request** and discard
+    // all of it — a read cost proportional to the session's history, paid per event.
+    //
+    // `eventsLimit: 0` skips the query rather than passing 0 down, because MongoDB's
+    // `.limit(0)` means "no limit". See `get_session_review` in the MCP tool registry.
     const existing = await callMcpTool<{
       success: boolean;
       session?: Record<string, unknown> | null;
-    }>(config, MCP_TOOL_NAMES.GET_SESSION_REVIEW, { sessionId }, {
-      requestId,
-      timeoutMs: MCP_TIMEOUT_MS,
-    });
+    }>(
+      config,
+      MCP_TOOL_NAMES.GET_SESSION_REVIEW,
+      { sessionId, eventsLimit: 0, includeAssessments: false },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    );
 
     if (existing.ok && existing.data?.success && existing.data.session) {
       return existing.data.session;
