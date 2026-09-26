@@ -223,21 +223,27 @@ session-status vocabulary.
 
 ### 5.3 The real-Mongo integration suite
 
-`apps/api/test/integration/`, gated on `CERBERUS_TEST_MONGODB_URI` and skipped
-otherwise, covering the highest-risk state flows:
+**Built.** `apps/api/test/integration/state-flows.test.ts` runs eleven flows through the
+**real routes, the real tool registry and a real MongoDB driver** — the combination where
+every defect in this repository's history actually lived.
 
-- create session, ingest, retry the duplicate, restart;
-- auto-lock, terminate, final-risk ordering;
-- terminal content;
-- the two concurrency cases that a single-document predicate must decide
-  (terminate vs auto-lock; two terminal transitions racing);
-- the corpus limit at its boundary;
-- a migration applied twice, and a migration that fails before mutating.
+It needs no network hop. `test/support/real-store-responder.ts` wraps a real `MongoStore`
+in the real `createToolRegistry()` and presents it through the same `fetch`-stub seam the
+unit tests use, so an integration test is written exactly like a unit test and every layer
+below HTTP is production code. Each block gets its own disposable database, dropped
+afterwards.
 
-No paid AI: the provider boundary is stubbed exactly as the unit suite does it. A
-bounded CI job provides a `mongo:7` service container so the suite actually runs;
-without it the job would be green for the wrong reason, which is the failure mode
-this document exists to prevent.
+The flows: create, ingest, retry the duplicate and restart; a retry after a restart;
+auto-lock writing its evidence before its status; final-risk ordering against the real
+sort; terminate preserving the workspace and staying irreversible; concurrent ingests; a
+duplicate event across concurrent batches; terminate racing auto-lock; the corpus ceiling;
+and the migrations with the indexes they exist to allow.
+
+A bounded CI job provides a `mongo:7` service and sets `CERBERUS_TEST_MONGODB_URI`,
+turning every skip into a run. It **asserts that nothing was skipped**, because a suite
+that silently skips is green for the wrong reason — and it is bounded at 20 minutes so a
+hang is a failure rather than an indefinitely green check. The unit job still runs without
+a database, so the fast signal is preserved.
 
 ### 5.4 Ordering, and what is done
 
@@ -246,7 +252,7 @@ this document exists to prevent.
 | 1 | This audit | **Done** |
 | 2 | Shared double + contract suite | **Done** — 37 cases, verified against a real MongoDB 7 |
 | 3 | Central transition boundary, tested against the shared double | Planned |
-| 4 | Real-Mongo integration suite + bounded CI job | Planned |
+| 4 | Real-Mongo integration suite + bounded CI job | **Done** |
 | 5 | Migrate D1–D5 onto the shared double; delete the originals | **D1–D4 done**; D5 is addressed with the benchmark work |
 
 ### 5.5 What the migration changed
@@ -293,8 +299,13 @@ The contract suite was run twice against a real `mongo:7`, on the same commit:
 
 | Configuration | Result |
 | --- | --- |
-| `CERBERUS_TEST_MONGODB_URI` unset | 527 API tests, 526 pass, **1 skipped** (the real half, with its stated reason) |
-| `CERBERUS_TEST_MONGODB_URI=mongodb://127.0.0.1:27170` | 566 API tests, **566 pass, 0 skipped, 0 failed** |
+| `CERBERUS_TEST_MONGODB_URI` unset | 644 API tests, 641 pass, **3 skipped** (each with a stated reason) |
+| pointed at a real **MongoDB 7** | 699 API tests, **699 pass, 0 skipped, 0 failed** |
+
+The three skips without a database are the real-store half of the contract suite, the
+real-store half of the corpus-ceiling suite, and the whole integration suite. The CI
+`integration` job sets the variable, so **none of them is skipped there** — and that job
+asserts it rather than trusting it.
 
 All 42 contract cases pass against both implementations, so the double is
 *verified* faithful to the real store for every property the contract asserts —
