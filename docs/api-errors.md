@@ -203,7 +203,8 @@ artefact is not lost, and the response does not pretend it was stored.
 | Code | HTTP | Meaning | Client action |
 | --- | --- | --- | --- |
 | `QUESTION_TOO_LONG` | 400 | `question` exceeds `MAX_QUESTION_CHARS` (2 000). Checked before either paid call. | Shorten it. |
-| `AUDITOR_QUERY_FAILED` | 500 | Pipeline construction or summarisation failed. | Report with the `correlationId`. |
+| `AUDITOR_STORE_UNAVAILABLE` | 503 | The session store did not answer, so **nothing was read** and no answer is reported. Returned instead of a summary over an empty record set, which would have presented an outage as an audit finding. | Retry with backoff. `retryable: true`. |
+| `AUDITOR_QUERY_FAILED` | 500 | Pipeline construction or summarisation failed. The body carries `retryable: true` when the failure was a provider outage or refusal — that is, when a retry with the same key may **execute again** rather than replaying the failure. | Report with the `correlationId`. |
 
 ### 7.1 Idempotency, on both paid routes
 
