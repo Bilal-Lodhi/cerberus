@@ -114,7 +114,7 @@ strong engineering rationale recorded here:
 | K | No new P0/P1 correctness or security defects remain | Done — six real defects were found and fixed during the phase (see below). The known remaining items are all P2 or lower, and each is named rather than omitted |
 | L | CI stays green | Done — every required check passed on every pull request in this phase: TypeScript (build, typecheck, test), Flutter console (analyze, test), Docker build, Secret scan, and the advisory dependency audit |
 | M | Threat model and documentation match reality | Done — the threat model was rewritten where reality changed (retry idempotency is not replay protection; rate limiting is a per-process backstop; rotation has an overlap but still no key identity), and every relative link and anchor in every tracked `*.md` resolves |
-| N | A coherent `v0.2.0` release candidate can be described without hand-waving | Done — [release/v0.2.0-release-notes.md](../release/v0.2.0-release-notes.md) and [release/v0.2.0-checklist.md](../release/v0.2.0-checklist.md), both marked draft, plus [migration-v0.1-to-v0.2.md](../migration-v0.1-to-v0.2.md). **Nothing is published** |
+| N | A coherent `v0.2.0` release candidate can be described without hand-waving | Done — [release/v0.2.0-release-notes.md](../release/v0.2.0-release-notes.md) and [release/v0.2.0-checklist.md](../release/v0.2.0-checklist.md), both since published, plus [migration-v0.1-to-v0.2.md](../migration-v0.1-to-v0.2.md) |
 
 ### Defects found and fixed during this phase
 
@@ -574,9 +574,12 @@ defects and a claim without the list is not checkable.
 
 ## Architecture-integrity phase: complete
 
-**The checkpoint is reached.** Every exit criterion in the table above is met or explicitly
-rejected with a reason, and **nothing has been published** — no tag, no release, no package,
-no image.
+**The checkpoint is reached, and the release is published.** Every exit criterion in the
+table above is met or explicitly rejected with a reason. **`v0.3.0` was published on
+2026-09-26** as a GitHub pre-release — annotated tag `v0.3.0`, tag object
+`af22236626019352bddebe8798a659151af7ec4f`, target
+`95b57836b4d879766ad94953323ce5811f50041a`. No npm package, no container image and no
+hosted deployment were published, and nothing is marked stable or latest.
 
 The record of the cycle is
 [architecture-integrity-checkpoint.md](architecture-integrity-checkpoint.md): the eleven
@@ -592,7 +595,8 @@ The three documents that carried the design work:
 - [test-double-contract.md](test-double-contract.md) — the doubles, the contract matrix, and
   why a passing suite was not evidence of correctness.
 
-A coherent next release candidate is described in
-[release/v0.3.0-release-notes.md](../release/v0.3.0-release-notes.md), **as a draft**. The
-gates for authorising it are in
-[release/v0.3.0-checklist.md](../release/v0.3.0-checklist.md), every box unchecked.
+The release is published. The notes are
+[release/v0.3.0-release-notes.md](../release/v0.3.0-release-notes.md), and the gates that
+were run for it — including the ones that must be re-run rather than assumed — are recorded
+with their results in
+[release/v0.3.0-checklist.md](../release/v0.3.0-checklist.md).

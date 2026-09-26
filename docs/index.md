@@ -43,18 +43,19 @@ upgrading, and managing the reference corpus.
 
 ## Release preparation (`docs/release/`)
 
-The `v0.1.0` documents are a historical record of that release. The `v0.2.0`
-documents are a **draft** for maintainer review and nothing in them has been
-executed or published.
+The `v0.1.0` documents are a historical record of that release. The `v0.2.0` and
+`v0.3.0` notes are the notes published with each release, and the `v0.3.0`
+checklist records the gates that were actually run for it — including the ones
+that must be re-run rather than assumed.
 
 | Document | Audience | What it covers |
 | --- | --- | --- |
 | [release/release-checklist.md](release/release-checklist.md) | Maintainers | The gates that were verified before `v0.1.0` was published, and the evidence recorded for each. |
 | [release/v0.1.0-release-notes.md](release/v0.1.0-release-notes.md) | Everyone | The published `v0.1.0` release notes, including the limitations stated at publication. |
-| [release/v0.2.0-release-notes.md](release/v0.2.0-release-notes.md) | Maintainers, then everyone | **Draft.** What `v0.2.0` would contain, its breaking changes, the upgrade path, and — stated plainly — what it does not claim. |
-| [release/v0.2.0-checklist.md](release/v0.2.0-checklist.md) | Maintainers | **Draft, every box unchecked.** The gates to work through when authorising a release, including the end-to-end checks that must be re-run rather than assumed. |
-| [release/v0.3.0-release-notes.md](release/v0.3.0-release-notes.md) | Maintainers, then everyone | **Draft.** The theme, the observable changes, the upgrade path and — stated plainly — what the release does not claim. **Nothing is published.** |
-| [release/v0.3.0-checklist.md](release/v0.3.0-checklist.md) | Maintainers | **Draft, every box unchecked.** The gates to work through when authorising a release, including the end-to-end checks that must be re-run rather than assumed. |
+| [release/v0.2.0-release-notes.md](release/v0.2.0-release-notes.md) | Everyone | The published `v0.2.0` release notes: what it contained, its breaking changes, the upgrade path, and — stated plainly — what it does not claim. |
+| [release/v0.2.0-checklist.md](release/v0.2.0-checklist.md) | Maintainers | **Executed.** The gates run for `v0.2.0`, with the result of each recorded. |
+| [release/v0.3.0-release-notes.md](release/v0.3.0-release-notes.md) | Everyone | **Published 2026-09-26 as a GitHub pre-release.** The theme, the observable changes, the upgrade path and — stated plainly — what the release does not claim. |
+| [release/v0.3.0-checklist.md](release/v0.3.0-checklist.md) | Maintainers | **Executed.** The gates worked through for `v0.3.0`, with the result of each recorded. |
 | [release/community-health-checklist.md](release/community-health-checklist.md) | Maintainers | The community-health files and repository settings applied for the public launch. |
 | [release/repository-metadata.md](release/repository-metadata.md) | Maintainers | Repository description, topics and metadata drafts. |
 | [release/good-first-issues.md](release/good-first-issues.md) | Maintainers, new contributors | The issue candidates collected during the extraction, with the triage outcome for each. Filed candidates link to their GitHub issues. |
