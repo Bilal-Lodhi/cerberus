@@ -267,4 +267,10 @@ fixed or recorded there:
   **corrected**; the missing durable assessment identity is still open;
 - three of the four in-process store doubles returned success from
   `set_session_status` without persisting anything — **fixed**, one shared double now
-  replaces all four and is verified against a real MongoDB.
+  replaces all four and is verified against a real MongoDB;
+- `GET /api/v1/guardian/sessions/:sessionId` read the two in-memory maps only, so it had
+  no durable fallback — **fixed**. It now reads `sessionStore`, then the durable document,
+  then the live registry alone, and reports which answered through `source` and
+  `ephemeralStateAvailable`. The classes in §2 are what decide the answer: **A** and **B**
+  fields are served from the document, **C** fields are reported as absent rather than
+  invented. See [operability-model.md](operability-model.md) §3.7.

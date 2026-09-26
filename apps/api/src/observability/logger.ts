@@ -349,6 +349,11 @@ export const LOG_EVENTS = {
   GUARDIAN_SESSION_CREATE_FAILED: "guardian.session.create_failed",
   /** The reference corpus could not be read, so similarity matching was skipped. */
   GUARDIAN_CORPUS_UNAVAILABLE: "guardian.corpus.unavailable",
+  /**
+   * A session detail was answered from somewhere other than in-memory session state —
+   * the durable document, or the live registry.
+   */
+  GUARDIAN_DETAIL_FALLBACK: "guardian.detail.fallback",
 
   // ── Guardian: lifecycle ────────────────────────────────────────
   /** A session was deployed. */

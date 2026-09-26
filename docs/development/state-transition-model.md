@@ -355,10 +355,17 @@ work.
    today (D5), so one session id has two response shapes depending on how it was
    created. The boundary now creates the entry on its first transition, which narrows
    the window but does not remove the difference.
-4. **`GET /api/v1/guardian/sessions/:sessionId` has no durable fallback.** It reads
-   the two maps only, so immediately after a restart it answers `404` for a session
-   that exists until the live list is called, which is the path that rebuilds the
-   registry. The review route is durable and unaffected.
+4. **`GET /api/v1/guardian/sessions/:sessionId` had no durable fallback.** It read
+   the two maps only, so immediately after a restart it answered `404` for a session
+   that exists until the live list was called, which is the path that rebuilt the
+   registry. **Closed.** The route now reads `sessionStore`, then the durable document,
+   then the live registry alone, and reports which of the three answered through
+   `source` and `ephemeralStateAvailable`. An unreachable store with nothing in memory
+   is `503 SESSION_STORE_UNAVAILABLE` rather than `404`, because `404` would assert that
+   a session does not exist — which the process cannot verify. Verified by
+   `apps/api/test/session-detail-fallback.test.ts` and, against a real MongoDB, by
+   `apps/api/test/integration/state-flows.test.ts`. See
+   [operability-model.md](operability-model.md) §3.7 and §9.1.
 
 ### 5.1 Answered
 
