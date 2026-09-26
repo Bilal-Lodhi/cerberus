@@ -488,7 +488,7 @@ engineering rationale recorded here:
 | # | Criterion | State |
 | --- | --- | --- |
 | A | Session transitions centralized or proven unnecessary | **Done** — [session-transition.ts](../../apps/api/src/services/session-transition.ts), with the vocabulary in [session-status.ts](../../apps/api/src/services/session-status.ts). One order for every action: read durable → validate → write durably with a predicate → repair caches |
-| B | Partial-failure semantics documented and tested | Partly — [failure-semantics.md](failure-semantics.md) documents them, and the status-change guarantee is now tested; the assessment-ordering and events-write windows are open |
+| B | Partial-failure semantics documented and tested | **Done** — [failure-semantics.md](failure-semantics.md) documents every window, and each one this cycle set out to close now has regression tests: the status-change guarantee, the assessment-before-side-effects order, the reported events-write outcome, and the reported delete outcome |
 | C | Status cannot silently diverge on supported paths | **Done** — the durable document is the authority, the write is predicate-checked, the result is inspected, the caches are repaired from the durable outcome, and a refusal reconciles a stale cache |
 | D | Terminal-content ownership coherent | Open — three candidate sources for one concept, though the boundary now gives the durable write one owner and an existence check |
 | E | Focus-loss/fullscreen semantics truthful | Open — `WINDOW_BLUR` increments the fullscreen counter |
@@ -537,9 +537,11 @@ rationale for rejecting it.
    and auto-clear all delegate to the boundary, and four concurrency cases interleave
    deterministically rather than by sleeping.
 5. **Partial-failure semantics for the cache/durable split, and the ingest ordering
-   inversion.** Partly — the cache/durable split is closed by the boundary; the ingest
-   ordering inversion (assessment written after the notification and the status write)
-   is open.
+   inversion.** Done. The cache/durable split is closed by the boundary, and the
+   ordering inversion is closed by writing the assessment before the status change and
+   the notification — a failed assessment write now skips both, so a lock always has
+   recorded evidence. The ingest response also reports `telemetryPersisted` and
+   `assessmentPersisted`, so a failed step is no longer disguised as a successful one.
 6. **Terminal-content ownership.** Planned — one coherent direction, chosen and
    documented rather than left implicit.
 7. **`WINDOW_BLUR` / fullscreen semantic correction.** Planned. This is the one item

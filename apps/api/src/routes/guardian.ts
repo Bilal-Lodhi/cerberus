@@ -130,6 +130,16 @@ export interface SessionState {
   copyAttemptCount: number;
   lastRiskPayload: RiskAssessmentPayload | null;
   /**
+   * Whether {@link lastRiskPayload} is durable — that is, whether the write that
+   * produced it succeeded.
+   *
+   * In-memory only, and deliberately so: it exists to stop the code-hash dedup branch
+   * from reporting a stored assessment for one whose write failed. It is not a durable
+   * field and losing it on restart costs nothing, because after a restart the payload
+   * is empty too.
+   */
+  lastRiskPayloadStored?: boolean;
+  /**
    * Total events accepted for this session, **including events accepted before
    * this process started**.
    *
@@ -351,6 +361,17 @@ export function createGuardianRouter(
     const processedCount = body.events.length;
     let riskPayload: RiskAssessmentPayload | null = null;
     let alertTriggered = false;
+    /**
+     * Whether the store answered for the events write.
+     *
+     * `callMcpTool` never throws, so a failed `ingest_micro_events` produces no
+     * accepted-set report. That absence is the signal: with no report, the counts
+     * cannot be stated, and the response says so instead of reporting the batch size
+     * as accepted.
+     */
+    let telemetryPersisted = false;
+    /** Whether the assessment in this response is durable. Undefined when none ran. */
+    let assessmentPersisted: boolean | undefined;
 
     try {
       // 1. Resolve the durable session document, creating it when absent.
@@ -432,6 +453,11 @@ export function createGuardianRouter(
       const acceptedIds = persisted.ok ? persisted.data?.acceptedEventIds : undefined;
       const duplicateIds = persisted.ok ? persisted.data?.duplicateEventIds : undefined;
       const acceptedSet = Array.isArray(acceptedIds) ? new Set(acceptedIds) : null;
+
+      // The store answered *and* reported an accepted set. Both are required: a
+      // success envelope without the report would leave the counts unstated, and
+      // `acceptedSet` is what decides which events are applied below.
+      telemetryPersisted = persisted.ok && Array.isArray(acceptedIds);
 
       if (duplicateIds && duplicateIds.length > 0) {
         console.log(
@@ -517,6 +543,19 @@ export function createGuardianRouter(
             {
               success: true,
               processedCount,
+              // Same report shape as the main path, so a caller does not have to know
+              // which branch answered.
+              ...(telemetryPersisted
+                ? {
+                    acceptedCount: acceptedIds?.length ?? 0,
+                    duplicateCount: duplicateIds?.length ?? 0,
+                  }
+                : {}),
+              telemetryPersisted,
+              // The reused payload is durable only if the write that produced it
+              // succeeded. This is what `lastRiskPayloadStored` is for: without it,
+              // this branch would claim a stored assessment for one whose write failed.
+              assessmentPersisted: session.lastRiskPayloadStored === true,
               riskPayload: cached,
               alertTriggered: (cached?.overallRiskScore ?? 0) > 50,
               anomalyRiskIndex: cached?.overallRiskScore ?? 0,
@@ -648,38 +687,81 @@ export function createGuardianRouter(
           riskPayload.employeeDisplayName = `Operator ${session.employeeId}`;
           riskPayload.incidentTimeLabel = formatLocalTime(new Date());
 
+          alertTriggered = riskPayload.overallRiskScore > 50;
+
+          // ── Paid recommendation, when the score warrants one ──
+          //
+          // This is the second paid call, and its result is part of the payload that
+          // gets persisted, so it must run *before* the assessment write rather than
+          // after it.
+          const shouldLock = riskPayload.overallRiskScore >= AUTO_LOCK_THRESHOLD;
+          const shouldClear = riskPayload.overallRiskScore < AUTO_CLEAR_THRESHOLD;
+
+          if (shouldLock) {
+            riskPayload.recommendedActions =
+              await getAIProvider(config).recommendIncidentActions(riskPayload);
+          }
+
           session.lastRiskPayload = riskPayload;
           sessionStore.set(sessionId, session);
 
-          alertTriggered = riskPayload.overallRiskScore > 50;
-
-          // ── Agentic auto-lock / auto-clear ──
-          if (riskPayload.overallRiskScore >= AUTO_LOCK_THRESHOLD) {
-            riskPayload.recommendedActions =
-              await getAIProvider(config).recommendIncidentActions(riskPayload);
-            session.lastRiskPayload = riskPayload;
-            sessionStore.set(sessionId, session);
-
-            await Promise.all([
-              notifySlack(notifySlackWebhook, riskPayload),
-              sendEmail(sendgridKey, emailFrom, emailTo, riskPayload),
-            ]);
-
-            await lockSession(sessionId, riskPayload, requestId);
-          } else if (riskPayload.overallRiskScore < AUTO_CLEAR_THRESHOLD) {
-            if (activeSessions.get(sessionId)?.status === "locked") {
-              await unlockSession(sessionId, requestId);
-            }
-          }
-
-          await callMcpTool(
+          // ── 1. Persist the durable evidence ──────────────────────────────
+          //
+          // The assessment is the only durable artefact of the paid path, so it is
+          // written **first**. The order used to be: notification → status → assessment,
+          // which meant a process death in that window left a durably `locked` session
+          // with a delivered alert and **no recorded justification** — a lock whose
+          // evidence was never written.
+          const stored = await callMcpTool(
             config,
             MCP_TOOL_NAMES.STORE_RISK_ASSESSMENT,
             { report: riskPayload },
             { requestId, timeoutMs: MCP_TIMEOUT_MS },
           );
+
+          // `lastRiskPayloadStored` is what makes the code-hash dedup branch below
+          // truthful: it returns the cached payload, and this flag says whether that
+          // payload is durable. Without it, the branch could report a stored assessment
+          // for one whose write had failed.
+          session.lastRiskPayloadStored = stored.ok;
+          assessmentPersisted = stored.ok;
+
+          if (!stored.ok) {
+            // No durable evidence means no status change and no alert. Locking a
+            // session whose justification was never recorded is the failure this
+            // ordering exists to prevent, and a notification would describe an
+            // incident with no review record. The telemetry is already durable, so the
+            // next batch with a changed workspace retries the whole path.
+            console.error(
+              `[guardian] [${requestId}] risk assessment NOT persisted ` +
+                `(${stored.error ?? "unknown"}) — status change and notification skipped`,
+            );
+          } else {
+            // ── 2. The status transition, on durable evidence ──────────────
+            if (shouldLock) {
+              await lockSession(sessionId, riskPayload, requestId);
+            } else if (shouldClear) {
+              // The boundary reads the durable status, so this no longer depends on
+              // the cache having an entry for the session.
+              await unlockSession(sessionId, requestId);
+            }
+
+            // ── 3. Optional side effects last ──────────────────────────────
+            //
+            // Both are best-effort and swallow their own failures, so a notification
+            // outage cannot affect the durable state that now exists. They run after
+            // the lock so an alert describes a state that is already recorded.
+            if (shouldLock) {
+              await Promise.all([
+                notifySlack(notifySlackWebhook, riskPayload),
+                sendEmail(sendgridKey, emailFrom, emailTo, riskPayload),
+              ]);
+            }
+          }
         } catch (analysisError) {
-          // Analysis failure is non-fatal: telemetry is already persisted.
+          // Analysis failure is non-fatal: telemetry is already persisted. The message
+          // says *analysis* because that is what this catch covers — a persistence
+          // failure inside it is reported by the branch above, with its own wording.
           console.error(
             `[guardian] [${requestId}] AI analysis failed (non-fatal): ` +
               `${analysisError instanceof Error ? analysisError.message : String(analysisError)}`,
@@ -690,11 +772,21 @@ export function createGuardianRouter(
       const response: IngestMicroEventResponse = {
         success: true,
         processedCount,
-        // Additive: `processedCount` keeps its meaning (the batch size), and these
-        // say how much of it was new. A caller retrying after a network ambiguity
-        // can see that its events were already stored.
-        acceptedCount: acceptedIds?.length ?? processedCount,
-        duplicateCount: duplicateIds?.length ?? 0,
+        // `processedCount` always keeps its meaning: the batch size. The two counts
+        // below are reported **only when the store answered**, because a number we
+        // know is unverified is worse than no number. Before this, a failed
+        // `ingest_micro_events` produced `acceptedCount: <batch size>` and
+        // `duplicateCount: 0` — indistinguishable from a fully successful ingest.
+        ...(telemetryPersisted
+          ? {
+              acceptedCount: acceptedIds?.length ?? 0,
+              duplicateCount: duplicateIds?.length ?? 0,
+            }
+          : {}),
+        telemetryPersisted,
+        // Whether the payload in this response is durable. Absent when no analysis
+        // ran, because then the question does not apply.
+        ...(assessmentPersisted !== undefined ? { assessmentPersisted } : {}),
         riskPayload,
         alertTriggered,
         anomalyRiskIndex: riskPayload?.overallRiskScore ?? 0,
@@ -1160,28 +1252,62 @@ export function createGuardianRouter(
   // DELETE /sessions/:sessionId  — permanent deletion
   // ═══════════════════════════════════════════════════════════════
 
+  /**
+   * Permanently deletes a session and every document derived from it.
+   *
+   * The durable deletion is attempted **first** and its answer decides the response.
+   * Previously the caches were cleared first and the durable result was only consulted
+   * to compute `deleted`, so an unreachable store produced `200 success: true` for a
+   * session that was still there — and a restart brought it back. It also produced
+   * `404 "not found"` for a session that exists, which is a different wrong answer to
+   * the same failure.
+   */
   guardianRouter.delete("/sessions/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
     const requestId = randomUUID();
-    let deleted = false;
 
-    if (activeSessions.delete(sessionId)) deleted = true;
-    if (sessionStore.delete(sessionId)) deleted = true;
-
-    // Only count a durable deletion that actually removed a document.
     const result = await callMcpTool<{ deleted?: boolean }>(
       config,
       MCP_TOOL_NAMES.DELETE_SESSION,
       { sessionId },
       { requestId, timeoutMs: MCP_TIMEOUT_MS },
     );
-    if (result.ok && result.data?.deleted === true) deleted = true;
 
-    if (!deleted) {
+    if (!result.ok) {
+      // Nothing can be claimed about the durable state, so nothing is claimed. The
+      // caches are left alone: clearing them would hide the session from this process
+      // while it is still durable, which is the divergence this ordering removes.
+      console.error(
+        `[guardian] [${requestId}] delete failed for '${sessionId}': ${result.error ?? "unknown"}`,
+      );
+      return c.json(
+        {
+          success: false,
+          error:
+            "The session could not be deleted because the persistence layer did not " +
+            "answer. Nothing was changed.",
+          code: SESSION_TRANSITION_CODES.SESSION_STORE_UNAVAILABLE,
+          sessionId,
+          correlationId: requestId,
+        },
+        503,
+      );
+    }
+
+    // The durable delete succeeded, or matched nothing. Either way the caches must no
+    // longer hold the session.
+    const removedFromRegistry = activeSessions.delete(sessionId);
+    const removedFromStore = sessionStore.delete(sessionId);
+    const deletedDurably = result.data?.deleted === true;
+
+    if (!deletedDurably && !removedFromRegistry && !removedFromStore) {
       return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
     }
 
-    console.log(`[guardian] [${requestId}] session '${sessionId}' permanently deleted`);
+    console.log(
+      `[guardian] [${requestId}] session '${sessionId}' permanently deleted ` +
+        `(durable=${deletedDurably})`,
+    );
     return c.json({ success: true, sessionId, message: "Session permanently deleted" });
   });
 

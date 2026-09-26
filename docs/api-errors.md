@@ -84,11 +84,25 @@ rather than reported. A refusal never changes the durable status.
 | --- | --- | --- | --- |
 | `BATCH_TOO_LARGE` | 400 | More than `MAX_EVENTS_PER_BATCH` (1 000) events in one request | Split the batch. The response carries `maxEvents`. |
 | `MISSING_EVENT_ID` | 400 | An event has no non-empty `eventId`. `eventId` is the durable idempotency key, so an event without one cannot be deduplicated. | Fix the client. Every event needs one. |
+| `SESSION_STORE_UNAVAILABLE` | 503 | A `DELETE` could not reach the persistence layer, so **nothing was changed** | Retry with backoff. |
 
 A batch is **idempotent on `(sessionId, eventId)`**: re-sending it stores nothing new
 and does not inflate the counters. The response reports `acceptedCount` and
 `duplicateCount` alongside `processedCount` (which remains the batch size), so a client
 retrying after a network ambiguity can tell that its events were already stored.
+
+**`acceptedCount` and `duplicateCount` are omitted when `telemetryPersisted` is
+`false`.** That means the store did not answer for the events write: the counts cannot
+be stated, and a number the server knows is unverified is worse than no number.
+`processedCount` always keeps its meaning, so nothing is lost. Before this field
+existed, a failed write returned `acceptedCount: <batch size>` and `duplicateCount: 0`
+— byte-for-byte what a fully successful ingest returns.
+
+`assessmentPersisted` reports whether the `riskPayload` in the response is durable. It
+is absent when no analysis ran. `false` means the paid analysis completed and its
+persistence did not, in which case the session's status was deliberately **not** changed
+and no notification was sent: a lock whose justification was never recorded is worse
+than no lock.
 
 This is retry idempotency, **not replay protection**: the monitored client supplies
 `eventId`, so a client that wants to re-send content can send a fresh one. The threat
