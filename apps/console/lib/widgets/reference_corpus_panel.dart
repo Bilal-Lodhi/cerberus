@@ -354,11 +354,15 @@ class _ReferenceCorpusPanelState extends State<ReferenceCorpusPanel> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    'The corpus has reached the API read ceiling of '
-                    '$maxReferenceDocuments documents. Only the '
-                    '$maxReferenceDocuments most recently updated documents '
-                    'are listed and compared, so a new one would be stored but '
-                    'never read. Remove a document first.',
+                    // States the server's actual behaviour. The previous wording said a
+                    // new document "would be stored but never read", which described the
+                    // old read-ceiling behaviour: the store now refuses the create
+                    // outright, so nothing is stored and nothing is silently excluded.
+                    'The corpus is full: $maxReferenceDocuments of '
+                    '$maxReferenceDocuments documents. The server refuses a new '
+                    'document with REFERENCE_CORPUS_LIMIT_REACHED — nothing is '
+                    'stored. Updating an existing document is still allowed. '
+                    'Remove a document to add another.',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),

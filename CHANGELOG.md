@@ -279,6 +279,23 @@ dependency failure. Two migrations ship with it — `0002` and `0003`.
   rather than endorsing it, so the fix cannot land silently.
 
 ### Fixed
+- **The console described the retired corpus-ceiling behaviour.** The corpus panel told the
+  operator, at capacity: *"Only the 200 most recently updated documents are listed and
+  compared, so a new one would be stored but never read."* That was true when the ceiling was
+  a **read** ceiling and is false now: the store refuses the create outright with
+  `409 REFERENCE_CORPUS_LIMIT_REACHED`, so nothing is stored and nothing is silently excluded
+  from comparison.
+
+  The browser QA pass caught it the same way it caught the identity claim — by rendering the
+  panel at capacity against a real corpus and reading what it said. The notice now states the
+  server's actual behaviour, names the stable code an operator can search for, and adds the
+  fact that **updating an existing document is still allowed** at the ceiling.
+
+  Two supporting comments (`reference_document.dart`, `reference_corpus_provider.dart`) that
+  still described the ceiling as read-only are corrected, the test that encoded the old
+  semantics is renamed, and a new widget test asserts the notice contains none of the retired
+  wording and does state the real behaviour.
+
 
 - **The console claimed an identity integration it does not have.** The operator identity
   gate carried the line *"Production deployments integrate with Google Cloud Identity
