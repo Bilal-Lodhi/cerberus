@@ -22,6 +22,8 @@ const MANAGED_VARS = [
   "NODE_ENV",
   "SESSION_TTL_SECONDS",
   "CERBERUS_MAX_BODY_BYTES",
+  "CERBERUS_LOG_LEVEL",
+  "CERBERUS_LOG_FORMAT",
 ] as const;
 
 /** Puts the environment into a minimal valid state for `loadConfig()`. */
@@ -36,6 +38,8 @@ function installMinimalEnv(saved: Map<string, string | undefined>): void {
   delete process.env["SESSION_TTL_SECONDS"];
   delete process.env["CERBERUS_MAX_BODY_BYTES"];
   delete process.env["CERBERUS_API_KEY_PREVIOUS"];
+  delete process.env["CERBERUS_LOG_LEVEL"];
+  delete process.env["CERBERUS_LOG_FORMAT"];
 }
 
 function restoreEnv(saved: Map<string, string | undefined>): void {
@@ -173,6 +177,55 @@ describe("loadConfig — CERBERUS_API_KEY_PREVIOUS", () => {
 
     const config = loadConfig();
     assert.equal(config.auth.previousApiKey, "same-key");
+  });
+});
+
+describe("loadConfig — structured logging", () => {
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => installMinimalEnv(saved));
+  afterEach(() => restoreEnv(saved));
+
+  test("defaults to info and pretty", () => {
+    // `pretty` is the default because the common case is one developer reading a
+    // terminal; `json` is what a log shipper consumes.
+    assert.deepEqual(loadConfig().log, { level: "info", format: "pretty" });
+  });
+
+  test("honours an explicit level and format, case-insensitively", () => {
+    process.env["CERBERUS_LOG_LEVEL"] = "DEBUG";
+    process.env["CERBERUS_LOG_FORMAT"] = "JSON";
+
+    assert.deepEqual(loadConfig().log, { level: "debug", format: "json" });
+  });
+
+  test("tolerates surrounding whitespace", () => {
+    process.env["CERBERUS_LOG_LEVEL"] = "  warn  ";
+    assert.equal(loadConfig().log.level, "warn");
+  });
+
+  test("refuses an unusable level rather than silently falling back", () => {
+    // A typo in a logging control must not quietly change what is recorded — the same
+    // reasoning that makes SESSION_TTL_SECONDS and CERBERUS_MAX_BODY_BYTES fail closed.
+    process.env["CERBERUS_LOG_LEVEL"] = "verbose";
+
+    assert.throws(
+      () => loadConfig(),
+      (error: unknown) =>
+        error instanceof ConfigError &&
+        error.message.includes("CERBERUS_LOG_LEVEL") &&
+        error.message.includes("verbose"),
+    );
+  });
+
+  test("refuses an unusable format", () => {
+    process.env["CERBERUS_LOG_FORMAT"] = "xml";
+
+    assert.throws(
+      () => loadConfig(),
+      (error: unknown) =>
+        error instanceof ConfigError && error.message.includes("CERBERUS_LOG_FORMAT"),
+    );
   });
 });
 

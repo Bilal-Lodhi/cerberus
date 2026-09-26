@@ -49,6 +49,12 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // behaviour they are about. rate-limit.test.ts enables it and asserts every
     // category through the same real routes.
     rateLimit: { enabled: false, aiRequestsPerMinute: 10 },
+    // Logging defaults match the production defaults. Tests that assert on log
+    // output install a capture sink and raise the level with
+    // `configureLogging({ sink, level: "debug" })` *after* building the app, because
+    // `createApp` sets only the level and the format from config and leaves the sink
+    // alone. See `apps/api/src/observability/logger.ts`.
+    log: { level: "info", format: "pretty" },
   };
 
   return { ...base, ...overrides };

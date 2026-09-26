@@ -27,6 +27,8 @@ import {
   type SessionLiveness,
 } from "../services/session-liveness.js";
 import { toISOStringLocal } from "../utils/time.js";
+import { currentRequestId } from "../observability/request-context.js";
+import { SESSION_TRANSITION_CODES } from "../services/session-status.js";
 import type { ActiveSession, SessionState } from "./guardian.js";
 
 const MCP_TIMEOUT_MS = 5_000;
@@ -237,7 +239,7 @@ export function createReviewRouter(
 
   // ─── GET /api/v1/sessions ───────────────────────────────────────
   reviewRouter.get("/", async (c) => {
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     interface SessionEntry {
       sessionId: string;
@@ -419,7 +421,7 @@ export function createReviewRouter(
   // ─── GET /api/v1/sessions/:sessionId ────────────────────────────
   reviewRouter.get("/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
     const memSession = sessionStore.get(sessionId);
 
     const review = await callMcpTool<{
@@ -449,7 +451,19 @@ export function createReviewRouter(
     // ── Durable store unreachable: serve from live memory ──
     if (!review.ok) {
       if (!memSession) {
-        return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
+        return c.json(
+          {
+            success: false,
+            error: `Session '${sessionId}' not found`,
+            // The same condition the transition boundary reports, under the same code:
+            // "no session document matches" has one meaning and one spelling. Before
+            // this the review surface answered a bare 404, so a client could branch on
+            // the message only — which `docs/api-errors.md` §1 says is not a contract.
+            code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+            correlationId: requestId,
+          },
+          404,
+        );
       }
 
       const timeline = memSession.events.map((event) =>
@@ -485,7 +499,15 @@ export function createReviewRouter(
     }
 
     if (!review.data?.success || !review.data.session) {
-      return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
+      return c.json(
+        {
+          success: false,
+          error: `Session '${sessionId}' not found`,
+          code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+          correlationId: requestId,
+        },
+        404,
+      );
     }
 
     const session = review.data.session;

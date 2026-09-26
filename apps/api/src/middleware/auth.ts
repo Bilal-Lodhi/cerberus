@@ -17,6 +17,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppConfig, AuthConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
 
 /**
  * Routes that are always reachable without a credential.
@@ -104,10 +105,10 @@ export function createAuthMiddleware(config: AppConfig): MiddlewareHandler {
 
     if (config.devMode) {
       if (!devWarningEmitted) {
-        console.warn(
-          `[auth] DEV MODE — admitting unauthenticated request to ${c.req.method} ${c.req.path}. ` +
-            "This is local-development behaviour only.",
-        );
+        logger.warn(LOG_EVENTS.HTTP_REJECTED, {
+          reason: "dev-mode-admits-unauthenticated-requests",
+          method: c.req.method,
+        });
         devWarningEmitted = true;
       }
       return next();
@@ -115,19 +116,18 @@ export function createAuthMiddleware(config: AppConfig): MiddlewareHandler {
 
     const presented = extractCredential(c);
 
-    if (presented.length === 0) {
-      return c.json(
-        {
-          success: false,
-          error: "Authentication required.",
-          code: "UNAUTHENTICATED",
-        },
-        401,
-      );
-    }
-
-    if (!credentialMatches(presented, config.auth)) {
-      // Deliberately identical response shape to the missing-credential case.
+    // One response shape for both cases, deliberately: a missing credential and a
+    // wrong one are indistinguishable to the caller, and `docs/security/threat-model.md`
+    // §4 states that the two responses are **byte-identical**. That is why this is the
+    // one error response that carries no `correlationId`: a per-request value would
+    // make the bodies differ, and the response header already carries the request id.
+    // Neither branch echoes the supplied or the expected value, and neither is logged.
+    if (presented.length === 0 || !credentialMatches(presented, config.auth)) {
+      logger.warn(LOG_EVENTS.HTTP_REJECTED, {
+        reason: presented.length === 0 ? "missing-credential" : "credential-mismatch",
+        method: c.req.method,
+        status: 401,
+      });
       return c.json(
         {
           success: false,

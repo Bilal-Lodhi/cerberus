@@ -21,6 +21,33 @@ the working directory.
 | --- | --- | --- | --- | --- |
 | `PORT` | integer | `8080` | No | API listen port. A non-numeric value silently falls back to the default. |
 | `CERBERUS_MAX_BODY_BYTES` | positive integer (bytes) | `8388608` (8 MiB) | No | Maximum accepted request body size. Enforced before the body is buffered, for authenticated and unauthenticated callers alike. Must be a positive whole number of bytes or the process exits with a `ConfigError`. |
+| `CERBERUS_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` | No | Minimum level emitted. Matched case-insensitively. An unrecognised value is a startup `ConfigError`, not a silent fallback: a typo in a logging control must not quietly change what is recorded. |
+| `CERBERUS_LOG_FORMAT` | `pretty` \| `json` | `pretty` | No | `pretty` renders one human-readable line per record; `json` emits one JSON object per line, which is what a log shipper consumes. Same fail-closed validation as the level. |
+
+### Structured logging
+
+Cerberus writes one line per HTTP request, plus lifecycle and failure lines, to
+`stdout` (debug, info) and `stderr` (warn, error). The design, the field list and the
+never-recorded list are in
+[development/operability-model.md](development/operability-model.md) §5–§7, and the
+security properties are in [security/threat-model.md](security/threat-model.md) §9.
+
+Two things an operator should know before turning the level up or shipping the output:
+
+- **`debug` is per-step detail.** It adds one line per MCP call and one per provider
+  attempt, which multiplies volume by roughly five. It is for tracing one problem, not
+  for a permanent setting.
+- **Cerberus does not ship, store, rotate or expire logs.** Retention, access control
+  and the legal basis for keeping request metadata belong to the deployer. A session id
+  is personal data in most jurisdictions, which is why the recorded set is deliberately
+  small — see `operability-model.md` §5.2. **Structured logs are not a compliance
+  claim.**
+
+Every configured secret is registered with the redactor at startup, so a credential
+that reaches a log line through any path — a driver error quoting a connection string,
+a provider error quoting a key — is replaced rather than printed. That guarantee is
+asserted by `apps/api/test/logging-secrets.test.ts`, which drives real requests at
+`debug` and asserts the absence of every listed value.
 
 Security note: the API listens on all interfaces; `PORT` is the only control
 over where it is reachable. Bind restrictions are the job of the container
@@ -205,7 +232,10 @@ Resolution rules for the API, in order:
 An origin not on the list receives no `Access-Control-Allow-Origin` header. The
 API allows the methods `GET`, `POST`, `DELETE`, `OPTIONS` and the headers
 `Content-Type`, `Authorization`, `X-API-Key`, `X-Session-Token`,
-`X-Generation-Request-Id`, and exposes `X-Correlation-Id`.
+`X-Generation-Request-Id`, `X-Request-Id`, and exposes `X-Request-Id` and
+`X-Correlation-Id` — which carry the **same value**, because there is one
+identifier per request. See
+[development/operability-model.md](development/operability-model.md) §6.
 
 Security notes: CORS is a browser control, not an authorization control. It
 prevents a page on another origin from reading responses; it does not stop a

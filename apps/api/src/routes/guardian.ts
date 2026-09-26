@@ -36,7 +36,7 @@
  */
 
 import { Hono } from "hono";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import type {
   ActiveSession,
@@ -74,6 +74,8 @@ import {
   type ReferenceDocument,
 } from "../services/text-similarity.js";
 import { toISOStringLocal, formatLocalTime } from "../utils/time.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 
 const MCP_TIMEOUT_MS = 5_000;
 
@@ -288,8 +290,7 @@ export function createGuardianRouter(
   // ═══════════════════════════════════════════════════════════════
 
   guardianRouter.post("/ingest", async (c) => {
-    const requestId = randomUUID();
-    console.log(`[guardian] [${requestId}] POST /ingest`);
+    const requestId = currentRequestId();
 
     let body: IngestMicroEventRequest;
     try {
@@ -303,14 +304,22 @@ export function createGuardianRouter(
 
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
       return c.json(
-        { success: false, error: "Request body must be a valid JSON object" },
+        {
+          success: false,
+          error: "Request body must be a valid JSON object",
+          correlationId: currentRequestId(),
+        },
         400,
       );
     }
 
     if (!Array.isArray(body.events) || body.events.length === 0) {
       return c.json(
-        { success: false, error: "Field 'events' must be a non-empty array" },
+        {
+          success: false,
+          error: "Field 'events' must be a non-empty array",
+          correlationId: currentRequestId(),
+        },
         400,
       );
     }
@@ -332,7 +341,11 @@ export function createGuardianRouter(
     const sessionId = primaryEvent?.sessionId;
     if (!sessionId) {
       return c.json(
-        { success: false, error: "Each event must contain a sessionId" },
+        {
+          success: false,
+          error: "Each event must contain a sessionId",
+          correlationId: currentRequestId(),
+        },
         400,
       );
     }
@@ -383,9 +396,6 @@ export function createGuardianRouter(
       //    (`POST /sessions/:sessionId/reactivate`), never a side effect of
       //    continuing to emit events — otherwise the TTL would bound nothing.
       if (sessionLiveness(sessionId, durableSession) === "expired") {
-        console.warn(
-          `[guardian] [${requestId}] rejected ingest for expired session '${sessionId}'`,
-        );
         return c.json(
           {
             success: false,
@@ -420,9 +430,6 @@ export function createGuardianRouter(
         durableSession &&
         !acceptsTelemetry(normalizeStatus(String(durableSession["status"] ?? "active")))
       ) {
-        console.warn(
-          `[guardian] [${requestId}] rejected ingest for terminated session '${sessionId}'`,
-        );
         return c.json(
           {
             success: false,
@@ -461,10 +468,11 @@ export function createGuardianRouter(
       telemetryPersisted = persisted.ok && Array.isArray(acceptedIds);
 
       if (duplicateIds && duplicateIds.length > 0) {
-        console.log(
-          `[guardian] [${requestId}] ${duplicateIds.length}/${processedCount} event(s) ` +
-            `already stored — not re-applied`,
-        );
+        logger.debug(LOG_EVENTS.GUARDIAN_INGEST_DUPLICATES, {
+          sessionId,
+          duplicateCount: duplicateIds.length,
+          processedCount,
+        });
       }
 
       // 4. Apply events to in-memory state, hydrating from the durable document
@@ -489,7 +497,12 @@ export function createGuardianRouter(
       const session = sessionStore.get(sessionId);
       if (!session) {
         return c.json(
-          { success: false, error: `Session ${sessionId} not found after processing` },
+          {
+            success: false,
+            error: `Session ${sessionId} not found after processing`,
+            code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+            correlationId: currentRequestId(),
+          },
           404,
         );
       }
@@ -537,9 +550,10 @@ export function createGuardianRouter(
 
         if (codeHash === session.lastAnalyzedCodeHash) {
           const cached = session.lastRiskPayload;
-          console.log(
-            `[guardian] [${requestId}] code unchanged (hash=${codeHash.slice(0, 12)}) — reusing payload`,
-          );
+          logger.debug(LOG_EVENTS.GUARDIAN_INGEST_CODE_UNCHANGED, {
+            sessionId,
+            codeHashPrefix: codeHash.slice(0, 12),
+          });
           return c.json(
             {
               success: true,
@@ -578,11 +592,17 @@ export function createGuardianRouter(
             keystrokeMetrics,
             referenceCorpus.map((reference) => reference.content),
           );
-          console.log(
-            `[guardian] [${requestId}] risk analysis complete in ` +
-              `${Date.now() - analysisStartMs}ms — score=${riskPayload.overallRiskScore} ` +
-              `flags=${riskPayload.flags.length}`,
-          );
+          // The score, the flag count and the latency: what an operator needs to
+          // correlate a paid attempt with its cost and outcome. Never the prompt,
+          // the workspace or the paste content.
+          logger.info(LOG_EVENTS.GUARDIAN_ANALYSIS_COMPLETE, {
+            sessionId,
+            latencyMs: Date.now() - analysisStartMs,
+            riskScore: riskPayload.overallRiskScore,
+            flagCount: riskPayload.flags.length,
+            referenceDocumentCount: referenceCorpus.length,
+            dependency: "provider",
+          });
 
           // ── Dedup layer 4: blend the semantic score with behavioural counters ──
           const semanticScore = riskPayload.overallRiskScore;
@@ -659,11 +679,12 @@ export function createGuardianRouter(
           };
 
           if (similarity.matches.length > 0) {
-            console.log(
-              `[guardian] [${requestId}] ${similarity.matches.length} similarity ` +
-                `match(es) at or above ${config.security.dataLeakageSimilarityThreshold} ` +
-                `(best=${similarity.overallSimilarity.toFixed(3)})`,
-            );
+            logger.info(LOG_EVENTS.GUARDIAN_SIMILARITY_MATCHES, {
+              sessionId,
+              matchCount: similarity.matches.length,
+              bestSimilarity: Number(similarity.overallSimilarity.toFixed(3)),
+              threshold: config.security.dataLeakageSimilarityThreshold,
+            });
           }
 
           riskPayload.behavioralContext = {
@@ -736,10 +757,12 @@ export function createGuardianRouter(
             // ordering exists to prevent, and a notification would describe an
             // incident with no review record. The telemetry is already durable, so the
             // next batch with a changed workspace retries the whole path.
-            console.error(
-              `[guardian] [${requestId}] risk assessment NOT persisted ` +
-                `(${stored.error ?? "unknown"}) — status change and notification skipped`,
-            );
+            logger.error(LOG_EVENTS.GUARDIAN_ASSESSMENT_NOT_PERSISTED, {
+              sessionId,
+              dependency: "mcp",
+              classification: "write-failed",
+              reason: stored.error ?? "unknown",
+            });
           } else {
             // ── 2. The status transition, on durable evidence ──────────────
             if (shouldLock) {
@@ -763,13 +786,13 @@ export function createGuardianRouter(
             }
           }
         } catch (analysisError) {
-          // Analysis failure is non-fatal: telemetry is already persisted. The message
-          // says *analysis* because that is what this catch covers — a persistence
-          // failure inside it is reported by the branch above, with its own wording.
-          console.error(
-            `[guardian] [${requestId}] AI analysis failed (non-fatal): ` +
-              `${analysisError instanceof Error ? analysisError.message : String(analysisError)}`,
-          );
+          // Analysis failure is non-fatal: telemetry is already persisted. The event
+          // name says *analysis* because that is what this catch covers — a persistence
+          // failure inside it is reported by the branch above, with its own name.
+          logger.failure(LOG_EVENTS.GUARDIAN_ANALYSIS_FAILURE, analysisError, {
+            sessionId,
+            dependency: "provider",
+          });
         }
       }
 
@@ -797,8 +820,7 @@ export function createGuardianRouter(
       };
       return c.json(response, 200);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown guardian error";
-      console.error(`[guardian] [${requestId}] FAILURE — ${message}`);
+      logger.failure(LOG_EVENTS.GUARDIAN_INGEST_FAILURE, error, { sessionId });
       return c.json(
         { success: false, error: "Telemetry ingestion failed.", correlationId: requestId },
         500,
@@ -885,7 +907,16 @@ export function createGuardianRouter(
       });
     }
 
-    return c.json({ success: false, error: "Session not found" }, 404);
+    return c.json(
+      {
+        success: false,
+        error: "Session not found",
+        // One condition, one code, across every surface that can report it.
+        code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+        correlationId: currentRequestId(),
+      },
+      404,
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -893,8 +924,7 @@ export function createGuardianRouter(
   // ═══════════════════════════════════════════════════════════════
 
   guardianRouter.post("/deploy", async (c) => {
-    const requestId = randomUUID();
-    console.log(`[guardian] [${requestId}] POST /deploy`);
+    const requestId = currentRequestId();
 
     let body: DeploySessionRequest;
     try {
@@ -905,7 +935,11 @@ export function createGuardianRouter(
 
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
       return c.json(
-        { success: false, error: "Request body must be a valid JSON object" },
+        {
+          success: false,
+          error: "Request body must be a valid JSON object",
+          correlationId: currentRequestId(),
+        },
         400,
       );
     }
@@ -962,10 +996,11 @@ export function createGuardianRouter(
         lastActivityAt: deployedAt,
       });
 
-      console.log(
-        `[guardian] [${requestId}] deployed session=${sessionId} mongoDoc=${mongoDocumentId} ` +
-          `registrySize=${activeSessions.size}`,
-      );
+      logger.info(LOG_EVENTS.GUARDIAN_DEPLOY_COMPLETE, {
+        sessionId,
+        durable: mongoDocumentId !== "local-only",
+        registrySize: activeSessions.size,
+      });
 
       const response: DeploySessionResponse = {
         success: true,
@@ -977,8 +1012,7 @@ export function createGuardianRouter(
       };
       return c.json(response, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown deploy error";
-      console.error(`[guardian] [${requestId}] deploy failed — ${message}`);
+      logger.failure(LOG_EVENTS.GUARDIAN_DEPLOY_FAILURE, error, { sessionId });
       return c.json(
         { success: false, error: "Failed to deploy session.", correlationId: requestId },
         500,
@@ -991,7 +1025,7 @@ export function createGuardianRouter(
   // ═══════════════════════════════════════════════════════════════
 
   guardianRouter.get("/sessions", async (c) => {
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
     const seenIds = new Set<string>();
     const allSessions: Array<Record<string, unknown>> = [];
 
@@ -1204,7 +1238,7 @@ export function createGuardianRouter(
    */
   guardianRouter.post("/sessions/:sessionId/reactivate", async (c) => {
     const sessionId = c.req.param("sessionId");
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     const result = await transitions.reactivate(sessionId, requestId);
     if (!result.ok) {
@@ -1213,12 +1247,6 @@ export function createGuardianRouter(
     }
 
     const reactivatedAt = toISOStringLocal(new Date(clock.now()));
-
-    console.log(
-      `[guardian] [${requestId}] session '${sessionId}' reactivated ` +
-        `(ttl=${ttlSeconds}s, previous status=${result.previousStatus}, ` +
-        `applied=${result.applied})`,
-    );
 
     return c.json({
       success: true,
@@ -1245,7 +1273,7 @@ export function createGuardianRouter(
    */
   guardianRouter.post("/sessions/:sessionId/terminate", async (c) => {
     const sessionId = c.req.param("sessionId");
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     // Preserve the workspace **before** ending monitoring, because that is what "terminal
     // content" means: the workspace as it was when monitoring stopped. This is the write
@@ -1271,23 +1299,24 @@ export function createGuardianRouter(
           requestId,
         );
         if (!preserved.ok) {
-          console.warn(
-            `[guardian] [${requestId}] terminal content not preserved for ` +
-              `'${sessionId}': ${preserved.code}`,
-          );
+          logger.warn(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, {
+            sessionId,
+            preserved: false,
+            errorCode: preserved.code,
+          });
         }
       }
     } catch (error) {
-      console.warn(
-        `[guardian] [${requestId}] terminal-content preservation failed (non-fatal): ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
+      logger.failure(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, error, {
+        sessionId,
+        preserved: false,
+      });
     }
 
     const result = await transitions.terminate(sessionId, requestId);
     if (!result.ok) {
       const { body, status } = refusalResponse(result);
-      return c.json(body, status);
+      return c.json({ ...body, correlationId: requestId }, status);
     }
 
     // `endedAt` is display state derived from the transition instant; it is not part
@@ -1297,10 +1326,6 @@ export function createGuardianRouter(
       state.endedAt = toISOStringLocal(new Date(clock.now()));
     }
 
-    console.log(
-      `[guardian] [${requestId}] session '${sessionId}' terminated (data preserved, ` +
-        `applied=${result.applied})`,
-    );
     return c.json({ success: true, sessionId, message: "Session terminated (data preserved)" });
   });
 
@@ -1320,7 +1345,7 @@ export function createGuardianRouter(
    */
   guardianRouter.delete("/sessions/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     const result = await callMcpTool<{ deleted?: boolean }>(
       config,
@@ -1333,9 +1358,12 @@ export function createGuardianRouter(
       // Nothing can be claimed about the durable state, so nothing is claimed. The
       // caches are left alone: clearing them would hide the session from this process
       // while it is still durable, which is the divergence this ordering removes.
-      console.error(
-        `[guardian] [${requestId}] delete failed for '${sessionId}': ${result.error ?? "unknown"}`,
-      );
+      logger.error(LOG_EVENTS.GUARDIAN_DELETE_FAILURE, {
+        sessionId,
+        dependency: "mcp",
+        classification: "store-unavailable",
+        reason: result.error ?? "unknown",
+      });
       return c.json(
         {
           success: false,
@@ -1357,13 +1385,23 @@ export function createGuardianRouter(
     const deletedDurably = result.data?.deleted === true;
 
     if (!deletedDurably && !removedFromRegistry && !removedFromStore) {
-      return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
+      return c.json(
+        {
+          success: false,
+          error: `Session '${sessionId}' not found`,
+          code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+          correlationId: currentRequestId(),
+        },
+        404,
+      );
     }
 
-    console.log(
-      `[guardian] [${requestId}] session '${sessionId}' permanently deleted ` +
-        `(durable=${deletedDurably})`,
-    );
+    logger.info(LOG_EVENTS.GUARDIAN_DELETE_COMPLETE, {
+      sessionId,
+      durable: deletedDurably,
+      removedFromRegistry,
+      removedFromStore,
+    });
     return c.json({ success: true, sessionId, message: "Session permanently deleted" });
   });
 
@@ -1412,7 +1450,11 @@ export function createGuardianRouter(
     );
 
     if (!created.ok || !created.data?.success) {
-      console.warn(`[guardian] [${requestId}] session create failed (non-fatal)`);
+      logger.warn(LOG_EVENTS.GUARDIAN_SESSION_CREATE_FAILED, {
+        sessionId,
+        dependency: "mcp",
+        classification: "create-failed",
+      });
       return null;
     }
 
@@ -1561,10 +1603,11 @@ export function createGuardianRouter(
       lastActivityAt: readDurableString(durable, "updatedAt") ?? undefined,
     });
 
-    console.log(
-      `[guardian] hydrated session '${sessionId}' from durable state — ` +
-        `eventCount=${eventCount} pasteCount=${pasteCount}`,
-    );
+    logger.debug(LOG_EVENTS.GUARDIAN_SESSION_HYDRATED, {
+      sessionId,
+      eventCount,
+      pasteCount,
+    });
   }
 
   /**
@@ -1593,9 +1636,11 @@ export function createGuardianRouter(
     );
 
     if (!listed.ok || !listed.data?.success) {
-      console.warn(
-        `[guardian] [${requestId}] reference corpus unavailable — similarity matching skipped`,
-      );
+      logger.warn(LOG_EVENTS.GUARDIAN_CORPUS_UNAVAILABLE, {
+        dependency: "mcp",
+        classification: "read-failed",
+        consequence: "similarity-matching-skipped",
+      });
       return [];
     }
 
@@ -1698,17 +1743,24 @@ export function createGuardianRouter(
       // A refusal is not fatal to the batch: the telemetry is already durable and the
       // assessment is still stored. It is logged because it means the session is not
       // in the state the score suggests it should be.
-      console.warn(
-        `[guardian] [${requestId}] auto-lock refused for session '${sessionId}': ` +
-          `${result.code} (status=${result.previousStatus ?? "unknown"})`,
-      );
+      logger.warn(LOG_EVENTS.SESSION_TRANSITION_REFUSED, {
+        action: "autoLock",
+        sessionId,
+        errorCode: result.code,
+        previousStatus: result.previousStatus ?? "unknown",
+        riskScore: riskPayload.overallRiskScore,
+      });
       return;
     }
 
-    console.log(
-      `[guardian] [${requestId}] session '${sessionId}' AUTO-LOCKED at risk ` +
-        `${riskPayload.overallRiskScore} (applied=${result.applied})`,
-    );
+    logger.info(LOG_EVENTS.SESSION_TRANSITION, {
+      action: "autoLock",
+      sessionId,
+      status: result.status,
+      previousStatus: result.previousStatus,
+      applied: result.applied,
+      riskScore: riskPayload.overallRiskScore,
+    });
   }
 
   /** Auto-clears a locked session once its score falls below the clear threshold. */
@@ -1716,17 +1768,22 @@ export function createGuardianRouter(
     const result = await transitions.autoClear(sessionId, requestId);
 
     if (!result.ok) {
-      console.warn(
-        `[guardian] [${requestId}] auto-clear refused for session '${sessionId}': ` +
-          `${result.code} (status=${result.previousStatus ?? "unknown"})`,
-      );
+      logger.warn(LOG_EVENTS.SESSION_TRANSITION_REFUSED, {
+        action: "autoClear",
+        sessionId,
+        errorCode: result.code,
+        previousStatus: result.previousStatus ?? "unknown",
+      });
       return;
     }
 
-    console.log(
-      `[guardian] [${requestId}] session '${sessionId}' auto-cleared ` +
-        `(applied=${result.applied})`,
-    );
+    logger.info(LOG_EVENTS.SESSION_TRANSITION, {
+      action: "autoClear",
+      sessionId,
+      status: result.status,
+      previousStatus: result.previousStatus,
+      applied: result.applied,
+    });
   }
 
   return { router: guardianRouter, sessionStore, activeSessions };

@@ -51,6 +51,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "./mcp-client.js";
 import {
   isDurableStatus,
@@ -406,9 +407,14 @@ export function createSessionTransitions(
     cache.apply(sessionId, rule.to, at, document);
     if (action === "terminate") cache.evict(sessionId);
 
-    console.log(
-      `[transition] session '${sessionId}' ${current} → ${rule.to} (${action})`,
-    );
+    logger.info(LOG_EVENTS.SESSION_TRANSITION, {
+      requestId,
+      action,
+      sessionId,
+      previousStatus: current,
+      status: rule.to,
+      applied: true,
+    });
 
     return {
       ok: true,

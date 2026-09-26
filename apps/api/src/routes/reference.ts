@@ -25,6 +25,8 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
 
 const MCP_TIMEOUT_MS = 5_000;
@@ -49,6 +51,18 @@ export const MAX_REFERENCE_DOCUMENTS = 200;
  * at runtime, and `reference-corpus.test.ts` asserts the two spellings agree.
  */
 export const REFERENCE_CORPUS_LIMIT_CODE = "REFERENCE_CORPUS_LIMIT_REACHED";
+
+/**
+ * The stable code returned when a delete matched no document.
+ *
+ * Added so a client can tell "there is nothing with that id" from "the corpus store
+ * did not answer", which are both refusals but need different actions — the first is
+ * done, the second is a retry. Before this the route answered a bare `404`, leaving
+ * the distinction in message prose, which `docs/api-errors.md` §1 says is not a
+ * contract.
+ */
+export const REFERENCE_NOT_FOUND_CODE = "REFERENCE_NOT_FOUND";
+
 
 /** Reads a bounded, required string field. */
 function readBoundedString(
@@ -117,17 +131,27 @@ export function createReferenceRouter(config: AppConfig): Hono {
 
   // ─── POST / — add or update one document ────────────────────────
   referenceRouter.post("/", async (c) => {
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     let body: unknown;
     try {
       body = await c.req.json();
     } catch {
-      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+      return c.json(
+        { success: false, error: "Invalid JSON body", correlationId: requestId },
+        400,
+      );
     }
 
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      return c.json({ success: false, error: "Request body must be a JSON object" }, 400);
+      return c.json(
+        {
+          success: false,
+          error: "Request body must be a JSON object",
+          correlationId: requestId,
+        },
+        400,
+      );
     }
 
     const source = body as Record<string, unknown>;
@@ -139,17 +163,28 @@ export function createReferenceRouter(config: AppConfig): Hono {
     for (const field of [label, content, tags, requestedId]) {
       if (field.error) {
         return c.json(
-          { success: false, error: field.error, code: "INVALID_REFERENCE_DOCUMENT" },
+          {
+            success: false,
+            error: field.error,
+            code: "INVALID_REFERENCE_DOCUMENT",
+            correlationId: requestId,
+          },
           400,
         );
       }
     }
 
     if (!label.value) {
-      return c.json({ success: false, error: "Field 'label' is required" }, 400);
+      return c.json(
+        { success: false, error: "Field 'label' is required", correlationId: requestId },
+        400,
+      );
     }
     if (!content.value) {
-      return c.json({ success: false, error: "Field 'content' is required" }, 400);
+      return c.json(
+        { success: false, error: "Field 'content' is required", correlationId: requestId },
+        400,
+      );
     }
 
     // An absent id means "new document"; supplying one means "update that one",
@@ -173,9 +208,10 @@ export function createReferenceRouter(config: AppConfig): Hono {
       // `REFERENCE_STORE_UNAVAILABLE` — which is what happened before the adapter's code
       // was surfaced — told the operator to retry something that would never succeed.
       if (stored.code === REFERENCE_CORPUS_LIMIT_CODE) {
-        console.warn(
-          `[reference] [${requestId}] corpus is full — refused referenceId=${referenceId}`,
-        );
+        logger.warn(LOG_EVENTS.REFERENCE_CORPUS_FULL, {
+          referenceId,
+          limit: MAX_REFERENCE_DOCUMENTS,
+        });
         return c.json(
           {
             success: false,
@@ -190,7 +226,12 @@ export function createReferenceRouter(config: AppConfig): Hono {
         );
       }
 
-      console.error(`[reference] [${requestId}] store failed: ${stored.error}`);
+      logger.warn(LOG_EVENTS.REFERENCE_STORE_FAILURE, {
+        referenceId,
+        dependency: "mcp",
+        classification: "write-failed",
+        reason: stored.error,
+      });
       return c.json(
         {
           success: false,
@@ -202,10 +243,13 @@ export function createReferenceRouter(config: AppConfig): Hono {
       );
     }
 
-    console.log(
-      `[reference] [${requestId}] stored referenceId=${referenceId} ` +
-        `chars=${content.value.length} tags=${(tags.value ?? []).length}`,
-    );
+    logger.info(LOG_EVENTS.REFERENCE_STORED, {
+      referenceId,
+      // The character count, not the content: the corpus is operator-supplied
+      // reference text and may itself be sensitive.
+      charCount: content.value.length,
+      tagCount: (tags.value ?? []).length,
+    });
 
     return c.json(
       {
@@ -221,7 +265,7 @@ export function createReferenceRouter(config: AppConfig): Hono {
 
   // ─── GET / — list the corpus ────────────────────────────────────
   referenceRouter.get("/", async (c) => {
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     const listed = await callMcpTool<{
       success: boolean;
@@ -274,7 +318,7 @@ export function createReferenceRouter(config: AppConfig): Hono {
   // ─── DELETE /:referenceId ───────────────────────────────────────
   referenceRouter.delete("/:referenceId", async (c) => {
     const referenceId = c.req.param("referenceId");
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     const result = await callMcpTool<{ deleted?: boolean }>(
       config,
@@ -297,12 +341,17 @@ export function createReferenceRouter(config: AppConfig): Hono {
 
     if (result.data?.deleted !== true) {
       return c.json(
-        { success: false, error: `Reference document '${referenceId}' not found` },
+        {
+          success: false,
+          error: `Reference document '${referenceId}' not found`,
+          code: REFERENCE_NOT_FOUND_CODE,
+          correlationId: requestId,
+        },
         404,
       );
     }
 
-    console.log(`[reference] [${requestId}] deleted referenceId=${referenceId}`);
+    logger.info(LOG_EVENTS.REFERENCE_DELETED, { referenceId });
     return c.json({ success: true, referenceId, deleted: true });
   });
 
