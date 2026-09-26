@@ -66,7 +66,30 @@ const Map<String, String> apiErrorMessages = {
 
   // ── Auditor ──
   'QUESTION_TOO_LONG': 'The question is too long. Shorten it and try again.',
+  'AUDITOR_STORE_UNAVAILABLE':
+      'The session store did not answer, so the question was not answered at all. '
+      'Nothing was read. Try again shortly.',
   'AUDITOR_QUERY_FAILED': 'The audit query failed. Try again.',
+
+  // ── Paid-operation idempotency ──
+  //
+  // These appear only when a request carries an `Idempotency-Key`, which this console does
+  // not send — so an operator reading one of these is either using a client that does, or is
+  // looking at a log. The wording is written for that reader: it says what happened to the
+  // **money** where that is knowable, because that is the part a retry decision turns on.
+  'INVALID_IDEMPOTENCY_KEY':
+      'The idempotency key was rejected, so nothing was sent and nothing was charged. '
+      'Use a key of printable characters with no spaces, or omit it.',
+  'IDEMPOTENCY_CONFLICT':
+      'This idempotency key was already used for a different request, so nothing was '
+      'sent. Use a new key for a different request.',
+  'IDEMPOTENCY_IN_PROGRESS':
+      'A request with this idempotency key is already running. Wait a moment and retry '
+      'the same key — do not switch keys, which would start a second operation.',
+  'IDEMPOTENCY_STATE_UNAVAILABLE':
+      'The idempotency store is unavailable, so the request was not started and nothing '
+      'was charged. Try again shortly. If the operation had already completed, its result '
+      'may have been too large to keep for replay.',
 
   // ── Reference corpus ──
   'INVALID_REFERENCE_DOCUMENT':
