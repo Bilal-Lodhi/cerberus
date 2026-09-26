@@ -6,7 +6,11 @@ import '../services/api_service.dart';
 /// Stores display name + employee ID + ephemeral session token.
 /// Persisted in-memory only; resets on app restart.
 ///
-/// In production, replace this with a real identity provider.
+/// This is a **display label**, not authentication and not an account. The server-side
+/// registry behind it is per-process and expires its handles by age; the API is protected
+/// by one shared operator key, so nothing downstream attributes an action to a person.
+/// Replacing this with a real identity provider is an owner decision that is out of scope
+/// for this project — the previous comment here implied it was merely pending.
 
 class IdentityProvider extends ChangeNotifier {
   final ApiService _apiService;
