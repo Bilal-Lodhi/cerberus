@@ -126,17 +126,31 @@ disposable fixture trees.
 | K | `@cerberus/mcp-mongodb` hardened against accidental publication | **Met** — `private: true` plus a tested guard |
 | L | Full release verification runnable through CI, not only a developer machine | **Met** — `workflow_dispatch`, and it ran green |
 | M | Docker-dependent release evidence reproducible in CI/manual workflow | **Met** — same workflow, real `mongo:7`, real container build |
-| N | Live-state reconciliation has measured cost, no pathological query amplification | **Partially met** — the query count is bounded and pinned by a test; the before/after **latency** was not measured and is not claimed |
+| N | Live-state reconciliation has measured cost, no pathological query amplification | **Partially met** — the query count is bounded and pinned by a test, and a **current** latency measurement was taken at release prep; there is no before/after baseline, and none is claimed |
 | O | No known P0/P1 correctness or security defect remains | **Met for the session state paths.** The paid routes' duplicate-spend exposure is re-accepted with its cost measured, which is G's own alternative |
 | P | Docs, threat model and compatibility docs match implementation | **Met** — the enforcement table in `multi-writer-model.md` §6 marks each rule enforced or not, and §8b of the threat model records what did not move |
 | Q | Published tags remain immutable | **Met** — see §6 |
 | R | A coherent next release candidate can be described | **Met** — see [v0.5.0-release-notes.md](../release/v0.5.0-release-notes.md) |
 
 **One criterion is partially met and is stated as such rather than rounded up.** N asks for
-*measured* cost. What was measured is the query count: one `get_session_review` per live-detail
-request, one `list_sessions` per live-list request regardless of how many sessions are in memory,
-and `session-detail-fallback.test.ts` pins the detail at **exactly one** store call. No before/after
-latency measurement was taken, and the document says so.
+*measured* cost. Two things were measured, and the third was not:
+
+- **Query count, bounded by construction and pinned by a test.** One `get_session_review` per
+  live-detail request, one `list_sessions` per live-list request regardless of how many sessions are
+  in memory, and `session-detail-fallback.test.ts` pins the detail at **exactly one** store call.
+- **Current latency, measured at release prep** — real MongoDB, in-process HTTP, one process,
+  50 sessions seeded, 200 samples each after a 20-request warm-up:
+
+  | Surface | p50 | p95 | mean | max |
+  | --- | --- | --- | --- | --- |
+  | `GET /api/v1/guardian/sessions` | 4.01 ms | 5.90 ms | 4.2 ms | 8.76 ms |
+  | `GET /api/v1/guardian/sessions/:sessionId` | 1.78 ms | 2.42 ms | 1.8 ms | 3.87 ms |
+
+  Nothing pathological: the list — which now pays a durable query it previously skipped — is a few
+  milliseconds at 50 sessions, and the detail is cheaper than the list.
+- **A before/after baseline was not taken**, because the pre-change code is no longer in the tree.
+  The numbers above are therefore a **current** measurement, not a comparison, and criterion N is
+  left partial rather than closed with a figure nobody could reproduce.
 
 ## 6. Published-tag immutability
 
