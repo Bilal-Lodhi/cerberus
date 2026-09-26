@@ -11,6 +11,14 @@ _Nothing yet._
 
 ## [0.5.0] - 2026-09-26
 
+**Published as a GitHub pre-release** on 2026-09-26. Annotated tag `v0.5.0`, tag object
+`a635862e7a726f6362029e3aa711d630551a757f`, target
+`000ac1a7ddd837d35790a434a22969d3f6073189`. No npm package, no container image and no hosted
+deployment were published, and nothing was marked stable or latest. This is an experimental research
+system and is not production ready — see
+[docs/release/v0.5.0-release-notes.md](docs/release/v0.5.0-release-notes.md) for what the release
+does and does not claim.
+
 The theme is **multi-writer consistency and trust boundaries**: the live session list and detail
 reconcile against durable truth on every request, a stale process cache cannot override a newer
 durable status, aggregate counters are a batch delta applied with `$inc` so two API processes
@@ -189,10 +197,9 @@ and, stated plainly, ten things the release does not claim.
   partially met and stated as such**), the verification at the checkpoint, the immutability proof
   for the four published tags, and the eight limitations accepted rather than fixed.
 - **`docs/release/v0.5.0-release-notes.md` and `docs/release/v0.5.0-checklist.md` — the release
-  candidate.** **Prepared, not published**: no tag, no GitHub release, no package, no image. The
-  notes state the theme, the observable changes, the compatibility position and ten things the
-  release does not claim; the checklist records the eighteen gates verified in this cycle and the
-  publication steps deliberately left unrun.
+  material, since published.** The notes state the theme, the observable changes, the compatibility
+  position and ten things the release does not claim; the checklist records the gates verified
+  against the frozen candidate and the publication steps.
 - **The process whose terminal transition applied owns `terminalContent`.**
   `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
   and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating

@@ -202,8 +202,9 @@ Stated rather than implied. Each has a reason, and none is hidden behind the wor
    presented to another replica is unknown there.
 4. **Notification delivery is best-effort and undeduplicated.** Two replicas can each notify for one
    incident. A durable outbox would be the mechanism and is not built.
-5. **Reconciliation latency was not measured.** The query count is bounded and asserted; the
-   wall-clock cost is not claimed (criterion N).
+5. **Reconciliation latency was measured once, with no baseline.** A current figure was taken at
+   release prep (see §5, criterion N); the wall-clock **cost relative to the previous release** is
+   not claimed.
 6. **The console embeds the operator key in its bundle.** Unchanged, and a documented consequence of
    the single-key model.
 7. **Backups still have no scheduling, off-host storage, encryption or point-in-time recovery.**
@@ -216,8 +217,33 @@ In order of value:
 
 1. **Durable idempotency on the two paid routes**, per the design in `idempotency-model.md`,
    including the two index guarantees it names for `critical-indexes.json`.
-2. **A latency measurement for the reconciliation**, so criterion N can be closed rather than
-   partially met.
+2. **A before/after latency baseline for the reconciliation**, so criterion N can be closed rather
+   than partially met. A current figure now exists; what is missing is the comparison.
 3. **Per-caller rate limiting at the proxy**, which needs no product change and is documented as the
    operator's lever.
 4. **A durable notification outbox**, if duplicate notifications are judged to matter.
+
+## 10. Publication
+
+**Published as a GitHub pre-release on 2026-09-26.** Annotated tag `v0.5.0`, tag object
+`a635862e7a726f6362029e3aa711d630551a757f`, target
+`000ac1a7ddd837d35790a434a22969d3f6073189`.
+
+| Fact | Value |
+| --- | --- |
+| Tag | `v0.5.0`, annotated tag object, unsigned (as `v0.1.0`–`v0.4.0` are; no signing key is configured) |
+| Tag object | `a635862e7a726f6362029e3aa711d630551a757f` |
+| Target commit | `000ac1a7ddd837d35790a434a22969d3f6073189` — the commit the harness and the workflow both verified |
+| Release | GitHub **pre-release**, draft `false`, prerelease `true` |
+| Flags | No `stable`, no `latest`, no custom assets |
+| Version surfaces | All six declarations at `0.5.0`; lockfile synced |
+| Migration | **None.** The ledger holds `0001`–`0003`; nothing ships |
+| Harness | 18 passed, 0 failed, **0 skipped** — locally (302.1 s) and in CI (191.7 s) on the frozen target |
+| Workflow | `release-verification` run `36250007872`, success, 4m10s, `headSha` `000ac1a7…` |
+| Two-process verification | 8 flows green against one real MongoDB |
+| Criterion N | **Partially met** — a current latency figure was recorded; no before/after baseline exists |
+
+**Nothing else was published.** No npm package (the registry answers `404` for both workspace
+packages), no container image (no workflow contains a push step and the repository has no configured
+secrets), and no hosted deployment. The four earlier tags are unchanged, and the eleven historical
+synthetic co-author trailers are untouched.
