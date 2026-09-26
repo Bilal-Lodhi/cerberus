@@ -185,3 +185,53 @@ npm run bench -- --json after.json      # after the change
 
 `scripts/bench/run-bench.mjs` writes the environment, every case, and the memory
 figures into the JSON, so a comparison can state what it was comparing.
+
+## The review-list read: before and after
+
+`GET /api/v1/sessions` issues one `get_session_review` per session. Each one used to ask for
+the default, which is **up to 500 micro-events plus every risk assessment** — so the work
+grew with each session's *history* rather than with the number of sessions, and every
+document it carried was then discarded.
+
+Nothing in those events was load-bearing. Every counter the route re-derived from them is
+already durable on the session document, written on every ingest with `$max`, so it is
+monotonic and hydrated across a restart. The one genuinely event-derived field was a display
+timestamp, and the durable `updatedAt` answers the same question from a trustworthy source.
+
+The read now asks for `eventsLimit: 0` — the query is skipped outright — and
+`assessmentsLimit: 1`, because a single `riskScore` needs only the newest assessment.
+
+### The measurement
+
+Deterministic, and asserted in `apps/api/test/review-list-bounds.test.ts`:
+
+| Corpus | Event documents carried | Assessments carried |
+| --- | --- | --- |
+| Before | 20 sessions × 500 events → **10 000** | 20 sessions × 3 → **60** |
+| After | **0** | **20** |
+
+The "before" figure is exact rather than estimated: it is `sessions × min(500, events)`,
+because 500 is the store's own documented default cap in `MongoStore.getSessionEvents`. The
+numbers are asserted rather than timed, because a duration depends on the machine and on a
+test double — and this document already records two occasions when this script's own double
+produced a *false* finding.
+
+### The latency shape
+
+`npm run bench`, which now seeds history behind the list before measuring it:
+
+```
+case                                         n      req/s   p50 ms   p95 ms   p99 ms    max ms
+GET /api/v1/sessions                      1000      11901     0.08     0.13     0.22      0.83
+GET /api/v1/sessions (20×200 history)      300         93    10.32    13.30    15.71     28.17
+```
+
+The second row is the honest current shape, and it is **not** a regression the amplification
+fix was meant to remove: with 20 sessions the route makes 20 sequential round trips to the
+persistence adapter, and those dominate. What the fix removed is the part that grew with a
+session's history — the 10 000 event documents — not the per-session round trip, which is
+inherent to a route that lists sessions.
+
+So the remaining cost is `O(sessions)` with a constant per session, rather than
+`O(sessions × history)`. The first row is the same route with nothing to list, which is why
+it is two orders of magnitude faster.

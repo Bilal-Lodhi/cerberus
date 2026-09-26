@@ -181,6 +181,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The review-list read is bounded by the number of sessions, not by their history.**
+  `GET /api/v1/sessions` issues one `get_session_review` per session, and each one asked for
+  the default: **up to 500 micro-events plus every risk assessment**. With 20 sessions
+  holding 500 events that is **10 000 event documents** fetched and discarded per list
+  request, and the work grew with each session's history rather than with the number of
+  sessions.
+
+  Nothing in those events was load-bearing. Every counter the route re-derived from them is
+  **already durable on the session document** — written on every ingest with `$max`, so
+  monotonic and hydrated across a restart. The read now asks for `eventsLimit: 0` (the query
+  is skipped outright) and `assessmentsLimit: 1`, because a single `riskScore` needs only the
+  newest assessment. **Event documents carried: 10 000 → 0. Assessments: 60 → 20.**
+
+  `lastEventTimestamp` was the newest **client-supplied** event timestamp, read from the
+  window the route no longer fetches. It is now the durable, server-written `updatedAt` —
+  the same instant from a trustworthy source, and the value the liveness decision already
+  uses for exactly that reason. Reporting a client-supplied timestamp while refusing to
+  trust it for expiry was a quiet inconsistency.
+
+  The **detail** route is unchanged: it exists to show the timeline, so it keeps the
+  documented 500-event read, which is a bound rather than an amplification because it is one
+  request for one session. A test asserts that the bound was not applied to it.
+
+  See [performance-baseline.md](docs/development/performance-baseline.md#the-review-list-read-before-and-after).
+
+
 - **The focus-loss counter is named for what it measures.** `applyEventToSession` treated
   `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically and incremented one counter, which was
   called `fullscreenExitCount` — so the field name described **one of the two events that

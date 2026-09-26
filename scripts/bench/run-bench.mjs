@@ -312,6 +312,51 @@ await run(
   }),
 );
 
+// ── 2b. List sessions with history behind them ──
+//
+// The case above lists whatever the earlier runs happened to leave, which is why it was
+// fast even when the route was amplified. This one seeds 20 sessions each holding 200
+// events first, so the list has real history to read past.
+//
+// **What this measures changed.** The route used to issue one `get_session_review` per
+// session asking for the default — up to 500 micro-events plus every risk assessment — so
+// the work grew with each session's *history* rather than with the number of sessions.
+// It now asks for `eventsLimit: 0, assessmentsLimit: 1`.
+//
+// The document counts are asserted deterministically in
+// `apps/api/test/review-list-bounds.test.ts` (20 sessions × 500 events carry 10 000 event
+// documents before, 0 after), because a duration is machine-dependent and this script's own
+// double has twice produced a false finding in this repository. What this case adds is the
+// latency shape: it should be flat in history, not proportional to it.
+const LIST_HISTORY_SESSIONS = 20;
+const LIST_HISTORY_EVENTS = 200;
+
+for (let session = 0; session < LIST_HISTORY_SESSIONS; session++) {
+  const sessionId = `bench-list-${session}`;
+  for (let sent = 0; sent < LIST_HISTORY_EVENTS; sent += 100) {
+    const chunk = Math.min(100, LIST_HISTORY_EVENTS - sent);
+    await app.request("/api/v1/guardian/ingest", {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        events: Array.from({ length: chunk }, (_unused, index) =>
+          microEvent(sessionId, `lh-${session}-${sent + index}`, "KEYSTROKE", null, index + 1),
+        ),
+      }),
+    });
+  }
+}
+
+await run(
+  await measure(
+    `GET /api/v1/sessions (${LIST_HISTORY_SESSIONS}×${LIST_HISTORY_EVENTS} history)`,
+    iterations(300),
+    async () => {
+      await app.request("/api/v1/sessions", { headers: HEADERS });
+    },
+  ),
+);
+
 // ── 3. Telemetry ingest, one event per request, no analysis ──
 //
 // One event per request is what the console actually does, so it is the shape that
