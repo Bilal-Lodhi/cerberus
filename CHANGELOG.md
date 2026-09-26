@@ -279,6 +279,36 @@ dependency failure. Two migrations ship with it — `0002` and `0003`.
   rather than endorsing it, so the fix cannot land silently.
 
 ### Fixed
+- **The backup script failed on any database with an empty collection, and recorded a
+  vacuous manifest.** Two defects, both found by running the documented backup/restore drill
+  against a real database rather than by reading the script.
+
+  First: `mongodump` writes a **0-byte** `.bson` file for a collection that exists and holds
+  zero documents, and the script treated *any* 0-byte file as an incomplete backup. So
+  `npm run backup` **failed on a perfectly healthy deployment** whose `risk_assessments` or
+  `threat_scenarios` were still empty — which is every fresh deployment, until an analysis
+  runs or a scenario is authored. The check is now **count-aware**: a 0-byte file for a
+  collection holding 0 documents is correct, a 0-byte file for one holding documents is
+  still a failure, and a collection holding documents that produced **no dump file at all**
+  is now a failure too. The document counts are read before the dump is judged, because file
+  size alone cannot tell the two cases apart.
+
+  Second, and worse: the count script embedded a `"`, which Windows PowerShell 5.1 mangles
+  when passing it to `docker exec`. mongosh received a truncated script, printed a
+  `SyntaxError`, and the manifest recorded **0 documents for every collection** while the
+  backup itself was fine. That is worse than no manifest — the restore compares restored
+  counts against the manifest, so an empty manifest makes the comparison **vacuous**, and a
+  restore that brought back nothing would have been reported as verified. The count script
+  no longer contains a quote (mongosh's `print` joins its arguments with a space, so none is
+  needed), and the backup now **fails loudly if the count read produces nothing**, so no
+  future variant of the same problem can produce a vacuous manifest.
+
+  Verified end to end against a real MongoDB: backup of a 207-document database across 7
+  collections with two of them empty, restore into a scratch database with every count
+  matching, the unique identity indexes restored, a tampered manifest refused with exit 1,
+  and each of the three documented refusals (no manifest, restore over the source, non-empty
+  target without `-Drop`) stopping with exit 1.
+
 - **The console described the retired corpus-ceiling behaviour.** The corpus panel told the
   operator, at capacity: *"Only the 200 most recently updated documents are listed and
   compared, so a new one would be stored but never read."* That was true when the ceiling was

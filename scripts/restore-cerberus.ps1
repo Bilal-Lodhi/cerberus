@@ -85,7 +85,7 @@ Write-Host "[restore] target db     $TargetDatabase"
 
 # ── Refuse to clobber a non-empty target by accident ─────────────────────────
 $localTools = [bool](Get-Command mongorestore -ErrorAction SilentlyContinue)
-$countScript = 'db.getCollectionNames().sort().forEach(n => print(n + " " + db.getCollection(n).countDocuments({})))'
+$countScript = 'db.getCollectionNames().sort().forEach(n => print(n, db.getCollection(n).countDocuments({})))'
 
 function Get-Counts([string]$database) {
     $raw = if ($localTools) {
