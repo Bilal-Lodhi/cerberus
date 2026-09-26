@@ -372,7 +372,10 @@ if (REAL_MONGODB_URI) {
           await client.connect();
           await client
             .db(`${databaseName}_behind`)
-            .collection("reference_corpus_meta")
+            // The counter document's `_id` is the corpus key, a string. Annotating the
+            // collection is what says so: the driver otherwise infers `ObjectId` and
+            // rejects the filter.
+            .collection<{ _id: string; count: number }>("reference_corpus_meta")
             .updateOne({ _id: "reference_documents" }, { $set: { count: 0 } });
         } finally {
           await client.close();
@@ -423,7 +426,7 @@ if (REAL_MONGODB_URI) {
           await client.connect();
           await client
             .db(`${databaseName}_ahead`)
-            .collection("reference_corpus_meta")
+            .collection<{ _id: string; count: number }>("reference_corpus_meta")
             .updateOne(
               { _id: "reference_documents" },
               { $set: { count: MAX_REFERENCE_DOCUMENTS } },
@@ -478,7 +481,7 @@ if (REAL_MONGODB_URI) {
         await client.connect();
         await client
           .db(target)
-          .collection("reference_corpus_meta")
+          .collection<{ _id: string; count: number }>("reference_corpus_meta")
           .updateOne(
             { _id: "reference_documents" },
             { $set: { count: MAX_REFERENCE_DOCUMENTS } },

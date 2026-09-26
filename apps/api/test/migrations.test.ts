@@ -11,6 +11,10 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type { Db } from "mongodb";
+// `MongoServerError` is a runtime class, not a type: the fake collection below throws a
+// real one so the runner's `instanceof` check is exercised rather than a lookalike that
+// happens to carry the same code.
+import { MongoServerError } from "mongodb";
 
 import {
   MIGRATIONS,

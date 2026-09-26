@@ -22,6 +22,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`npm run verify:release` — the release verification harness.** One non-publishing entry
+  point that runs every release-critical check in order and reports each one's outcome:
+  build, typecheck, the test tree's typecheck, both test runs, the docs checker, the version
+  and configuration censuses, the secret guards, and the Flutter analyze/format/test trio.
+  `v0.3.0`'s verification was a session — a sequence of commands run by hand, with one gate
+  verified against a **stale image** because nothing compared the image's version against
+  its source. Every step is also its own npm script, so a maintainer runs the same thing.
+  It **cannot publish**: `secret-guards` fails if `npm publish`, `git push`, `docker push`
+  or `gh release create` appears anywhere under `scripts/release/`.
+- **`npm run verify:version` — a version census.** The product version is declared in six
+  places and nothing asserted they agreed. It now compares all six against `package.json`,
+  and asserts the changelog has both an `## [Unreleased]` section and a section for the
+  declared version.
+- **`npm run verify:config` — a configuration census.** Every environment variable the code
+  reads must be described in `configuration.md` and `.env.example`, and every one described
+  must be read. Both directions were real problems: a documented variable that had been
+  renamed, and a variable read whose name appeared in no table.
+- **`npm run typecheck:tests` — a typecheck for the test tree.** `apps/api/tsconfig.json`
+  excludes `test/`, which is right for emit and meant that **no test file was typechecked by
+  anything**: `npm test` runs through `tsx`, which strips types without checking them. Six
+  classes of drift were found the first time it ran, including a local response interface
+  that disagreed with the response under test and a contract interface whose return type no
+  longer described the store it exists to describe.
+- **`.github/workflows/release-verification.yml`** — a manual, non-publishing release drill
+  that runs the harness against a disposable `mongo:7` and asserts that nothing was skipped,
+  because a drill whose integration step silently skipped verified less than it claims.
+- **`docs/release/verification-harness.md`** — what the harness runs, how to run one step,
+  why a skip is not a pass, why it can never publish, and what the two censuses found.
 - **A repair path for a document holding a retired value.** `normalizeStatus` maps it onto
   `active`, so every transition is legal from it — but a compare-and-set predicate
   expressed in durable statuses would match nothing and report `SESSION_CONFLICT` on every

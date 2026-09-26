@@ -1,0 +1,132 @@
+# The release verification harness
+
+`npm run verify:release` runs every release-critical check, in order, and reports each
+one's outcome. It **never publishes anything**.
+
+The problem it exists for: the `v0.3.0` verification was a session — a sequence of commands
+run by hand, with the results written into a checklist. Two of the gates were re-run rather
+than repeated, and the container gate was verified against a **stale image**, because
+nothing compared the image's version against the source it was supposed to be built from.
+A gate that lives in one person's terminal is not a gate.
+
+## Running it
+
+```bash
+# Everything. Needs a MongoDB for the integration step, or that step is skipped.
+CERBERUS_TEST_MONGODB_URI=mongodb://127.0.0.1:27017 npm run verify:release
+
+# The plan, without running it.
+npm run verify:release -- --list
+
+# One or more steps.
+npm run verify:release -- --only docs --only version-census
+
+# Any single check, on its own.
+npm run verify:version
+npm run verify:config
+npm run verify:secrets
+npm run typecheck:tests
+```
+
+On Windows, `$env:CERBERUS_TEST_MONGODB_URI = "mongodb://127.0.0.1:27017"` before the
+command.
+
+## What it runs
+
+| Step | What it proves | npm script |
+| --- | --- | --- |
+| `build` | The TypeScript compiles, and the entrypoints the `Dockerfile` expects exist | `npm run build` |
+| `typecheck` | The product sources typecheck | `npm run typecheck` |
+| `typecheck-tests` | **The test tree typechecks**, which nothing else covers | `npm run typecheck:tests` |
+| `test` | The unit suites pass with no database; the real-database halves skip here | `npm test` |
+| `test-integration` | The same suites with every real-database half actually run | `npm test` with `CERBERUS_TEST_MONGODB_URI` |
+| `docs` | Every relative link and heading anchor resolves | `npm run check:docs` |
+| `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
+| `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
+| `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
+| `console-format` | The Flutter sources are formatted, which `flutter analyze` does not check | `npm run console:format` |
+| `console-analyze` | The Flutter console analyses clean | `npm run console:analyze` |
+| `console-test` | The Flutter widget and release-claim tests pass | `npm run console:test` |
+
+Every step is an npm script, so the harness and a maintainer run the same thing. Adding a
+step means adding a script and one entry to the plan in
+`scripts/release/verify-release.mjs`.
+
+## A skip is not a pass
+
+A step whose precondition is absent is **skipped with the reason printed**, and the
+summary counts it separately:
+
+```
+  PASS    test-integration   18.0s
+  SKIPPED docs               ...
+```
+
+A harness that reported a skip as a pass would be green for the wrong reason, which this
+repository's own documentation warns about. The
+[release-verification workflow](../../.github/workflows/release-verification.yml) asserts
+that nothing was skipped, because it provides the only precondition any step has.
+
+## It never publishes
+
+No file under `scripts/release/` may contain `npm publish`, `git push`, `docker push` or
+`gh release create`. The `secret-guards` step fails if one appears, so the harness cannot
+grow a publishing step without the guard failing first.
+
+Release publication is a separate, human decision. See
+[release-checklist.md](release-checklist.md) and
+[v0.3.0-checklist.md](v0.3.0-checklist.md) for what that decision involves.
+
+## The two censuses
+
+These are the two checks that are not a command anyone would run by hand, and both found
+real drift the first time they ran.
+
+**`verify:version`** reads every place the product version is declared — the three
+`package.json` files, `SERVICE_VERSION` in the API's health route, `MCP_SERVER_VERSION` in
+the MCP package, and the Flutter console's `pubspec.yaml` — and compares each against the
+root `package.json`, which is the authority. It also asserts the changelog has both an
+`## [Unreleased]` section and a section for the declared version.
+
+**`verify:config`** extracts every environment variable the code reads (`readEnv("X")`,
+`readInt("X", …)`, `process.env["X"]`, …) and every one the documentation describes (the
+table rows in `configuration.md`, the assignments in `.env.example`), then fails in **both**
+directions:
+
+- read but undocumented — a knob nobody can find, and therefore one that will be set
+  wrongly;
+- documented but unread — worse, because an operator sets it, restarts, and nothing
+  changes, with no error to explain why.
+
+A name that is legitimately read outside the scanned trees (the Flutter console's
+`--dart-define` values, the test suite's own database URI) is listed in `READ_ELSEWHERE` in
+the script **with its reason**, so the exemption is a claim rather than a silent gap. An
+entry that becomes unnecessary fails the check too.
+
+## `typecheck:tests`
+
+`apps/api/tsconfig.json` excludes `test/`, which is right for emit — a test file must not
+be compiled into `dist/`. The effect was that **no test file was typechecked by anything**:
+`npm test` runs through `tsx`, which strips types without checking them. A test could assert
+against a field that no longer exists and only fail at runtime, or pass while testing
+something else.
+
+`apps/api/tsconfig.test.json` covers the test tree, and the check found six classes of
+drift the first time it ran:
+
+| Drift | Consequence |
+| --- | --- |
+| A local response interface was missing `telemetryPersisted` | The test's own type disagreed with the response it was asserting against |
+| `MongoServerError` was used without an import | The suite exercised a lookalike rather than the class the runner checks with `instanceof` |
+| Three raw-collection filters passed a `string` where the driver inferred `ObjectId` | Untyped access to the corpus counter document |
+| Two test helpers inferred a template-literal UUID type from `randomUUID()` | Any literal event id was a type error |
+| The contract suite's `storeReferenceDocument` return type was stale | The interface no longer described the store it exists to describe |
+
+## Related documents
+
+- [release-checklist.md](release-checklist.md) — the gates verified before `v0.1.0`, and
+  the evidence recorded for each.
+- [v0.3.0-checklist.md](v0.3.0-checklist.md) — the gates worked through for `v0.3.0`,
+  including the ones that had to be re-run rather than assumed.
+- [../development/operability-model.md](../development/operability-model.md) — what the
+  system can be observed doing, which is what most of these checks are about.

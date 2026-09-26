@@ -1,0 +1,29 @@
+{
+  "//": [
+    "Typechecks the TEST tree, which `tsconfig.json` deliberately excludes.",
+    "",
+    "The build config excludes `test/` because a test file must not be emitted into",
+    "`dist/`. The effect was that no test file was typechecked by anything: `npm test`",
+    "runs through `tsx`, which strips types without checking them. A test could therefore",
+    "assert against a field that no longer exists, or pass a literal outside a union, and",
+    "only fail at runtime — or worse, pass while testing something else. Six classes of",
+    "drift were found the first time this ran.",
+    "",
+    "`npm run typecheck:tests` runs this. `scripts/release/verify-release.mjs` includes it.",
+    "",
+    "`rootDir` is widened to the repository root: the build config pins it to `src`, which",
+    "is right for emit and wrong here, because the test tree imports the MCP package. It",
+    "has no effect on output because `noEmit` is set."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "../.."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

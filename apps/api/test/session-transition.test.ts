@@ -68,7 +68,7 @@ const LOW_RISK_AI = JSON.stringify({
 });
 
 /** A large paste, so the analysis trigger fires. */
-function largePaste(sessionId: string, eventId = randomUUID()): Record<string, unknown> {
+function largePaste(sessionId: string, eventId: string = randomUUID()): Record<string, unknown> {
   return {
     eventId,
     sessionId,
@@ -83,7 +83,7 @@ function largePaste(sessionId: string, eventId = randomUUID()): Record<string, u
 }
 
 /** A single KEYSTROKE, so a batch exists without triggering analysis. */
-function keystroke(sessionId: string, eventId = randomUUID(), deltaMs = 120): Record<string, unknown> {
+function keystroke(sessionId: string, eventId: string = randomUUID(), deltaMs = 120): Record<string, unknown> {
   return {
     eventId,
     sessionId,
