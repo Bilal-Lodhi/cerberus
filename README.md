@@ -5,10 +5,14 @@ activity from a browser-based operator console, scores it with an LLM for
 insider-threat and data-exfiltration indicators, and persists sessions, events
 and risk assessments in MongoDB.
 
-> **Status: 0.2.0 — an operational-durability release, published as a
+> **Status: 0.3.0 — an architecture-integrity release, published as a
 > pre-release.** This is an experimental research system. It is not production
 > ready, and it makes no guarantee that it will detect or prevent anything. Read
 > the [Security & privacy warning](#security--privacy-warning) before running it.
+>
+> Released 2026-09-26 as an annotated tag, pre-release only: no npm package, no
+> container image and no hosted deployment were published, and nothing is marked
+> stable or latest. See the [release notes](docs/release/v0.3.0-release-notes.md).
 
 ## What problem it solves
 

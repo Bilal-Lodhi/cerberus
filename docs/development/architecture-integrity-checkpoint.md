@@ -3,9 +3,19 @@
 The record of the third standing charter: what it set out to do, what it found, what
 changed, and what remains. Written from the merged history rather than from intent.
 
-**Status: the checkpoint is reached.** Every exit criterion is met or explicitly
-rejected with a reason, and **nothing has been published** — no tag, no release, no
-package, no image.
+**Status: the checkpoint is reached, and the release is published.** Every exit criterion
+is met or explicitly rejected with a reason. **`v0.3.0` was published on 2026-09-26** as a
+GitHub pre-release — annotated tag `v0.3.0`, tag object
+`af22236626019352bddebe8798a659151af7ec4f`, target
+`95b57836b4d879766ad94953323ce5811f50041a`. **No npm package, no container image and no
+hosted deployment were published**, and nothing is marked stable or latest.
+
+Four release-blocking defects were found by running the gates rather than reading the code,
+and are recorded in the checklist: four console files were not `dart format` clean, the
+operator identity gate claimed a Google Cloud Identity Platform integration the project does
+not have, the corpus panel described the retired read-ceiling behaviour, and the backup
+script both failed on any database with an empty collection and recorded a manifest that made
+the restore's count comparison vacuous.
 
 | | |
 | --- | --- |
