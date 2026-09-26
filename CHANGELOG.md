@@ -47,6 +47,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The live session list reconciles against durable truth on every request.**
+  `GET /api/v1/guardian/sessions` was built from this process's memory and consulted MongoDB
+  **only when that memory was empty**, which made it process-local-authoritative. Two false
+  statements followed: a session another API process terminated kept being reported `active`
+  until its TTL elapsed, a transition happened to run through this process, or it restarted —
+  and a session another process had deployed or ingested was **absent from the page
+  entirely**. The list now issues one batched durable query per request and merges durable
+  over local: status from the document, counters and peak risk as `max(local, durable)`,
+  liveness from the more recent of the two activity instants, and identity from the document.
+  A durably-terminated session is dropped in the same request that would have reported it, and
+  another process's sessions appear.
+
+  The merge is `apps/api/src/services/session-reconciliation.ts` — a pure function with its
+  own suite — so the route is a thin adapter and the rule can be tested over states that are
+  awkward to produce through HTTP.
+
+  When the store does not answer the page is still served, with `reconciled: false` and every
+  row marked `statusSource: "process-local"`. Refusing outright would take the live dashboard
+  down during a store blip; presenting the local value as durable truth would be a lie.
+
+  Three additive response fields: `reconciled` on the body, and `statusSource` and
+  `ephemeralStateAvailable` on each row. See `docs/compatibility.md` §1b.
+- **A live read repairs this process's cache toward the document, and only toward it.**
+  `SessionTransitionCache.reconcileStatus` is deliberately not `apply`: `apply` stamps the
+  cached activity instant to the transition instant, which is right for a transition and wrong
+  for a read — a status repair that also moved `lastActivityAt` forward would extend a
+  session's monitoring window as a side effect of *looking* at it. `reconcileStatus` changes
+  the status and nothing else, and never seeds an entry for a session this process does not
+  otherwise hold. Because the cache converges, a later read that cannot reach the store still
+  excludes a terminated session rather than resurrecting it.
+
+### Changed
+
 - **`"private": true` on `packages/mcp-mongodb`.** No observable API change: the package was
   never published, and this makes publishing it impossible rather than merely unintended.
 - **`apps/api/tsconfig.test.json` sets `allowJs`.** Some release guards live in

@@ -170,6 +170,26 @@ export interface SessionTransitionCache {
   ): void;
   /** Drops the session from the live registry. Used by terminate. */
   evict(sessionId: string): void;
+  /**
+   * Repairs the cached status from a durable value observed on a **read**.
+   *
+   * Deliberately not `apply`. `apply` stamps the cached activity instant to the transition
+   * instant, which is right for a transition — the session was just acted on — and wrong for
+   * a read: a status repair that also moved `lastActivityAt` forward would extend a session's
+   * monitoring window as a side effect of *looking* at it, which is exactly the bypass the
+   * TTL exists to prevent. This method therefore changes the status and nothing else.
+   *
+   * It also never seeds an entry. A durable-only session is served from the durable document
+   * on every read; copying it into this process's registry would grow memory with sessions
+   * the process does not otherwise hold, and add no correctness. A `terminated` status
+   * **evicts** from the live registry, because a session that is not monitored must not be
+   * listed by the next read.
+   */
+  reconcileStatus(
+    sessionId: string,
+    status: DurableSessionStatus,
+    durable: Record<string, unknown>,
+  ): void;
 }
 
 export interface SessionTransitions {

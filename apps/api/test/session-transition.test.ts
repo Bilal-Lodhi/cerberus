@@ -636,6 +636,7 @@ function nullCache(): SessionTransitionCache {
     read: () => null,
     apply: () => {},
     evict: () => {},
+    reconcileStatus: () => {},
   };
 }
 
@@ -643,6 +644,7 @@ function nullCache(): SessionTransitionCache {
 function recordingCache() {
   const statuses = new Map<string, PersistedSessionStatus>();
   const evicted: string[] = [];
+  const reconciled: string[] = [];
   const cache: SessionTransitionCache = {
     read: (sessionId) => statuses.get(sessionId) ?? null,
     apply: (sessionId, status) => {
@@ -651,8 +653,15 @@ function recordingCache() {
     evict: (sessionId) => {
       evicted.push(sessionId);
     },
+    // A read-path repair: recorded separately from `apply` because the boundary never calls
+    // it — only the live read surfaces do — and a test that conflated the two would not
+    // notice the boundary starting to repair a cache from a read.
+    reconcileStatus: (sessionId, status) => {
+      statuses.set(sessionId, status);
+      reconciled.push(sessionId);
+    },
   };
-  return { cache, statuses, evicted };
+  return { cache, statuses, evicted, reconciled };
 }
 
 describe("session transition boundary", () => {

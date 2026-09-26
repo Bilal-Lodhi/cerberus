@@ -66,6 +66,38 @@ Explicitly **not** public, and changeable without notice:
 - the Flutter widget tree, route names inside the console, and its visual design;
 - `docs/` content other than the guarantees this document makes.
 
+## 1b. What the multi-writer cycle added to the public surface
+
+Mostly **additive**. The live session list gained two fields and no field changed meaning.
+The record is in
+[development/multi-writer-model.md](development/multi-writer-model.md) and
+[development/live-read-consistency.md](development/live-read-consistency.md).
+
+| Surface | Change | Kind |
+| --- | --- | --- |
+| `GET /api/v1/guardian/sessions` | response gains `reconciled: boolean` — false when the store did not answer, so the page could not be reconciled against the durable documents | added |
+| `GET /api/v1/guardian/sessions` rows | each row gains `statusSource: "durable" \| "process-local"` | added |
+| `GET /api/v1/guardian/sessions` rows | each row gains `ephemeralStateAvailable: boolean`, matching the field the detail surface already reports | added |
+
+Two changes are **observable** rather than additive, and both are corrections to a
+statement that was false:
+
+- **The live list now includes sessions this process did not deploy or ingest.** It was
+  previously built from this process's own memory and consulted the database only when that
+  memory was empty, so a session another API process was monitoring was absent from the page.
+- **A session another process terminated stops appearing immediately.** It previously stayed
+  on the list until its TTL elapsed, a transition happened to run through this process, or
+  the process restarted.
+
+Neither changes a field name, a type, or a status vocabulary, so an existing client needs no
+change: it sees more rows and two new fields it can ignore. A client that needs to know
+whether a page is durable truth should require `reconciled: true`.
+
+Still explicitly **not** public, and changeable without notice:
+
+- the merge's internal shape, the reconciler's module path, and the
+  `SessionTransitionCache` interface, all of which are internal to `apps/api/src`.
+
 ## 2. Breaking-change policy
 
 Before breaking a public surface, in order:

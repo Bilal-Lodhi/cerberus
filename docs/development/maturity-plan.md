@@ -695,11 +695,11 @@ and is otherwise stated as not met.
 
 | # | Condition | State |
 | --- | --- | --- |
-| A | Live session reads reconcile against durable lifecycle state | Not met — see the model's §5.1 |
-| B | Stale in-memory status cannot override newer durable status on read | Not met — same |
-| C | Two processes can safely observe/transition the same session under supported flows | Partially met — transitions are safe; reads are not |
-| D | Stale process caches are detected and reconciled deterministically | Partially met — a transition detects and repairs; a read does not |
-| E | Live-list semantics stay bounded and performant after durable reconciliation | Not met — no durable query on the memory path today |
+| A | Live session reads reconcile against durable lifecycle state | **Met for the live list** — one batched durable query per request, durable wins, and a durably-terminated session is dropped in the same request that would have reported it. **Not met for the live detail** |
+| B | Stale in-memory status cannot override newer durable status on read | **Met for the live list**, including once the store stops answering, because the previous read repaired the cache toward the document. **Not met for the live detail** |
+| C | Two processes can safely observe/transition the same session under supported flows | Partially met — transitions are safe, and the live list is now safe to observe; the live detail is not |
+| D | Stale process caches are detected and reconciled deterministically | **Met for the live list** — the merge returns a repair, applied through `reconcileStatus`, which is one-directional and does not move the cached activity instant. **Not met for the live detail** |
+| E | Live-list semantics stay bounded and performant after durable reconciliation | **Met** — one durable query per list request regardless of how many sessions are in memory, so there is no N+1. The measured cost is still outstanding (N) |
 | F | Route-level multi-writer behaviour is documented | **Met** — [multi-writer-model.md](multi-writer-model.md) §4 |
 | G | Paid-route duplicate-spend risk reduced or explicitly re-accepted with stronger evidence | Not met — no decision recorded yet |
 | H | Any idempotency mechanism is durable, race-safe and bounded | Not applicable yet — none introduced |
