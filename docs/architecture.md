@@ -420,8 +420,13 @@ From `MCP_TOOL_NAMES`, present identically on both sides:
 `delete_reference_document`, `health_check`.
 
 `create_session` upserts on `sessionId` with `$setOnInsert`, so it is
-idempotent. `delete_session` removes the session document and cascades to
-`micro_events` and `risk_assessments` for that session.
+idempotent. `delete_session` cascades to `micro_events` and `risk_assessments`
+for that session and then removes the session document **last**, so a partial
+failure leaves the session identifiable rather than orphaning its telemetry. It
+reports what it removed per domain component (`session`, `telemetry`,
+`assessments`) and names any component whose removal failed, so a partial
+deletion is never reported as a complete one. See
+[api-errors.md](api-errors.md) §4.1.
 `store_reference_document` upserts on `referenceId`, so re-submitting the same
 document updates it rather than creating a duplicate that would double-count in
 similarity scoring.

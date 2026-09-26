@@ -37,6 +37,7 @@ import { MongoClient } from "mongodb";
 import {
   MongoStore,
   type SessionCountsUpdate,
+  type SessionDeletionReport,
 } from "../../../packages/mcp-mongodb/src/mongo-client.js";
 import { McpStoreDouble, type StoredDocument } from "./support/mcp-store-double.js";
 
@@ -51,7 +52,7 @@ export interface ContractStore {
   createSession(session: StoredDocument): Promise<string>;
   getSession(sessionId: string): Promise<StoredDocument | null>;
   updateSession(sessionId: string, update: StoredDocument): Promise<void>;
-  deleteSession(sessionId: string): Promise<boolean>;
+  deleteSession(sessionId: string): Promise<SessionDeletionReport>;
   listSessions(): Promise<StoredDocument[]>;
   updateSessionCounts(sessionId: string, counts: SessionCountsUpdate): Promise<void>;
   setSessionStatus(
@@ -897,7 +898,7 @@ export const CONTRACT_CASES: ContractCase[] = [
 
   // ── Deletion ─────────────────────────────────────────────────────
   {
-    name: "deleteSession cascades to events and assessments, and reports the session",
+    name: "deleteSession cascades to events and assessments, and reports every component",
     async run(store, ids) {
       await store.createSession({
         sessionId: ids.sessionId,
@@ -909,16 +910,50 @@ export const CONTRACT_CASES: ContractCase[] = [
         riskReport(ids.sessionId, { generatedAt: "2026-01-01T00:00:00.000Z", score: 50 }),
       );
 
-      assert.equal(await store.deleteSession(ids.sessionId), true);
+      const report = await store.deleteSession(ids.sessionId);
+
+      // The counts are what was actually there, per component — not a single
+      // `deletedCount` for the session document with the rest assumed.
+      assert.equal(report.session, 1, "the session document was not reported as removed");
+      assert.equal(report.telemetry, 1, "the telemetry removal was not reported");
+      assert.equal(report.assessments, 1, "the assessment removal was not reported");
+      assert.deepEqual(report.failed, [], "a complete deletion reported a failure");
+
       assert.equal(await store.getSession(ids.sessionId), null);
       assert.deepEqual(await store.getSessionEvents(ids.sessionId), []);
       assert.deepEqual(await store.getRiskAssessments(ids.sessionId), []);
     },
   },
   {
-    name: "deleteSession reports false for a session that does not exist",
+    name: "deleteSession reports nothing removed for a session that does not exist",
     async run(store, ids) {
-      assert.equal(await store.deleteSession("no-such-" + ids.sessionId), false);
+      const report = await store.deleteSession("no-such-" + ids.sessionId);
+      assert.equal(report.session, 0);
+      assert.equal(report.telemetry, 0);
+      assert.equal(report.assessments, 0);
+      assert.deepEqual(report.failed, []);
+    },
+  },
+  {
+    name: "deleteSession is a clean no-op on a second call",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.ingestMicroEvents([microEvent(ids.sessionId, "e1")]);
+
+      const first = await store.deleteSession(ids.sessionId);
+      assert.equal(first.session, 1);
+
+      // Retrying is the documented remedy for a partial deletion, so a repeat has to be
+      // safe: it reports zeros rather than failing or double-counting.
+      const second = await store.deleteSession(ids.sessionId);
+      assert.equal(second.session, 0);
+      assert.equal(second.telemetry, 0);
+      assert.equal(second.assessments, 0);
+      assert.deepEqual(second.failed, []);
     },
   },
 

@@ -99,7 +99,11 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
   [MCP_TOOL_NAMES.DELETE_SESSION]: {
     name: MCP_TOOL_NAMES.DELETE_SESSION,
     description:
-      "Permanently delete a session and all its associated micro-events and risk assessments.",
+      "Permanently delete a session and all its associated micro-events and risk assessments. " +
+      "Reports what was removed per component (session, telemetry, assessments), and names " +
+      "any component whose removal failed — a partial deletion is reported as partial rather " +
+      "than as complete. The session document is removed last, so a partial failure leaves " +
+      "the session identifiable and the deletion retryable.",
     inputSchema: {
       type: "object",
       properties: {
@@ -428,8 +432,29 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
 
     [MCP_TOOL_NAMES.DELETE_SESSION]: async (body) => {
       const sessionId = requireString(body, "sessionId");
-      const deleted = await store.deleteSession(sessionId);
-      return { success: true, deleted };
+      const report = await store.deleteSession(sessionId);
+
+      const complete = report.failed.length === 0;
+
+      return {
+        success: true,
+        // Whether the **session document** existed and was removed. Unchanged in meaning,
+        // so a caller that only reads `deleted` keeps working.
+        deleted: report.session > 0,
+        // ── The per-component outcome ──
+        //
+        // A single `Promise.all` over three collections reports nothing about which one
+        // failed, so a partial deletion was indistinguishable from a complete one. The
+        // counts are what actually happened, and `failedComponents` names what did not.
+        complete,
+        partial: !complete,
+        components: {
+          session: { deleted: report.session },
+          telemetry: { deleted: report.telemetry },
+          assessments: { deleted: report.assessments },
+        },
+        failedComponents: report.failed,
+      };
     },
 
     [MCP_TOOL_NAMES.APPEND_MICRO_EVENT]: async (body) => {

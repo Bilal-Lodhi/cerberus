@@ -109,6 +109,30 @@ export type SessionTransitionCode =
   (typeof SESSION_TRANSITION_CODES)[keyof typeof SESSION_TRANSITION_CODES];
 
 /**
+ * Stable codes for a session **deletion**.
+ *
+ * Separate from the transition codes because a deletion is not a transition: it is
+ * destructive, it cascades over three components, and it can partly succeed. Folding it
+ * into the transition set would make one vocabulary describe two different kinds of
+ * operation.
+ */
+export const SESSION_DELETION_CODES = {
+  /**
+   * The deletion ran and only part of it succeeded. The response names the components that
+   * were removed and the ones that were not.
+   *
+   * Deliberately distinct from `SESSION_STORE_UNAVAILABLE`, which means the store did not
+   * answer and **nothing was attempted**. A client that treats the two the same would
+   * either retry an operation that never ran, or fail to retry one that half-ran.
+   */
+  PARTIAL_DELETE: "PARTIAL_DELETE",
+} as const;
+
+export type SessionDeletionCode =
+  (typeof SESSION_DELETION_CODES)[keyof typeof SESSION_DELETION_CODES];
+
+
+/**
  * The HTTP status for each refusal code.
  *
  * `SESSION_TERMINAL` and `SESSION_CONFLICT` are 409: the request was well-formed and

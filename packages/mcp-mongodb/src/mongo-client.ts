@@ -121,6 +121,45 @@ export const FOCUS_LOSS_FIELD = "focusLossCount";
 export const LEGACY_FOCUS_LOSS_FIELD = "fullscreenExitCount";
 
 /**
+ * The domain components a session deletion can remove.
+ *
+ * **Domain names, not collection names.** A caller reasons about "this session's
+ * telemetry" and "its assessments"; freezing `micro_events` and `risk_assessments` into a
+ * public response would make a collection rename a breaking change to the API contract.
+ */
+export type SessionDeletionComponent = "session" | "telemetry" | "assessments";
+
+/** Every component, in the order a deletion attempts them. */
+export const SESSION_DELETION_COMPONENTS: readonly SessionDeletionComponent[] = [
+  "telemetry",
+  "assessments",
+  "session",
+];
+
+/**
+ * What a session deletion actually removed, per component.
+ *
+ * `failed` is empty for a complete deletion. A non-empty `failed` means the deletion ran
+ * and only part of it succeeded, which is a **different fact** from "the store did not
+ * answer" and has to be reported differently: the first says retrying is safe and
+ * necessary, the second says nothing was attempted.
+ */
+export interface SessionDeletionReport {
+  /** Documents removed from each component. */
+  session: number;
+  telemetry: number;
+  assessments: number;
+  /** The components whose removal raised. Empty for a complete deletion. */
+  failed: SessionDeletionComponent[];
+}
+
+/** True when every component was removed, or was already absent. */
+export function isCompleteDeletion(report: SessionDeletionReport): boolean {
+  return report.failed.length === 0;
+}
+
+
+/**
  * Builds the update document for an aggregate-counter write.
  *
  * Extracted and exported so its shape can be asserted directly rather than by
@@ -383,13 +422,62 @@ export class MongoStore {
     );
   }
 
-  async deleteSession(sessionId: string): Promise<boolean> {
-    const sessionResult = await this.collection("sessions").deleteOne({ sessionId });
-    await Promise.all([
-      this.collection("microEvents").deleteMany({ sessionId }),
-      this.collection("riskAssessments").deleteMany({ sessionId }),
-    ]);
-    return sessionResult.deletedCount > 0;
+  /**
+   * Permanently deletes a session and every document derived from it.
+   *
+   * ── The order is load-bearing ─────────────────────────────────────────
+   *
+   * The **derived** documents are removed first and the session document **last**. The
+   * reverse order — which this used to use — makes a partial failure unrecoverable: the
+   * session document is what identifies its telemetry, so removing it first leaves
+   * `micro_events` and `risk_assessments` orphaned, unfindable by any query and
+   * unreportable by any surface. Deleting the children first means a failure leaves the
+   * identifying document in place, so the operation is **retryable** and nothing is
+   * orphaned.
+   *
+   * ── Why each component is caught separately ───────────────────────────
+   *
+   * A single `Promise.all` over all three reports nothing about which one failed, so a
+   * partial deletion was reported as a complete one. Each component is attempted on its
+   * own and its outcome recorded, so the caller can say exactly what happened.
+   *
+   * The session document is **not** attempted when a derived component failed, because
+   * removing it would destroy the only way to find the rest. That is a deliberate
+   * refusal, not an omission: the report says so through `failed`.
+   */
+  async deleteSession(sessionId: string): Promise<SessionDeletionReport> {
+    const report: SessionDeletionReport = {
+      session: 0,
+      telemetry: 0,
+      assessments: 0,
+      failed: [],
+    };
+
+    const derived: Array<["telemetry" | "assessments", "microEvents" | "riskAssessments"]> = [
+      ["telemetry", "microEvents"],
+      ["assessments", "riskAssessments"],
+    ];
+
+    for (const [component, collection] of derived) {
+      try {
+        report[component] = (await this.collection(collection).deleteMany({ sessionId }))
+          .deletedCount;
+      } catch {
+        report.failed.push(component);
+      }
+    }
+
+    // Only when every derived document is gone: see the note above.
+    if (report.failed.length === 0) {
+      try {
+        report.session = (await this.collection("sessions").deleteOne({ sessionId }))
+          .deletedCount;
+      } catch {
+        report.failed.push("session");
+      }
+    }
+
+    return report;
   }
 
   async listSessions(): Promise<Document[]> {
