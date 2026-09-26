@@ -36,6 +36,7 @@
     "verify:version": "node scripts/release/version-census.mjs",
     "verify:config": "node scripts/release/config-census.mjs",
     "verify:secrets": "node scripts/release/secret-guards.mjs",
+    "verify:packages": "node scripts/release/private-packages.mjs",
     "verify:attribution": "node scripts/release/attribution-guard.mjs",
     "verify:backup": "node scripts/release/backup-restore-drill.mjs",
     "verify:image": "node scripts/release/verify-image.mjs",

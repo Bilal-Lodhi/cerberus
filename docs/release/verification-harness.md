@@ -25,6 +25,7 @@ npm run verify:release -- --only docs --only version-census
 npm run verify:version
 npm run verify:config
 npm run verify:secrets
+npm run verify:packages
 npm run typecheck:tests
 ```
 
@@ -45,6 +46,7 @@ command.
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
 | `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
+| `private-packages` | Every workspace package is unpublishable by construction | `npm run verify:packages` |
 | `attribution-guard` | No commit in range presents a non-existent contributor | `npm run verify:attribution` |
 | `backup-restore-drill` | A disposable database is backed up, restored into a scratch database, and verified — counts, uniqueness guarantees, and every refusal | `npm run verify:backup` |
 | `stale-image-defence` | The image is built `--no-cache` from this tree, and its recorded version and commit match the source and the running container | `npm run verify:image` |
@@ -97,6 +99,64 @@ written:
 Release publication is a separate, human decision. See
 [release-checklist.md](release-checklist.md) and
 [v0.3.0-checklist.md](v0.3.0-checklist.md) for what that decision involves.
+
+## Reproducing it in CI
+
+`npm run verify:release` was, for `v0.4.0`, a command a maintainer ran on their own machine.
+That is one step better than a checklist and one step short of a gate: the evidence existed,
+but nobody else could produce it, and a step that depends on a local Docker daemon and a
+local MongoDB is a step whose result nobody can re-check.
+
+[`.github/workflows/release-verification.yml`](../../.github/workflows/release-verification.yml)
+runs **exactly that command** on `workflow_dispatch`, so the thing CI exercises is the thing
+an operator runs. It is manual rather than per-pull-request because the real-database suite
+and the container build are slow, and because a release drill is a decision someone makes.
+
+What it guarantees:
+
+| Property | How |
+| --- | --- |
+| **Never publishes** | No step can push, publish, tag or create a release; the `secret-guards` step fails the run if a publishing command appears under `scripts/release/` |
+| **No paid AI** | The provider boundary is stubbed exactly as the test suite stubs it, so no provider credential is needed and nothing is spent |
+| **No repository secret** | The only credential-shaped value is the disposable database's own loopback connection string |
+| **MongoDB is present** | A `mongo:7` service container, plus a step that pings it and **fails** if it does not answer |
+| **Nothing is skipped** | The harness's recorded output is grepped for `SKIPPED`; a skipped step fails the run |
+| **Minimal permissions** | `contents: read`, and nothing else |
+| **Bounded** | A 45-minute job timeout; the container and the database are service/runner resources, so nothing is left behind |
+| **No secret in an artifact** | The only artifact is the harness's own log, which holds a loopback address and nothing else |
+
+The `skip_console` input exists for a drill that is deliberately not about the Flutter
+console. It is off by default, and turning it on makes the console steps *not run* rather
+than *pass* — the harness still reports them as absent.
+
+## The private-package guard
+
+`npm run verify:packages` asserts that **no workspace package can be uploaded to a registry
+by accident**. `packages/mcp-mongodb` shipped without `"private": true` through four
+releases, so the only thing standing between this tree and a published
+`@cerberus/mcp-mongodb` was nobody happening to type the command.
+
+That asymmetry is why this is a guard rather than a convention. Every other mistake in this
+repository is recoverable by a later commit; a registry upload is not — an unpublished
+version number stays burned, and the name is claimed.
+
+The rule, from `scripts/release/private-packages.mjs`:
+
+- every workspace package must set `"private": true`, or be named in the guard's
+  `PUBLISHABLE` allowlist **with a reason**;
+- the root manifest is checked too, since it is the package a publication run from the
+  repository root would act on;
+- a workspace entry that resolves to no directory, a directory with no manifest, a duplicate
+  package name, and a **stale allowlist entry** each fail — every one of them is a way for
+  the guarantee to be silently turned off while the guard still reports OK.
+
+`PUBLISHABLE` is empty on purpose: Cerberus publishes no npm package. The map exists so that
+deciding otherwise is an explicit, reviewable edit rather than a missing field.
+
+The guard's rules are asserted by
+[`apps/api/test/release/private-packages.test.ts`](../../apps/api/test/release/private-packages.test.ts),
+which drives each refusal over a disposable fixture tree. A guard verified only against a
+tree that already passes proves it can say OK, not that it can say no.
 
 ## The attribution guard
 

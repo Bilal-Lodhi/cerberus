@@ -13,7 +13,13 @@
     "",
     "`rootDir` is widened to the repository root: the build config pins it to `src`, which",
     "is right for emit and wrong here, because the test tree imports the MCP package. It",
-    "has no effect on output because `noEmit` is set."
+    "has no effect on output because `noEmit` is set.",
+    "",
+    "`allowJs` is on because some release guards live in `scripts/release/*.mjs` and are",
+    "tested from this tree — a guard is only a guard if its refusals are asserted, and",
+    "`private-packages.mjs` exports its rule so a fixture tree can be driven through it.",
+    "Without `allowJs` the import is a compile error and the guard's refusals go untested.",
+    "`checkJs` stays off, so the JavaScript itself is inferred rather than type-checked."
   ],
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -22,7 +28,8 @@
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
-    "rootDir": "../.."
+    "rootDir": "../..",
+    "allowJs": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]

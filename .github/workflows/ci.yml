@@ -61,6 +61,13 @@ jobs:
       - name: Configuration census
         run: npm run verify:config
 
+      # `packages/mcp-mongodb` shipped without `"private": true` through four releases, so
+      # the only thing preventing an accidental `npm publish` of it was nobody typing the
+      # command. The registry is not reversible the way the rest of this repository's
+      # operations are, so the refusal is made a property of the manifest here.
+      - name: Private-package guard
+        run: npm run verify:packages
+
       # The test tree, which `npm run typecheck` deliberately excludes.
       - name: Typecheck the test tree
         run: npm run typecheck:tests
