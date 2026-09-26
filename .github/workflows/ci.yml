@@ -49,11 +49,99 @@ jobs:
       - name: Automated tests
         run: npm test
 
+      - name: Documentation links and anchors
+        run: npm run check:docs
+
       - name: Verify compiled entrypoints exist
         run: |
           test -f apps/api/dist/index.js
           test -f packages/mcp-mongodb/dist/http-adapter.js
           test -f packages/mcp-mongodb/dist/server.js
+
+  # ───────────────────────────────────────────────────────────────────
+  # Real MongoDB: the contract suite and the highest-risk state flows
+  # ───────────────────────────────────────────────────────────────────
+  #
+  # The job above runs without a database, so the real-store halves of the contract suite
+  # and the whole integration suite are **skipped there with a stated reason**. That is the
+  # right default for a fast unit job, but a skip is not a pass — and this repository has
+  # four recorded defects that its own suite could not see precisely because a double agreed
+  # with the route and disagreed with the database.
+  #
+  # So this job provides a real `mongo:7` and sets `CERBERUS_TEST_MONGODB_URI`, which turns
+  # every one of those skips into a run. It is **bounded** on purpose: a 20-minute timeout,
+  # and it runs the test script rather than the full build matrix, so a hang is a failure
+  # rather than an indefinitely green check.
+  #
+  # No paid AI: the provider boundary is stubbed exactly as the unit suite stubs it.
+  integration:
+    name: Integration (real MongoDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CERBERUS_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Confirm the database is reachable
+        run: |
+          # A service container that is not ready would make the suite *skip* rather than
+          # fail, and a skipped suite is green for the wrong reason. This makes the
+          # precondition explicit and fatal.
+          node --input-type=module -e "
+            import { MongoClient } from 'mongodb';
+            const client = new MongoClient(process.env.CERBERUS_TEST_MONGODB_URI);
+            await client.connect();
+            const ok = (await client.db('admin').command({ ping: 1 })).ok;
+            await client.close();
+            if (ok !== 1) {
+              console.error('MongoDB did not answer a ping');
+              process.exit(1);
+            }
+            console.log('MongoDB is reachable');
+          "
+
+      - name: Contract and integration suites against real MongoDB
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/integration.log
+
+      - name: Assert nothing was skipped
+        run: |
+          # The unit job is allowed to skip; this one is not. A silent skip here would mean
+          # the integration suite stopped running — the failure this job exists to prevent —
+          # so the recorded output is checked rather than trusted.
+          if grep -qE '# SKIP' /tmp/integration.log; then
+            echo "::error::a test was skipped in the integration job"
+            grep -E '# SKIP' /tmp/integration.log
+            exit 1
+          fi
+          echo "OK: no test was skipped against real MongoDB."
 
   # ───────────────────────────────────────────────────────────────────
   # Flutter console: analyze and test

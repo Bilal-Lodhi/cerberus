@@ -501,7 +501,7 @@ engineering rationale recorded here:
 | L | API/MCP compatibility preserved where reasonably possible | **Done so far** — every MCP change this cycle is an added optional argument, and the new error codes are additive. `terminate`'s `503` replaces a misleading `404` |
 | M | No P0/P1 correctness/security issue remains | **Done** — the confirmed P1 (a terminated session was not terminal) is fixed, with regression tests. Remaining known items are P2 |
 | N | Test doubles audited against real-store behavior | **Done** — [test-double-contract.md](test-double-contract.md) audits them, and one shared faithful double replaces four divergent ones, verified against a real MongoDB 7 |
-| O | One real-Mongo integration suite protects the highest-risk state flows | Partly — the contract suite runs against a real MongoDB, and the transition table is covered in-process; a dedicated disposable-Mongo integration suite and a bounded CI job are still open |
+| O | One real-Mongo integration suite protects the highest-risk state flows | **Done** — `apps/api/test/integration/state-flows.test.ts` runs eleven flows through the real routes, the real tool registry and a real MongoDB driver. A bounded CI job provides `mongo:7` and asserts that nothing was skipped |
 | P | Docs, threat model and compatibility docs match implementation | Partly — [api-errors.md](../api-errors.md) is new, and the transition model is updated; the threat model and compatibility docs need a pass |
 | Q | CI green | Green on every pull request so far |
 | R | `v0.1.0` and `v0.2.0` tags unchanged | Verified at the start of the phase; re-verified before the checkpoint |

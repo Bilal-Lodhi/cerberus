@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`npm run check:docs` — a documentation link and anchor checker, gated in CI.** Every
+  relative link in every tracked `*.md` is resolved against the filesystem, and every
+  in-repo `#anchor` against the target file's headings. `docs/` is a deliverable, and a
+  cross-reference that points at a heading that was renamed is a broken promise that no test
+  catches.
+
+  It refuses to pass vacuously: a pathspec that matches nothing exits non-zero rather than
+  reporting zero broken links over an empty set, and the file count is printed. That is not
+  theoretical — the first version called `git ls-files '*.md'`, whose quotes do not survive
+  every shell, and it reported a clean sweep over **zero** files.
+
+  It also splits lines on `/\r?\n/` rather than `"\n"`, because a bare trailing `\r` makes
+  `/^(#{1,6})\s+(.*)$/` fail to match — `.` does not match a line terminator — so the heading
+  scan silently finds nothing and every anchor looks broken. Editing a file with a tool that
+  writes CRLF produced exactly that, and four anchors were reported broken that were fine.
+  A checker that lies is worse than no checker, which is why both cases are handled rather
+  than worked around.
+
+### Added
+
+- **A real-MongoDB integration suite, and a bounded CI job that runs it.** The unit suite
+  drives the real routes against an in-process double, and the contract suite verifies that
+  double against a real store. Neither exercises the whole path at once: **real route → real
+  tool registry → real MongoDB driver → real documents** — which is where every defect in
+  this repository's history actually lived. A retry counted twice, a review reporting the
+  oldest assessment, a terminated session resurrected by a later ingest: each was a
+  real-database behaviour that a faithful-looking double agreed with the route about.
+
+  `apps/api/test/integration/state-flows.test.ts` closes that gap without a network hop. It
+  reuses the **real** `createToolRegistry()` over a real `MongoStore` on a disposable
+  database, and presents it through the same `fetch`-stub seam the unit tests use — so an
+  integration test is written exactly like a unit test and every layer below HTTP is
+  production code. Eleven flows: create, ingest, retry the duplicate, restart; a retry after
+  a restart; auto-lock writing its evidence before its status; final-risk ordering against
+  the real sort; terminate preserving the workspace and staying irreversible; concurrent
+  ingests; a duplicate event across concurrent batches; terminate racing auto-lock; the
+  corpus ceiling; and the migrations and their indexes.
+
+  The new `integration` CI job provides a `mongo:7` service and sets
+  `CERBERUS_TEST_MONGODB_URI`, turning every skip into a run. It is **bounded** — a
+  20-minute timeout — and it **asserts that nothing was skipped**, because a suite that
+  silently skips is green for the wrong reason. The unit job still runs without a database,
+  so a fast signal is preserved.
+
+- **`runMigrations` makes the ledger idempotent.** A unique index on
+  `schema_migrations.migrationId` is created before the first write, and a duplicate-key
+  error on the ledger insert is treated as "another runner recorded this" rather than as a
+  failure. Without it, two processes starting together both read a pending plan and both
+  insert a row for the same migration, so the ledger stopped being a faithful account of
+  what the database has been through — which is its whole purpose. A ledger write that fails
+  for any other reason still surfaces.
+
+  Two runners may still *execute* a migration concurrently. That is safe and deliberate:
+  every migration is idempotent and fails before mutating, so the second execution is a
+  no-op rather than a second rewrite. Making execution exclusive needs a claim protocol and
+  a lease, and the evidence does not require one — the documented deployment is one API and
+  one adapter on one database.
+
 - **Terminal content has one owner, and the API writes it.**
   `update_session_terminal_content` is a published MCP capability that **no route called**,
   so `monitored_sessions.terminalContent` was always absent. The review path therefore

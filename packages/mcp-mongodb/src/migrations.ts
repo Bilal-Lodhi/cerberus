@@ -38,6 +38,8 @@
 
 import type { Db, ObjectId } from "mongodb";
 
+import { isDuplicateKeyError } from "./mongo-client.js";
+
 /** Collection holding the migration ledger. */
 export const MIGRATIONS_COLLECTION = "schema_migrations";
 
@@ -566,6 +568,31 @@ export async function runMigrations(
 
   const ledger = db.collection(MIGRATIONS_COLLECTION);
 
+  // ── Make the ledger write idempotent, so two runners cannot double-record ──
+  //
+  // Without a unique index, two processes starting at the same time both read a pending
+  // plan and both insert a ledger row for the same migration — so the ledger stops being a
+  // faithful account of what the database has been through, which is its whole purpose.
+  //
+  // The index is created here rather than in `ensureIndexes` because this module owns the
+  // ledger. It is idempotent for an identical specification, so calling it on every run is
+  // safe, and it is created before the first write rather than after.
+  //
+  // ── What this does and does not fix ──
+  //
+  // **Fixed:** duplicate ledger rows. A losing runner's insert raises a duplicate-key error,
+  // which is caught below and treated as "another runner recorded this".
+  //
+  // **Not fixed, and deliberately:** two runners may still *execute* the same migration
+  // concurrently. That is safe here because every migration is idempotent and fails before
+  // mutating — a property the registry's type and its documentation already require — so the
+  // second execution is a no-op rather than a second rewrite. Making execution exclusive
+  // would need a claim protocol and a lease, and the evidence does not require one: the
+  // documented deployment is a single API and a single adapter, and both connect to the same
+  // database at startup. An operator running a second instance concurrently should stop one
+  // of them, which `docs/operations/upgrade.md` says.
+  await ledger.createIndex({ migrationId: 1 }, { unique: true });
+
   for (const migration of MIGRATIONS) {
     const entry = plan.find((candidate) => candidate.id === migration.id);
     if (entry?.state === "applied") continue;
@@ -580,12 +607,26 @@ export async function runMigrations(
       },
     });
 
-    await ledger.insertOne({
-      migrationId: migration.id,
-      description: migration.description,
-      appliedAt: new Date(),
-      ...(detailLines.length > 0 ? { detail: detailLines.join("; ") } : {}),
-    });
+    try {
+      await ledger.insertOne({
+        migrationId: migration.id,
+        description: migration.description,
+        appliedAt: new Date(),
+        ...(detailLines.length > 0 ? { detail: detailLines.join("; ") } : {}),
+      });
+    } catch (error) {
+      // Classified from the driver's error code rather than by matching a message, and only
+      // for a duplicate key: any other failure must still surface, because a migration whose
+      // work succeeded but whose ledger write failed for another reason is a state an
+      // operator needs to see.
+      if (isDuplicateKeyError(error)) {
+        log(
+          `another runner recorded ${migration.id} — the work is idempotent, so this is not an error`,
+        );
+        continue;
+      }
+      throw error;
+    }
 
     applied.push(migration.id);
   }

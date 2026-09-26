@@ -53,6 +53,13 @@ parameter. Passing the wrong one turns a repairable duplicate into a refusal.
 | Collection | Holds |
 | --- | --- |
 | `schema_migrations` | The migration ledger: which migrations this database has had applied, when, and what each reported. |
+
+The ledger carries a **unique index on `migrationId`**, created by the runner before
+its first write. Two processes starting together both read a pending plan, and without
+the index both would insert a row for the same migration — so the ledger would stop
+being a faithful account of what the database has been through. A duplicate-key error
+on the insert is treated as "another runner recorded this" rather than as a failure.
+See [operations/upgrade.md](operations/upgrade.md#running-migrations-from-more-than-one-process).
 | `reference_corpus_meta` | One counter document holding the reference-corpus size, so the corpus ceiling can be enforced with an atomic conditional `$inc` rather than a count-then-insert that races. Not domain data. |
 
 ---

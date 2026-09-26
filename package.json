@@ -25,6 +25,7 @@
     "verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-all.ps1",
     "backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup-cerberus.ps1",
     "restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-cerberus.ps1",
-    "bench": "npm run build:api && node scripts/bench/run-bench.mjs"
+    "bench": "npm run build:api && node scripts/bench/run-bench.mjs",
+    "check:docs": "node scripts/check-docs.mjs"
   }
 }

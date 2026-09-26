@@ -179,6 +179,7 @@ interface FakeDb {
   riskAssessmentAggregateCalls: () => number;
   sessionCountCalls: () => number;
   sessionUpdateCalls: () => number;
+  ledgerIndexCalls: () => number;
 }
 
 /**
@@ -213,6 +214,7 @@ function fakeDb(options: {
   let riskAssessmentAggregateCalls = 0;
   let sessionCountCalls = 0;
   let sessionUpdateCalls = 0;
+  let ledgerIndexCalls = 0;
 
   const microEvents = {
     aggregate() {
@@ -248,7 +250,11 @@ function fakeDb(options: {
   };
 
   const schemaMigrations = {
-    find() {
+    /** The runner makes the ledger idempotent before its first write. */
+    async createIndex() {
+      ledgerIndexCalls++;
+      return "migrationId_1";
+    },    find() {
       return {
         sort() {
           return {
@@ -262,6 +268,16 @@ function fakeDb(options: {
       };
     },
     async insertOne(document: Record<string, unknown>) {
+      // Models the unique index: a second row for one migration is a duplicate-key error,
+      // which the runner treats as "another runner recorded this".
+      if (ledger.some((row) => row["migrationId"] === document["migrationId"])) {
+        // A real driver error, so the runner's `instanceof MongoServerError` check is
+        // exercised rather than a lookalike that happens to carry the same code.
+        throw new MongoServerError({
+          message: "E11000 duplicate key error collection: schema_migrations index: migrationId_1",
+          code: 11000,
+        });
+      }
       ledger.push(document);
       return { insertedId: "ledger-1" };
     },
@@ -286,6 +302,7 @@ function fakeDb(options: {
     riskAssessmentAggregateCalls: () => riskAssessmentAggregateCalls,
     sessionCountCalls: () => sessionCountCalls,
     sessionUpdateCalls: () => sessionUpdateCalls,
+    ledgerIndexCalls: () => ledgerIndexCalls,
   };
 }
 
@@ -610,6 +627,50 @@ describe("runMigrations", () => {
       String(ledger[2]["detail"]),
       /renamed the focus-loss counter on 7 of 7 document\(s\)/,
     );
+  });
+
+  test("the ledger is made idempotent before the first write", async () => {
+    // Without a unique index on `migrationId`, two processes starting at the same time both
+    // read a pending plan and both insert a ledger row for the same migration — so the
+    // ledger stops being a faithful account of what the database has been through, which is
+    // its whole purpose.
+    const { db, ledgerIndexCalls } = fakeDb();
+
+    await runMigrations(db);
+
+    assert.equal(
+      ledgerIndexCalls(),
+      1,
+      "the ledger's unique index was not ensured before writing to it",
+    );
+  });
+
+  test("a ledger row another runner already wrote is not an error", async () => {
+    // Two runners can both read a pending plan. The index makes the loser's insert raise a
+    // duplicate key, which is the *expected* outcome of the race rather than a failure — and
+    // the loser must not claim it applied the migration.
+    const { db, ledger } = fakeDb();
+    // A row for 0001 that appeared after the plan was read.
+    ledger.push({
+      migrationId: "0001-dedupe-micro-event-identity",
+      description: "recorded by another runner",
+      appliedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const result = await runMigrations(db);
+
+    assert.ok(
+      !result.applied.includes("0001-dedupe-micro-event-identity"),
+      "the losing runner claimed it applied a migration another runner recorded",
+    );
+    assert.equal(
+      ledger.filter((row) => row["migrationId"] === "0001-dedupe-micro-event-identity").length,
+      1,
+      "the ledger gained a duplicate row for one migration",
+    );
+    // The later migrations still applied, so one lost race does not abandon the run.
+    assert.ok(result.applied.includes("0002-dedupe-risk-assessment-identity"));
+    assert.ok(result.applied.includes("0003-rename-fullscreen-exit-to-focus-loss"));
   });
 });
 

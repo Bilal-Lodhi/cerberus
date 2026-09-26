@@ -4,6 +4,25 @@ Cerberus ships schema and data migrations. Upgrading is: back up, look at the
 plan, apply, restart. This document covers each step and what to do when a
 migration refuses to run.
 
+## Running migrations from more than one process
+
+The migration ledger carries a **unique index on `migrationId`**, created by the runner
+before its first write. Two processes starting at the same time both read a pending plan,
+and without the index both would insert a row for the same migration — so the ledger would
+stop being a faithful account of what the database has been through, which is its whole
+purpose. A duplicate-key error on the insert is treated as "another runner recorded this"
+rather than as a failure, and one lost race does not abandon the run: the later migrations
+still apply.
+
+Two runners may still **execute** the same migration concurrently, and that is safe by
+design: every migration is idempotent and fails before mutating, so the second execution is
+a no-op rather than a second rewrite. There is no claim protocol and no lease, because the
+documented deployment is one API and one adapter against one database.
+
+If you are running a second instance concurrently, stop one of them before upgrading. That
+is simpler than reasoning about interleaved rewrites. The ledger's `detail` field records
+what each migration actually did, so you can see afterwards whether a run was a no-op.
+
 ## Before you start
 
 Take a backup. Migrations here are written to be safe — idempotent, and failing
