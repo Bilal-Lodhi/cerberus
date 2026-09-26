@@ -21,6 +21,8 @@ verification at the checkpoint, and what remains accepted rather than fixed.
 | Tests, without a database | 797, 792 passing, 5 skipped with a stated reason |
 | MCP adapter suite | 10, all passing |
 | Runtime dependency advisories | **0** (`npm audit --omit=dev`) |
+| Release verification harness | **17 passed, 0 failed, 0 skipped** on the release target |
+| Published | **yes** — `v0.4.0` as a GitHub pre-release, tag object `78fdce26c517ee65cb2bf77fceb379306d36dc30`, target `ed14728f9dfeaace841474b909ecfba15cd6feb3` |
 
 The starting point was an *architecturally coherent* experimental system: one canonical
 transition boundary, explicit partial-failure semantics, deterministic behaviour under
@@ -137,10 +139,15 @@ Read at the checkpoint, and unchanged from the state recorded before the cycle b
 | `v0.1.0` | `55329b5e378cb890c9b9775647396ea57fd7bdc7` | `ef98f962530fb62340cf213b408f1cd715755c01` |
 | `v0.2.0` | `c987767494f4d1c624005f6f498334e658d2c1bc` | `a355f310eefb5345ddafe8af53cfec805eb21c64` |
 | `v0.3.0` | `af22236626019352bddebe8798a659151af7ec4f` | `95b57836b4d879766ad94953323ce5811f50041a` |
+| `v0.4.0` | `78fdce26c517ee65cb2bf77fceb379306d36dc30` | `ed14728f9dfeaace841474b909ecfba15cd6feb3` |
 
 `v0.3.0`'s object and target match the values recorded when it was published. No tag was
 moved, recreated or force-updated; no published commit was amended or rewritten; no
 force-push was performed.
+
+`v0.4.0` was created **after** the checkpoint and is recorded here rather than in the table
+above, which is the checkpoint's own state. It is an annotated tag on the release target,
+published as a GitHub pre-release, and it is not marked stable or latest.
 
 ## 7. Verification at the checkpoint
 

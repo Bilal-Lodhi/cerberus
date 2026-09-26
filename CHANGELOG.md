@@ -11,9 +11,11 @@ _Nothing yet._
 
 ## [0.4.0] - 2026-09-26
 
-**Published as a GitHub pre-release** on 2026-09-26. Annotated tag `v0.4.0`. No npm package,
-no container image and no hosted deployment were published, and nothing was marked stable or
-latest. This is an experimental research system and is not production ready — see
+**Published as a GitHub pre-release** on 2026-09-26. Annotated tag `v0.4.0`, tag object
+`78fdce26c517ee65cb2bf77fceb379306d36dc30`, target
+`ed14728f9dfeaace841474b909ecfba15cd6feb3`. No npm package, no container image and no hosted
+deployment were published, and nothing was marked stable or latest. This is an experimental
+research system and is not production ready — see
 [docs/release/v0.4.0-release-notes.md](docs/release/v0.4.0-release-notes.md) for what the
 release does and does not claim.
 
