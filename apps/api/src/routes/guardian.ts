@@ -68,8 +68,14 @@ import {
   normalizeStatus,
   isMonitored,
   SESSION_TRANSITION_CODES,
-  type PersistedSessionStatus,
 } from "../services/session-status.js";
+import {
+  readDurableCounter,
+  readDurableSessionView,
+  readDurableString,
+  readFocusLossCount,
+  type DurableSessionView,
+} from "../services/session-read-model.js";
 import {
   findSimilarityMatches,
   type ReferenceDocument,
@@ -509,27 +515,7 @@ export function createGuardianRouter(
       }
 
       // 5. Update durable aggregate counters.
-      await callMcpTool(
-        config,
-        MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS,
-        {
-          sessionId,
-          counts: {
-            // The hydrated lifetime total, not `events.length` — which is only
-            // what this process has seen since it started.
-            eventCount: session.eventCount,
-            pasteCount: session.pasteCount,
-            tabSwitchCount: session.tabSwitchCount,
-            // Previously omitted, so MongoDB never learned this counter and a
-            // restart reset it to 0 — which silently disabled the fullscreen-exit
-            // analysis trigger and its score penalty.
-            focusLossCount: session.focusLossCount,
-            copyAttemptCount: session.copyAttemptCount,
-            peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
-          },
-        },
-        { requestId, timeoutMs: MCP_TIMEOUT_MS },
-      );
+      await writeDurableCounters(session, requestId);
 
       // 6. Decide whether this batch warrants AI analysis.
       const hasLargePaste = body.events.some(
@@ -751,6 +737,23 @@ export function createGuardianRouter(
           // for one whose write had failed.
           session.lastRiskPayloadStored = stored.ok;
           assessmentPersisted = stored.ok;
+
+          if (stored.ok) {
+            // ── The durable peak, written now that there is evidence for it ──
+            //
+            // The counters write at step 5 runs **before** the analysis, so the
+            // `peakRiskScore` it wrote was the previous batch's. Two consequences were
+            // observable: the durable peak lagged by one batch, and for a session whose
+            // last batch produced the highest score it never recorded that score at all.
+            // The review surfaces and the live list's restart recovery both read this
+            // field, so the lag showed up as the surfaces disagreeing about the same
+            // session — and as `alertTriggered: false` after a restart for a session that
+            // scored 98.
+            //
+            // Written only when the assessment is durable, so the durable peak never
+            // exceeds the durable evidence for it.
+            await writeDurableCounters(session, requestId);
+          }
 
           if (!stored.ok) {
             // No durable evidence means no status change and no alert. Locking a
@@ -1576,15 +1579,6 @@ export function createGuardianRouter(
     };
   }
 
-  /** Reads a string field from an untyped durable document. */
-  function readDurableString(
-    source: Record<string, unknown> | null,
-    key: string,
-  ): string | null {
-    const value = source?.[key];
-    return typeof value === "string" && value.length > 0 ? value : null;
-  }
-
   /**
    * The activity view of a session, assembled from every source that can carry
    * a trustworthy "last busy" timestamp. The predicate takes the most recent
@@ -1641,97 +1635,39 @@ export function createGuardianRouter(
     session.lastActivityAt = toISOStringLocal(new Date(clock.now()));
   }
 
-  /** Reads a finite, non-negative counter from an untyped durable document. */
-  function readDurableCounter(
-    durable: Record<string, unknown> | null,
-    key: string,
-  ): number {
-    const value = durable?.[key];
-    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-  }
-
   /**
-   * Reads the focus-loss counter, tolerating the deprecated field name.
+   * Writes the durable aggregate counters from the current in-memory session state.
    *
-   * The counter used to be stored as `fullscreenExitCount`, which described one of the
-   * two events that incremented it — `WINDOW_BLUR` counted as a fullscreen exit. Migration
-   * `0003` renames it. This fallback means a deployment that has not run the migration
-   * still reports the right number rather than zero, and takes the **larger** of the two
-   * so a document holding both cannot lose the higher total.
-   */
-  function readFocusLossCount(durable: Record<string, unknown> | null): number {
-    return Math.max(
-      readDurableCounter(durable, "focusLossCount"),
-      readDurableCounter(durable, "fullscreenExitCount"),
-    );
-  }
-
-  // ─── The durable read model ──────────────────────────────────────
-  //
-  // One reader for every surface that answers from a durable session document, so the
-  // live list and the detail route cannot drift apart about the same document. They did:
-  // the detail route's registry branch reported zero for every counter, so a session
-  // deployed before a restart reported `eventCount: 0` on the detail surface while the
-  // live list reported the durable total.
-
-  /** The durable-derived fields of a session, read from its document. */
-  interface DurableSessionView {
-    sessionId: string;
-    employeeId: string;
-    /** The scenario matrix id, tolerating the legacy `auditId` spelling. */
-    matrixId: string;
-    targetSystem: string;
-    status: PersistedSessionStatus;
-    deployedAt: string;
-    lastActivityAt: string;
-    /** `peakRiskScore`, falling back to the older spellings. */
-    riskScore: number;
-    eventCount: number;
-    pasteCount: number;
-    tabSwitchCount: number;
-    focusLossCount: number;
-    copyAttemptCount: number;
-  }
-
-  /**
-   * Reads the durable view of a session document.
+   * Called twice on an analysed batch — before the analysis, so a batch that does not
+   * trigger one still records its counters, and again after a **durable** assessment, so
+   * the durable `peakRiskScore` is the score this batch produced rather than the previous
+   * batch's. See the comment at the second call site.
    *
-   * Every field is read through the same tolerant readers the hydration path uses, so a
-   * document that holds a legacy field name or an unusable value is reported the same
-   * way wherever it is read. `deployedAt` falls back to `createdAt` and then to the
-   * current instant: a document with neither is malformed — `create_session` always
-   * writes one — and a fabricated-but-plausible instant is a smaller problem than a
-   * missing one on a display surface. The live list has always done this; sharing the
-   * reader is what makes the two agree.
+   * `eventCount` is the hydrated lifetime total, not `events.length`, which is only what
+   * this process has seen since it started. `focusLossCount` is sent because it was once
+   * omitted: MongoDB never learned it, and a restart reset it to 0, which silently
+   * disabled the focus-loss analysis trigger and its score penalty.
    */
-  function readDurableSessionView(
-    document: Record<string, unknown>,
-    sessionId: string,
-  ): DurableSessionView {
-    const deployedAt = String(
-      document["deployedAt"] ?? document["createdAt"] ?? toISOStringLocal(),
+  async function writeDurableCounters(
+    session: SessionState,
+    requestId: string,
+  ): Promise<void> {
+    await callMcpTool(
+      config,
+      MCP_TOOL_NAMES.UPDATE_SESSION_COUNTS,
+      {
+        sessionId: session.sessionId,
+        counts: {
+          eventCount: session.eventCount,
+          pasteCount: session.pasteCount,
+          tabSwitchCount: session.tabSwitchCount,
+          focusLossCount: session.focusLossCount,
+          copyAttemptCount: session.copyAttemptCount,
+          peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
+        },
+      },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
     );
-
-    return {
-      sessionId,
-      employeeId: String(document["employeeId"] ?? "unknown"),
-      matrixId: String(document["matrixId"] ?? document["auditId"] ?? ""),
-      targetSystem: String(document["targetSystem"] ?? ""),
-      status: normalizeStatus(String(document["status"] ?? "active")),
-      deployedAt,
-      lastActivityAt: String(document["updatedAt"] ?? deployedAt),
-      riskScore: Number(
-        document["peakRiskScore"] ??
-          document["overallRiskScore"] ??
-          document["riskIndex"] ??
-          0,
-      ),
-      eventCount: readDurableCounter(document, "eventCount"),
-      pasteCount: readDurableCounter(document, "pasteCount"),
-      tabSwitchCount: readDurableCounter(document, "tabSwitchCount"),
-      focusLossCount: readFocusLossCount(document),
-      copyAttemptCount: readDurableCounter(document, "copyAttemptCount"),
-    };
   }
 
   /**

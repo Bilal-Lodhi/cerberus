@@ -17,7 +17,12 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
-import type { RiskAssessmentPayload, SessionReviewResponse, TimelineEntry } from "../types.js";
+import type {
+  ReviewDisposition,
+  RiskAssessmentPayload,
+  SessionReviewResponse,
+  TimelineEntry,
+} from "../types.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
 import {
   resolveLiveness,
@@ -28,7 +33,8 @@ import {
 } from "../services/session-liveness.js";
 import { toISOStringLocal } from "../utils/time.js";
 import { currentRequestId } from "../observability/request-context.js";
-import { SESSION_TRANSITION_CODES } from "../services/session-status.js";
+import { normalizeStatus, SESSION_TRANSITION_CODES } from "../services/session-status.js";
+import { readDurableSessionView } from "../services/session-read-model.js";
 import type { ActiveSession, SessionState } from "./guardian.js";
 
 const MCP_TIMEOUT_MS = 5_000;
@@ -482,12 +488,26 @@ export function createReviewRouter(
         sessionId,
         employeeId: memSession.employeeId || "unknown",
         auditId: memSession.auditId || "",
-        status:
-          memSession.status === "terminated" || memSession.status === "locked"
-            ? memSession.status
-            : riskSummary.length > 0
-              ? "flagged"
-              : "active",
+        // The same split as the durable path: the lifecycle status, and the disposition
+        // as its own field. This branch has no timeline, so the only disposition it can
+        // derive is "there is a risk payload".
+        status: normalizeStatus(memSession.status),
+        disposition: riskSummary.length > 0 ? "flagged" : "none",
+        // The in-memory state is authoritative here, and it holds the hydrated lifetime
+        // totals — the same numbers the live surfaces report.
+        eventCount: Math.max(memSession.events.length, memSession.eventCount),
+        pasteCount: memSession.pasteCount,
+        tabSwitchCount: memSession.tabSwitchCount,
+        focusLossCount: memSession.focusLossCount,
+        fullscreenExitCount: memSession.focusLossCount,
+        copyAttemptCount: memSession.copyAttemptCount,
+        peakRiskScore: memSession.lastRiskPayload?.overallRiskScore ?? 0,
+        timelineTruncated: false,
+        startedAt:
+          activeSessions.get(sessionId)?.deployedAt ??
+          memSession.events[0]?.timestamp ??
+          "",
+        targetSystem: activeSessions.get(sessionId)?.targetSystem ?? "",
         terminalContent: memSession.currentCode ?? "",
         timeline,
         riskSummary,
@@ -524,24 +544,34 @@ export function createReviewRouter(
       }),
     );
 
-    let status: SessionReviewResponse["status"] =
-      (session.status as SessionReviewResponse["status"]) ?? "active";
+    // The lifecycle status, normalised onto the known vocabulary. `flagged`,
+    // `investigating` and `cleared` are never written by this build, so a document
+    // holding one is a legacy record rather than a state the system can reach.
+    const status: SessionReviewResponse["status"] = normalizeStatus(
+      String(session.status ?? "active"),
+    );
 
     const hasSubmission = events.some((event) => event.eventType === "SUBMIT");
     const lastReport = reports.length > 0 ? reports[reports.length - 1] : null;
     const isFlagged =
       lastReport !== null && ((lastReport["overallRiskScore"] as number) ?? 0) > 50;
 
-    // Lifecycle states set by the guardian are authoritative: a terminated
-    // session stays terminated, and a locked session stays locked, regardless
-    // of what the derived risk analysis would otherwise conclude.
-    if (status !== "terminated" && status !== "locked") {
-      if (isFlagged) {
-        status = "flagged";
-      } else if (hasSubmission) {
-        status = "investigating";
-      }
-    }
+    // ── The lifecycle status and the disposition are two different things ──
+    //
+    // This route used to overwrite `status` with `flagged` or `investigating` when the
+    // evidence suggested one. That made it the only surface reporting a derived value
+    // under the lifecycle name: the live list, the live detail and the review *list* all
+    // reported `active` for the same session, and the console's review panel treated
+    // `flagged` as `locked` — so a session scoring 60 was displayed as LOCKED while the
+    // dashboard displayed it as active.
+    //
+    // `status` now carries the lifecycle state under one vocabulary everywhere, and the
+    // derived value moves to `disposition`, which says what it actually is.
+    const disposition: ReviewDisposition = isFlagged
+      ? "flagged"
+      : hasSubmission
+        ? "investigating"
+        : "none";
 
     const riskSummary: RiskAssessmentPayload[] = reports.map((report) => {
       const rawFlags = Array.isArray(report["flags"])
@@ -583,15 +613,50 @@ export function createReviewRouter(
       };
     });
 
+    // ── The durable counters, from the durable document ──
+    //
+    // Reported through the same reader every other surface uses, so the review panel and
+    // the live list cannot disagree about the same session. `timeline` holds the most
+    // recent events only, so `timelineTruncated` says when the two are not the same
+    // number — which is what stops a client from counting the timeline and calling the
+    // result a total.
+    const view = readDurableSessionView(
+      session as unknown as Record<string, unknown>,
+      session.sessionId,
+    );
+
+    // The latest assessment's score when one exists. Otherwise the durable peak, which is
+    // the honest answer for a session whose assessment row did not survive — reporting `0`
+    // would claim the session was never risky while the document says it scored 40.
     const finalRiskScore = lastReport
       ? ((lastReport["overallRiskScore"] as number) ?? 0)
-      : (memSession?.lastRiskPayload?.overallRiskScore ?? 0);
+      : (memSession?.lastRiskPayload?.overallRiskScore || view.riskScore);
 
     const response: SessionReviewResponse = {
       sessionId: session.sessionId,
       employeeId: session.employeeId ?? memSession?.employeeId ?? "unknown",
-      auditId: session.auditId ?? memSession?.auditId ?? "",
+      // The scenario matrix id, tolerating the legacy `auditId` spelling — the same
+      // fallback every other surface makes. Without it this route reported an empty
+      // `auditId` for a document that holds only `matrixId`, while the live detail
+      // reported the matrix id for the same session.
+      auditId: firstNonEmptyString(
+        session.auditId,
+        view.matrixId,
+        memSession?.auditId,
+      ),
       status,
+      disposition,
+      eventCount: view.eventCount,
+      pasteCount: view.pasteCount,
+      tabSwitchCount: view.tabSwitchCount,
+      focusLossCount: view.focusLossCount,
+      // Deprecated alias. Same value, so a console or script on the old name keeps working.
+      fullscreenExitCount: view.focusLossCount,
+      copyAttemptCount: view.copyAttemptCount,
+      peakRiskScore: view.riskScore,
+      timelineTruncated: view.eventCount > timeline.length,
+      startedAt: view.deployedAt,
+      targetSystem: view.targetSystem,
       // ── Terminal content: one owner, then two documented fallbacks ──
       //
       // `monitored_sessions.terminalContent` **owns** "the workspace as monitoring

@@ -462,6 +462,14 @@ class ReviewRecord {
   final String employeeId;
   final String auditId;
   final String status;
+
+  /// The review disposition: `flagged`, `investigating` or `none`.
+  ///
+  /// Distinct from [status], which is the lifecycle state. They used to be one field, so
+  /// the review panel received `flagged` where every other surface reported `active` — and
+  /// [isLocked] treated `flagged` as locked, so a session scoring 52 was displayed as
+  /// LOCKED while the dashboard displayed it as active.
+  final String disposition;
   final String startedAt;
   final String? endedAt;
   final double overallRiskScore;
@@ -475,11 +483,18 @@ class ReviewRecord {
   final double peakRiskScore;
   final String targetSystem;
 
+  /// True when the server's event total exceeds the events in [timeline].
+  ///
+  /// The timeline is capped, so it is not a total. When this is true the panel says so
+  /// rather than presenting a truncated window as the whole history.
+  final bool timelineTruncated;
+
   const ReviewRecord({
     required this.sessionId,
     required this.employeeId,
     this.auditId = '',
     this.status = 'active',
+    this.disposition = 'none',
     this.startedAt = '',
     this.endedAt,
     this.overallRiskScore = 0.0,
@@ -492,15 +507,22 @@ class ReviewRecord {
     this.codeSubmission = '',
     this.peakRiskScore = 0.0,
     this.targetSystem = '',
+    this.timelineTruncated = false,
   });
 
   /// Alias — consumers may reference .latestRiskAssessment for the risk payload.
   RiskAssessmentPayload? get latestRiskAssessment => lastRiskPayload;
 
-  /// Whether the session is locked due to detected anomalous behavior.
-  /// The backend stores 'flagged' (set_session_status), while older code
-  /// may use 'locked'. Both are treated as locked.
-  bool get isLocked => status == 'flagged' || status == 'locked';
+  /// Whether the session is locked, from the **lifecycle** status.
+  ///
+  /// This previously also treated `flagged` as locked, on the belief that
+  /// `set_session_status` stored `flagged`. It does not: the durable vocabulary is
+  /// `active`, `locked` and `terminated`. The effect was a false LOCKED claim on the
+  /// review panel for any session the evidence flagged but the lifecycle did not lock.
+  bool get isLocked => status == 'locked';
+
+  /// True when the evidence flags the session, whatever its lifecycle status.
+  bool get isFlagged => disposition == 'flagged';
 
   factory ReviewRecord.fromJson(Map<String, dynamic> json) {
     return ReviewRecord(
@@ -508,6 +530,7 @@ class ReviewRecord {
       employeeId: json['employeeId'] as String? ?? '',
       auditId: json['auditId'] as String? ?? '',
       status: json['status'] as String? ?? 'active',
+      disposition: json['disposition'] as String? ?? 'none',
       startedAt: json['startedAt'] as String? ?? '',
       endedAt: json['endedAt'] as String?,
       overallRiskScore: (json['overallRiskScore'] as num?)?.toDouble() ?? 0.0,
@@ -520,6 +543,7 @@ class ReviewRecord {
       pasteCount: json['pasteCount'] as int? ?? 0,
       tabSwitchCount: json['tabSwitchCount'] as int? ?? 0,
       copyAttemptCount: json['copyAttemptCount'] as int? ?? 0,
+      timelineTruncated: json['timelineTruncated'] as bool? ?? false,
       timeline:
           (json['timeline'] as List<dynamic>?)
               ?.map((e) => e as Map<String, dynamic>)

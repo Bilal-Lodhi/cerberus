@@ -416,11 +416,61 @@ export interface ActiveSession {
  */
 export type SessionLiveness = "active" | "expired";
 
+/**
+ * The review **disposition** of a session: what the evidence suggests, as distinct from
+ * its lifecycle status.
+ *
+ * This used to be folded into `SessionReviewResponse.status`, which made the review
+ * detail the one surface that reported `flagged` where every other surface reported
+ * `active` — including the review *list*, for the same session. Two consequences were
+ * observable: a client comparing the surfaces saw a disagreement about the same session,
+ * and the console's review panel treated `flagged` as `locked`, so a session scoring 60
+ * was displayed as LOCKED while the dashboard displayed it as active.
+ *
+ *   `flagged`        the latest assessment scored above the alert threshold
+ *   `investigating`  the session has a submission, with no assessment above it
+ *   `none`           neither
+ *
+ * Derived at read time and never persisted. `status` carries the lifecycle state
+ * everywhere, under one vocabulary.
+ */
+export type ReviewDisposition = "flagged" | "investigating" | "none";
+
 export interface SessionReviewResponse {
   sessionId: string;
   employeeId: string;
   auditId: string;
+  /**
+   * The **lifecycle** status, the same vocabulary every other surface reports.
+   *
+   * `flagged` and `investigating` are no longer produced here; they are a
+   * {@link ReviewDisposition}. `cleared` is unreachable — nothing has ever produced it —
+   * and is kept in the union only because a legacy document could still hold it.
+   */
   status: "active" | "flagged" | "investigating" | "cleared" | "locked" | "terminated";
+  /** Derived from the evidence. Never persisted. */
+  disposition?: ReviewDisposition;
+  /**
+   * The session's lifetime event total, from the durable document.
+   *
+   * Distinct from `timeline.length`, which is capped: the timeline holds the most recent
+   * events only. Before this field existed the console re-derived its counters by counting
+   * the timeline, so a session with more than 500 events was under-reported on the review
+   * panel.
+   */
+  eventCount?: number;
+  pasteCount?: number;
+  tabSwitchCount?: number;
+  focusLossCount?: number;
+  /** Deprecated alias for `focusLossCount`. Same value. */
+  fullscreenExitCount?: number;
+  copyAttemptCount?: number;
+  /** The durable peak risk score, monotonic across a restart. */
+  peakRiskScore?: number;
+  /** True when the timeline holds fewer events than the session has. */
+  timelineTruncated?: boolean;
+  startedAt?: string;
+  targetSystem?: string;
   terminalContent: string;
   timeline: TimelineEntry[];
   riskSummary: RiskAssessmentPayload[];

@@ -851,8 +851,10 @@ void main() {
               Expanded(
                 child: Text(
                   'Session: ${review.sessionId.length > 8 ? '${review.sessionId.substring(0, 8)}…' : review.sessionId} | '
-                  'Status: ${review.status.toUpperCase()} | '
-                  'Lines: ${_codeController.text.split('\n').length}',
+                  'Status: ${review.status.toUpperCase()}'
+                  '${review.isFlagged ? ' | Disposition: ${review.disposition.toUpperCase()}' : ''}'
+                  '${review.timelineTruncated ? ' | showing ${review.timeline.length} of ${review.eventCount} events' : ''}'
+                  ' | Lines: ${_codeController.text.split('\n').length}',
                   style: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 10,

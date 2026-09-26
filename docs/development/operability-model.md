@@ -130,7 +130,7 @@ see §9 for that residual staleness and why it is accepted.
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `GET /api/v1/sessions` | operator key | one identifier | `services/mcp-client.ts` | one `list_sessions` + one bounded `get_session_review` per session (`eventsLimit: 0`, `assessmentsLimit: 1`) | — | `200` | — | Merges durable entries with the two in-memory maps and takes the maximum observed counter, so a restart never under-reports. A failed per-session read leaves the durable entry's own counters in place. | — |
-| `GET /api/v1/sessions/:id` | operator key | one identifier | `services/mcp-client.ts` | one `get_session_review` | — | `200`, `404` | — | **Serves from live memory when the store does not answer** and the session is in memory. A store failure with nothing in memory is `404`. | `terminalContent` and `codeSnapshot`; both are returned to the caller, and neither belongs in a log line |
+| `GET /api/v1/sessions/:id` | operator key | one identifier | `services/mcp-client.ts` | one `get_session_review` | — | `200`, `404` | `SESSION_NOT_FOUND` | **Serves from live memory when the store does not answer** and the session is in memory. A store failure with nothing in memory is `404`. Reports the lifecycle `status`, a derived `disposition`, the durable counters, `peakRiskScore`, `timelineTruncated`, `startedAt` and `targetSystem`, so a client never has to re-derive a total from the capped timeline. See [read-model.md](read-model.md). | `terminalContent` and `codeSnapshot`; both are returned to the caller, and neither belongs in a log line |
 
 The review surfaces deliberately include sessions whose `SESSION_TTL_SECONDS`
 window has closed. Expiry stops monitoring; it never hides evidence.
@@ -548,6 +548,8 @@ seconds, asserted in `logging-secrets.test.ts`.
   multi-step operation guarantees when a step fails.
 - [`development/session-state-model.md`](session-state-model.md) — which session
   state is durable, reconstructable, ephemeral or derived.
+- [`development/read-model.md`](read-model.md) — the four surfaces that answer for one
+  session, the three vocabularies, and the shared durable reader they all use.
 - [`development/state-transition-model.md`](state-transition-model.md) — the
   transition table, the cache-reconciliation rule that closes the §9.1 window, and
   the open `cleared` vocabulary decision.

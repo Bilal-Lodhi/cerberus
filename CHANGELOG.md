@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`docs/development/read-model.md`** — the four surfaces that answer for one session, the
+  three vocabularies (lifecycle status, review disposition, liveness) that must not be
+  conflated, the shared durable reader, what must agree and what deliberately differs, and
+  the six read-integrity defects that tracing them found.
+- **`disposition` on the review detail response** — `flagged`, `investigating` or `none`.
+  The derived review vocabulary now has its own field instead of overwriting the lifecycle
+  status.
+- **The durable counters on the review detail response** — `eventCount`, `pasteCount`,
+  `tabSwitchCount`, `focusLossCount` (and its deprecated alias), `copyAttemptCount`,
+  `peakRiskScore`, `startedAt`, `targetSystem`, and `timelineTruncated`. A client no longer
+  has to count the capped `timeline` to get a total.
+- **`apps/api/src/services/session-read-model.ts`** — one reader for every surface that
+  answers from a durable session document.
 - **A durable read fallback for `GET /api/v1/guardian/sessions/:id`.** The route read the
   two in-memory maps only, so immediately after a restart it answered `404` for a session
   that exists durably — and kept doing so until `GET /api/v1/guardian/sessions` was called,
@@ -66,6 +79,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The review detail reported `flagged` under `status`,** while the review *list* reported
+  `active` for the same session — and the console's review panel treated `flagged` as
+  `locked`, so a session scoring 52 was displayed as **LOCKED** while the dashboard displayed
+  it as active. `status` now carries the lifecycle state under one vocabulary on every
+  surface, and the derived value is the separate `disposition` field.
+- **The durable `peakRiskScore` lagged by one batch.** The counters write ran *before* the
+  analysis, so the peak it wrote was the previous batch's — and for a session whose last
+  batch produced the highest score, the durable peak never recorded that score at all. The
+  live list's restart recovery and the review surfaces read that field, so the lag showed up
+  as the surfaces disagreeing about one session, and as `alertTriggered: false` after a
+  restart for a session that scored 98. The peak is now written once the assessment is
+  durable, so it never exceeds the evidence for it.
+- **The review detail reported an empty `auditId`** for a document that holds only
+  `matrixId`, while the live detail reported the matrix id for the same session.
+- **The console re-derived its counters by counting `timeline`,** which is capped — so a
+  session with more than the window's worth of events was under-reported on the review
+  panel. It reads the server's durable totals now, and says when the timeline is truncated.
 - **A session detail answered `404` for a session that exists, immediately after a
   restart.** Recorded as open item D4 in `state-transition-model.md` §5 and as a known
   limitation in the `v0.3.0` release notes; now closed. An unreachable store with nothing

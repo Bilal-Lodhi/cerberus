@@ -312,6 +312,7 @@ class ApiService {
             employeeId: data['employeeId'] as String? ?? 'unknown',
             auditId: data['auditId'] as String? ?? '',
             status: data['status'] as String? ?? 'active',
+            disposition: data['disposition'] as String? ?? 'none',
             startedAt: data['startedAt'] as String? ?? '',
             endedAt: data['endedAt'] as String?,
             overallRiskScore:
@@ -319,28 +320,43 @@ class ApiService {
             lastRiskPayload: _extractLatestRisk(
               data['riskSummary'] as List<dynamic>?,
             ),
-            eventCount: (data['timeline'] as List<dynamic>?)?.length ?? 0,
-            pasteCount: _countEvents(
-              data['timeline'] as List<dynamic>?,
-              'PASTE_TRIGGER',
-            ),
-            tabSwitchCount: _countEvents(
-              data['timeline'] as List<dynamic>?,
-              'TAB_SWITCH',
-            ),
-            copyAttemptCount: _countEvents(
-              data['timeline'] as List<dynamic>?,
-              'COPY_ATTEMPT',
-            ),
+            // The server's durable totals, not a count of `timeline`.
+            //
+            // `timeline` holds the most recent events only, so counting it
+            // under-reported every counter for a session with more than the window's
+            // worth of history. The fallback is kept for a server that predates the
+            // counters, and `timelineTruncated` says when the two are not the same
+            // number.
+            eventCount:
+                (data['eventCount'] as num?)?.toInt() ??
+                (data['timeline'] as List<dynamic>?)?.length ??
+                0,
+            pasteCount:
+                (data['pasteCount'] as num?)?.toInt() ??
+                _countEvents(
+                  data['timeline'] as List<dynamic>?,
+                  'PASTE_TRIGGER',
+                ),
+            tabSwitchCount:
+                (data['tabSwitchCount'] as num?)?.toInt() ??
+                _countEvents(data['timeline'] as List<dynamic>?, 'TAB_SWITCH'),
+            copyAttemptCount:
+                (data['copyAttemptCount'] as num?)?.toInt() ??
+                _countEvents(
+                  data['timeline'] as List<dynamic>?,
+                  'COPY_ATTEMPT',
+                ),
             timeline:
                 (data['timeline'] as List<dynamic>?)
                     ?.map((e) => e as Map<String, dynamic>)
                     .toList() ??
                 [],
             codeSubmission: data['terminalContent'] as String? ?? '',
-            peakRiskScore: _extractPeakRisk(
-              data['riskSummary'] as List<dynamic>?,
-            ),
+            peakRiskScore:
+                (data['peakRiskScore'] as num?)?.toDouble() ??
+                _extractPeakRisk(data['riskSummary'] as List<dynamic>?),
+            targetSystem: data['targetSystem'] as String? ?? '',
+            timelineTruncated: data['timelineTruncated'] as bool? ?? false,
           );
         }
       }

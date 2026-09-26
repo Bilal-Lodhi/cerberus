@@ -31,20 +31,26 @@ Three vocabularies are in play, and only the first is durable.
 | Vocabulary | Where | Values |
 | --- | --- | --- |
 | Durable session status | `SESSION_STATUSES`, `packages/mcp-mongodb/src/tool-names.ts` | `active`, `locked`, `terminated` |
-| Review-facing status | `SessionReviewResponse["status"]`, `apps/api/src/types.ts` | `active`, `flagged`, `investigating`, `cleared`, `locked`, `terminated` |
-| Live-registry status | `ActiveSession["status"]`, `apps/api/src/types.ts` | `active`, `flagged`, `investigating`, `cleared`, `locked` — **no `terminated`** |
+| Lifecycle status, as reported | `SessionReviewResponse["status"]`, `apps/api/src/types.ts` | `active`, `locked`, `terminated` on every surface. The union still lists `flagged`, `investigating` and `cleared` because a **legacy** document could hold one; nothing in this build writes them |
+| Review disposition | `SessionReviewResponse["disposition"]` | `flagged`, `investigating`, `none` — derived at read time by the review detail route and never persisted |
+| Live-registry status | `ActiveSession["status"]`, `apps/api/src/types.ts` | `active`, `flagged`, `investigating`, `cleared`, `locked` — **no `terminated`**; the derived members are legacy-only for the same reason |
 
-`PERSISTED_SESSION_STATUSES` in `apps/api/src/routes/guardian.ts` is the union of
-the first two and is used by exactly one function, `normalizeStatus()`, which maps
+`PERSISTED_SESSION_STATUSES` in `apps/api/src/services/session-status.ts` is the union of
+the first and last and is used by exactly one function, `normalizeStatus()`, which maps
 anything unrecognised onto `active`.
 
 **Only `active`, `locked` and `terminated` are ever written.** `flagged`,
-`investigating` and `cleared` are derived at read time in
-`apps/api/src/routes/review.ts` and are never persisted:
+`investigating` and `cleared` are never persisted:
 
-- `flagged` — the newest assessment scored above 50;
-- `investigating` — a `SUBMIT` event exists and the session is not flagged;
-- `cleared` — a member of the review vocabulary with **no producer at all**. It is
+- `flagged` — derived at read time in `apps/api/src/routes/review.ts`: the newest
+  assessment scored above 50. Reported as the **disposition**, not as the status. It used
+  to be written into `status`, which made the review detail the only surface reporting a
+  derived value under the lifecycle name — and the console's review panel treated `flagged`
+  as `locked`, so a session scoring 52 was displayed as LOCKED while the dashboard
+  displayed it as active. See [read-model.md](read-model.md);
+- `investigating` — a `SUBMIT` event exists and the session is not flagged. Same: the
+  disposition, not the status;
+- `cleared` — a member of the vocabulary with **no producer at all**. It is
   reachable only if a document already contains it, which nothing writes. It is
   accepted by `normalizeStatus()` and by the review response type, so it is a
   legal value that the system cannot produce.
