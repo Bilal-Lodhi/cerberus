@@ -235,3 +235,110 @@ inherent to a route that lists sessions.
 So the remaining cost is `O(sessions)` with a constant per session, rather than
 `O(sessions × history)`. The first row is the same route with nothing to list, which is why
 it is two orders of magnitude faster.
+
+## The live-surface reconciliation: a real before/after
+
+The `v0.5.0` cycle made the live list and the live detail reconcile against durable truth on
+every request. That is work added to two hot paths, and until this measurement existed the
+repository had **no baseline to compare it with** — the maturity plan recorded a current number
+and stated honestly that no before/after existed. This closes that, and the answer is large
+enough to be worth stating plainly.
+
+### How it was produced, and why it is a fair comparison
+
+| Aspect | Value |
+| --- | --- |
+| **Before** | `v0.4.0`, tag target `ed14728f9dfeaace841474b909ecfba15cd6feb3` |
+| **After** | `main` at the time of measurement |
+| Machine | the same physical machine, back to back |
+| CPU | AMD Ryzen 5 5600G, 12 logical CPUs |
+| OS | `win32/x64` |
+| Node | `v24.19.0` for both |
+| MongoDB | **not involved** — see below |
+| Dataset | whatever the benchmark's own stub seeds, identically for both |
+| Samples | the benchmark's own counts: 1 000 for the live list and live detail, with its 10 % warmup |
+
+Three things make this a comparison rather than two unrelated numbers:
+
+1. **The same benchmark code ran against both builds.** The current
+   `scripts/bench/run-bench.mjs` was copied into a disposable `v0.4.0` worktree and pointed at
+   that build's `dist`. Same cases, same stub, same sample counts, same warmup.
+2. **The two new cases were added by this cycle**, because the nine existing ones measure the
+   *review* surfaces and ingestion — **not** the live ones. Without them there was nothing to
+   compare.
+3. **MongoDB is not in the loop.** The benchmark drives the app in-process with the persistence
+   adapter stubbed, so it measures the *application's* work. That makes the ratio trustworthy
+   and the absolute numbers not: a real deployment adds a database round trip to every case.
+
+### The result
+
+```
+case                                      before p50   after p50   delta     before p95   after p95   delta
+GET /guardian/sessions (live list)             2.93        3.39    +16 %          4.29        5.14   +20 %
+GET /guardian/sessions/:id (live detail)       0.09        3.49  +3588 %          0.15        6.80 +4298 %
+GET /api/v1/sessions (401)                     0.07        0.08    +19 %          0.16        0.18   +13 %
+GET /api/v1/sessions                           0.08        0.09     +4 %          0.15        0.16    +8 %
+GET /api/v1/sessions (20x200 history)         15.02       14.70     -2 %         20.77       20.41    -2 %
+POST /guardian/ingest (1 KEYSTROKE)            1.98        2.26    +14 %          3.09        3.55   +15 %
+POST /guardian/ingest (50 events)              3.11        3.24     +4 %          3.93        4.20    +7 %
+POST /guardian/ingest (50 replayed)            0.92        0.91     -1 %          1.11        1.13    +2 %
+POST /guardian/ingest (analysis)               0.78        0.85     +9 %          1.02        1.16   +14 %
+GET /api/v1/sessions/:id                       3.57        3.26     -9 %          4.73        5.65   +20 %
+POST /guardian/ingest (oversized 413)          0.17        0.17     -1 %          0.25        0.24    -4 %
+GET /health                                    0.08        0.08     -1 %          0.13        0.13    +3 %
+```
+
+### What it says
+
+**The live detail is the whole story, and the story is 38x.** At `v0.4.0` it answered from this
+process's in-memory state — 0.09 ms, because it did not read anything. At `main` it reads the
+durable session document on every request, which is 3.49 ms p50 and 6.80 ms p95. That is the
+**cost of the correctness the `v0.5.0` cycle bought**: before, a session another replica had
+terminated was reported `active` here, and the number was fast because it was wrong.
+
+Two things make the size of that ratio unsurprising rather than alarming. The old path was pure
+memory, so its denominator is near zero and a large ratio follows from any work at all. And the
+case is measured with an **in-process** persistence stub, where a "durable read" is a function
+call plus JSON serialisation — the 3.4 ms is the route's own work around it. Against a real
+MongoDB the absolute figure would be dominated by the round trip, and the *ratio* would be
+smaller.
+
+**The live list moved 16 % at p50 and 20 % at p95**, which is the honest figure for a surface
+that already issued one batched durable query and now issues a differently-shaped one. It is
+not free and it is not dramatic.
+
+**Everything else is inside run-to-run noise.** The largest non-live movement is the
+1-KEYSTROKE ingest at +14 % p50, and the benchmark's own repeated runs vary by more than that
+on a desktop-class machine with a shared CPU. Two cases moved *negative* (the 20x200 history
+list at -2 %, the review detail at -9 % p50), which is the same noise from the other direction
+and is the reason no other row is read as a change.
+
+### What this does not establish
+
+- **Not a production figure.** No TCP, no TLS, no HTTP server parsing, no MongoDB, no model
+  latency. The benchmark's own `env.note` says so in every JSON run.
+- **Not a throughput claim.** These are single-request latencies from an in-process
+  `app.request()` loop with no concurrency.
+- **Not a comparison across machines.** Both runs were back to back on one machine, and no
+  number here may be compared with a figure taken anywhere else — including the earlier figures
+  in this document, which were taken on this machine at other times and are quoted where they
+  were produced rather than merged into this table.
+
+### The benchmark itself was broken, and that is how this was found
+
+Running it to produce the "before" number surfaced a defect worth recording: `benchConfig()`
+never gained the `log` field that `createApp` reads unconditionally, so `npm run bench` — the
+command this document calls the reproducible way to produce the baseline — threw
+`Cannot read properties of undefined` **before a single case ran**. It had been broken from
+`v0.4.0` onward, through four releases, and nothing noticed because no test ran it and no gate
+named it.
+
+That is a worse failure than a slow path: the document went on describing a baseline nobody
+could reproduce, and every figure in it silently stopped being comparable. Two things now
+prevent a repeat. `benchConfig()` carries the fields, and
+`apps/api/test/bench-config.test.ts` asserts the literal covers **every** top-level key
+`makeConfig()` produces — in both directions, with a third case asserting the extraction is not
+empty so the check cannot pass vacuously.
+
+The two live-surface cases were added at the same time, which is what makes this section
+possible at all.

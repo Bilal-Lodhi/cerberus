@@ -44,8 +44,36 @@ deployment. This is an experimental research system and is not production ready.
   — the residual window §3.11 documents — and that half is asserted explicitly rather than
   described.
 
+### Fixed
+
+- **`npm run bench` had been broken since `v0.4.0`, through four releases.** `benchConfig()`
+  never gained the `log` field that `createApp` reads unconditionally, so the command
+  `docs/development/performance-baseline.md` calls the reproducible way to produce the baseline
+  threw `Cannot read properties of undefined` **before a single case ran**. Nothing noticed
+  because no test ran it and no gate named it — so the document went on describing a baseline
+  nobody could reproduce, and every figure in it silently stopped being comparable. That is a
+  worse failure than a slow path. `benchConfig()` now carries `log` and `idempotency`, and
+  `apps/api/test/bench-config.test.ts` asserts the literal covers **every** top-level key
+  `makeConfig()` produces — in both directions, plus a third case asserting the extraction is
+  not empty so the check cannot pass vacuously.
+
 ### Added
 
+- **The reconciliation latency before/after baseline, and the two benchmark cases that make it
+  possible.** `docs/development/performance-baseline.md` gains a measured comparison of
+  `v0.4.0` against `main` on one machine, back to back, with the **same benchmark code** run
+  against both builds. The benchmark had no case for the reconciled live surfaces — the nine
+  existing ones cover the *review* surfaces and ingestion — so
+  `GET /guardian/sessions (live list)` and `GET /guardian/sessions/:id (live detail)` were
+  added, and they run unchanged against a `v0.4.0` build.
+  The result: the **live detail went from 0.09 ms to 3.49 ms at p50** — 38×, and 6.80 ms at
+  p95 — because it now reads the durable session document instead of answering from process
+  memory. That is the measured **cost of the correctness the `v0.5.0` cycle bought**: the old
+  number was fast because a session another replica had terminated was reported `active`. The
+  live list moved **+16 % p50 / +20 % p95**. Every other case is inside run-to-run noise, two
+  of them negative, and the document says so rather than reading a 9 % movement as a change.
+  What the comparison does **not** establish is stated too: no TCP, no TLS, no MongoDB, no
+  model latency, no concurrency, and no comparison with any figure taken on another machine.
 - **`apps/api/test/notification-dedupe.test.ts` — the notification-duplication review, asserted.**
   Five cases that count the **outbound HTTP requests** with both channels configured for real: a
   first high-risk incident reaches both channels; a second analysis whose assessment was already
