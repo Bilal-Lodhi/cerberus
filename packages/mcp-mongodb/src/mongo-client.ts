@@ -343,12 +343,39 @@ export class MongoStore {
    * Flips the session status (e.g. "active" → "locked" on high risk).
    * Returns true when a session document actually matched, so callers can
    * distinguish "status changed" from "no such session".
+   *
+   * ── Why the optional predicate exists ─────────────────────────────────
+   *
+   * Without it this is an unconditional `$set`, which makes every status change
+   * last-writer-wins: `terminate` racing `auto-lock` is decided by arrival order and
+   * nothing detects the conflict. `expectedStatuses` turns the write into a
+   * compare-and-set — the document is only updated while its current status is one
+   * of the listed values — so a transition that lost a race reports
+   * `matchedCount === 0` instead of silently overwriting the winner.
+   *
+   * It is optional and defaults to the previous unconditional behaviour, so every
+   * existing caller is unaffected. A single-document predicate is enough here: it
+   * closes the race without requiring a transaction, and therefore without requiring
+   * a replica set the documented single-node deployment does not have.
+   *
+   * An empty `expectedStatuses` array is treated as "no predicate" rather than
+   * "match nothing": an empty `$in` matches nothing, which would turn a caller's
+   * empty list into a silent no-op instead of the unconditional write it asked for.
    */
-  async setSessionStatus(sessionId: string, status: string): Promise<boolean> {
-    const result = await this.collection("sessions").updateOne(
-      { sessionId },
-      { $set: { status, updatedAt: new Date() } },
-    );
+  async setSessionStatus(
+    sessionId: string,
+    status: string,
+    options: { expectedStatuses?: readonly string[] } = {},
+  ): Promise<boolean> {
+    const filter: Document = { sessionId };
+    const expected = options.expectedStatuses;
+    if (expected && expected.length > 0) {
+      filter["status"] = { $in: [...expected] };
+    }
+
+    const result = await this.collection("sessions").updateOne(filter, {
+      $set: { status, updatedAt: new Date() },
+    });
     return result.matchedCount > 0;
   }
 

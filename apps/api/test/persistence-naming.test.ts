@@ -278,13 +278,29 @@ describe("session deletion cascades", () => {
   });
 
   test("terminate and delete are distinct operations", () => {
-    assert.match(source, /async setSessionStatus\(sessionId: string, status: string\)/);
-    // setSessionStatus must not delete anything.
-    const body = source.slice(
-      source.indexOf("async setSessionStatus"),
-      source.indexOf("async setSessionStatus") + 300,
+    // Locate the method *body* rather than a fixed character window. The previous
+    // version matched the exact signature and sliced 300 characters from it, so
+    // adding an optional parameter both broke the match and shortened the window —
+    // a signature change could have silently moved the assertions off the body they
+    // were meant to check.
+    //
+    // Behaviour is asserted properly in `store-contract.test.ts` against a real
+    // MongoDB; this test exists to catch a rename or a stray delete in the source,
+    // which a behavioural suite cannot see.
+    const start = source.indexOf("async setSessionStatus(");
+    assert.ok(start >= 0, "setSessionStatus was renamed or removed");
+
+    const nextMethod = source.indexOf("\n  async ", start + 1);
+    const body = source.slice(start, nextMethod === -1 ? undefined : nextMethod);
+
+    assert.ok(!body.includes("deleteOne"), "setSessionStatus deletes a document");
+    assert.ok(!body.includes("deleteMany"), "setSessionStatus deletes documents");
+
+    // It must still be a status write, and nothing else.
+    assert.match(
+      body,
+      /\$set: \{ status, updatedAt: new Date\(\) \}/,
+      "setSessionStatus no longer writes exactly the status and updatedAt",
     );
-    assert.ok(!body.includes("deleteOne"));
-    assert.ok(!body.includes("deleteMany"));
   });
 });

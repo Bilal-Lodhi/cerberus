@@ -103,6 +103,78 @@ describe("session lifecycle", () => {
     assert.equal(session.session.auditId, "audit-2026-q1");
   });
 
+  /**
+   * The session read every ingest makes.
+   *
+   * `get_session_review` returns up to 500 micro-events plus every risk assessment by
+   * default. Ingest consults only the session document, so asking for the rest was a
+   * read cost proportional to the session's history, paid on **every event** — the
+   * console sends one event per request. These pin the bound so it cannot regress
+   * silently.
+   */
+  describe("the ingest session read is bounded", () => {
+    /** The body of the last `get_session_review` call, or null. */
+    function reviewCallBody(): Record<string, unknown> | null {
+      const call = [...stub.calls]
+        .reverse()
+        .find((entry) => entry.url.endsWith("/tools/get_session_review"));
+      return call ? (call.body as Record<string, unknown>) : null;
+    }
+
+    test("ingest asks for no events and no assessments", async () => {
+      await app.request("/api/v1/guardian/ingest", {
+        method: "POST",
+        headers: authorizedHeaders(),
+        body: JSON.stringify({ events: [pasteEvent("ses-bounded")] }),
+      });
+
+      const body = reviewCallBody();
+      assert.ok(body, "ingest made no session read");
+      assert.equal(
+        body["eventsLimit"],
+        0,
+        "ingest asked for events it does not use — the read grows with session history",
+      );
+      assert.equal(
+        body["includeAssessments"],
+        false,
+        "ingest asked for assessments it does not use",
+      );
+    });
+
+    test("a second ingest for the same session still asks for neither", async () => {
+      // The bound must hold on the warm path too, where hydration is skipped.
+      for (const eventId of ["e1", "e2"]) {
+        await app.request("/api/v1/guardian/ingest", {
+          method: "POST",
+          headers: authorizedHeaders(),
+          body: JSON.stringify({
+            events: [pasteEvent("ses-bounded-warm", { eventId })],
+          }),
+        });
+      }
+
+      const body = reviewCallBody();
+      assert.ok(body);
+      assert.equal(body["eventsLimit"], 0);
+      assert.equal(body["includeAssessments"], false);
+    });
+
+    test("reactivate asks for no events and no assessments either", async () => {
+      // Reactivate reads the durable document only when the process holds no state
+      // for the session, which is the restart path.
+      await app.request("/api/v1/guardian/sessions/ses-react-bounded/reactivate", {
+        method: "POST",
+        headers: authorizedHeaders(),
+      });
+
+      const body = reviewCallBody();
+      assert.ok(body, "reactivate made no session read");
+      assert.equal(body["eventsLimit"], 0);
+      assert.equal(body["includeAssessments"], false);
+    });
+  });
+
   test("ingest rejects an empty event array", async () => {
     const res = await app.request("/api/v1/guardian/ingest", {
       method: "POST",

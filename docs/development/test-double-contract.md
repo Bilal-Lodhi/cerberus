@@ -188,7 +188,7 @@ to the real-database suite.
 
 ### 5.2 A contract suite run twice
 
-`apps/api/test/store-contract.test.ts` declares 37 named contract cases and runs
+`apps/api/test/store-contract.test.ts` declares 42 named contract cases and runs
 them against:
 
 1. the shared double, always;
@@ -196,15 +196,30 @@ them against:
    with an explicit reason when it is not.
 
 The cases cover sort order, the 500-event read cap, uniqueness, upsert,
-`$setOnInsert`, `$max`, duplicate-key behaviour, timestamps, missing fields,
-newest-first ordering, projections, terminal filtering and cascade deletion. A
-double that cannot satisfy the contract is not used. That is the enforcement
-mechanism, and it is why the contract lives in one file rather than in prose.
+`$setOnInsert`, `$max`, the `expectedStatuses` compare-and-set predicate,
+duplicate-key behaviour, timestamps, missing fields, newest-first ordering,
+projections, terminal filtering and cascade deletion. A double that cannot satisfy
+the contract is not used. That is the enforcement mechanism, and it is why the
+contract lives in one file rather than in prose.
 
 The suite also carries a **fidelity guard**: it asserts that every store method the
 tool registry calls exists on both `MongoStore.prototype` and the double, so a
 missing or renamed method is loud and immediate rather than surfacing only when a
 route happens to call it.
+
+One case pins a **footgun rather than a feature**: `getSessionEvents` with
+`limit: 0` returns *every* event, because MongoDB's `.limit(0)` means "no limit" and
+`MongoStore` passes the caller's value straight through. The "0 means none" contract
+deliberately lives one layer up, in `get_session_review`, which skips the query
+instead of passing 0 down. A double that returned nothing for 0 would hide that from
+every test and make the tool-layer guard look redundant — which is how the four
+doubles this replaces hid real behaviour.
+
+Seven further cases in the same file exercise the **real tool registry** through the
+double's responder, covering `get_session_review`'s read bounds — the default, each
+bound alone, both together, the newest-N ordering, and rejection of a negative or
+non-numeric `eventsLimit` — plus rejection of an `expectedStatuses` entry outside the
+session-status vocabulary.
 
 ### 5.3 The real-Mongo integration suite
 
@@ -278,13 +293,15 @@ The contract suite was run twice against a real `mongo:7`, on the same commit:
 
 | Configuration | Result |
 | --- | --- |
-| `CERBERUS_TEST_MONGODB_URI` unset | 512 API tests, 511 pass, **1 skipped** (the real half, with its stated reason) |
-| `CERBERUS_TEST_MONGODB_URI=mongodb://127.0.0.1:27170` | 546 API tests, **546 pass, 0 skipped, 0 failed** |
+| `CERBERUS_TEST_MONGODB_URI` unset | 527 API tests, 526 pass, **1 skipped** (the real half, with its stated reason) |
+| `CERBERUS_TEST_MONGODB_URI=mongodb://127.0.0.1:27170` | 566 API tests, **566 pass, 0 skipped, 0 failed** |
 
-All 37 contract cases pass against both implementations, so the double is
+All 42 contract cases pass against both implementations, so the double is
 *verified* faithful to the real store for every property the contract asserts —
 rather than asserted to be, which is what the previous four doubles relied on.
 
 The one case that fails on neither is the characterisation of the missing
 assessment identity: it passes on both, which is the point — the defect is real and
-not an artefact of the double.
+not an artefact of the double. The `limit: 0` case is the same shape: it passes on
+both because MongoDB really does treat `.limit(0)` as "no limit", which is why the
+tool layer guards it rather than the store.

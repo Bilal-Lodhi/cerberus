@@ -251,7 +251,7 @@ terminate-then-ingest. See [test-double-contract.md](test-double-contract.md).
 | D4 | T6 has no precondition and no terminal guard | `terminate` on an already-`terminated` session re-stamps `endedAt`; combined with D2 it can report success for a no-op. |
 | D5 | T2 leaves `activeSessions` unpopulated | One session id has two response shapes. |
 | D6 | T1 reports success for a deploy against a `terminated` session | `$setOnInsert` cannot fire, so the caller's intent is silently ignored. |
-| D7 | `set_session_status` has no compare-and-set | Every status transition is last-writer-wins; terminate racing auto-lock is decided by arrival order and nothing detects it. |
+| D7 | `set_session_status` has no compare-and-set | Every status transition is last-writer-wins; terminate racing auto-lock is decided by arrival order and nothing detects it. **The primitive now exists** — `set_session_status` accepts an optional `expectedStatuses` predicate, verified against a real MongoDB — but no route uses it yet; the boundary adopts it. |
 | D8 | No transition validates the *current* durable status | Every precondition in the table is either absent or read from a cache. |
 
 ## 4. What the boundary must do
@@ -268,7 +268,9 @@ Derived from §2 and §3, not from a template. The canonical boundary
    `updateTerminalContent`.
 3. **Apply the durable write with an atomic predicate** on the expected current
    status, so a concurrent transition is detected rather than overwritten
-   (addresses D7).
+   (addresses D7). The predicate exists: `set_session_status` accepts an optional
+   `expectedStatuses` list, and the contract suite verifies it against a real
+   MongoDB. No route passes it yet.
 4. **Return a canonical result** that distinguishes *applied*, *already in that
    state* (a legal no-op), *refused by the transition table*, and *conflict with a
    concurrent transition*.

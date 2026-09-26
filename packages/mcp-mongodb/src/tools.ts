@@ -17,6 +17,19 @@ import {
 
 export type ToolHandler = (body: Record<string, unknown>) => Promise<unknown>;
 
+/**
+ * How many recent micro-events `get_session_review` returns when the caller does
+ * not ask for a specific number.
+ *
+ * Matches `MongoStore.getSessionEvents`'s own default, so a caller that omits the
+ * parameter gets exactly what it got before the parameter existed.
+ *
+ * Declared above `TOOL_DEFINITIONS` because that object's schema description
+ * interpolates it, and a `const` referenced before its declaration is in the
+ * temporal dead zone at module-evaluation time.
+ */
+export const DEFAULT_SESSION_EVENTS_LIMIT = 500;
+
 export interface ToolDefinition {
   name: McpToolName;
   description: string;
@@ -148,12 +161,21 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
 
   [MCP_TOOL_NAMES.SET_SESSION_STATUS]: {
     name: MCP_TOOL_NAMES.SET_SESSION_STATUS,
-    description: "Set a session status (active, locked, terminated).",
+    description:
+      "Set a session status (active, locked, terminated). Optionally only while the " +
+      "stored status is one of expectedStatuses, making the write a compare-and-set.",
     inputSchema: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
         status: { type: "string", enum: [...SESSION_STATUSES] },
+        expectedStatuses: {
+          type: "array",
+          items: { type: "string", enum: [...SESSION_STATUSES] },
+          description:
+            "When supplied, the update applies only if the stored status is one of " +
+            "these. Omit for the previous unconditional behaviour.",
+        },
       },
       required: ["sessionId", "status"],
     },
@@ -165,7 +187,21 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
       "Fetch the complete review data for a session: document, events and risk assessments.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" } },
+      properties: {
+        sessionId: { type: "string" },
+        eventsLimit: {
+          type: "number",
+          description:
+            `How many recent events to return. Defaults to ${DEFAULT_SESSION_EVENTS_LIMIT}. ` +
+            "0 returns none, for a caller that wants only the session document.",
+        },
+        includeAssessments: {
+          type: "boolean",
+          description:
+            "Whether to return the risk assessments. Defaults to true. false skips the " +
+            "query entirely.",
+        },
+      },
       required: ["sessionId"],
     },
   },
@@ -242,6 +278,31 @@ export const MAX_REFERENCE_TAGS = 20;
 export const MAX_REFERENCE_TAG_CHARS = 50;
 /** Upper bound on how many corpus documents a single list call returns. */
 export const MAX_REFERENCE_DOCUMENTS = 200;
+
+/**
+ * Reads an optional non-negative integer.
+ *
+ * Returns `undefined` when the field is absent, so the caller can tell "not asked"
+ * from "asked for zero". A non-numeric or negative value is a `ToolArgumentError`
+ * rather than a silent fallback: a caller that asked for `-1` events has a bug, and
+ * quietly substituting the default would hide it.
+ */
+function readOptionalCount(
+  body: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = body[key];
+  if (value === undefined || value === null) return undefined;
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ToolArgumentError(`Parameter '${key}' must be a finite number.`);
+  }
+  const count = Math.floor(value);
+  if (count < 0) {
+    throw new ToolArgumentError(`Parameter '${key}' must not be negative.`);
+  }
+  return count;
+}
 
 /** Thrown for a missing/invalid tool argument. Surfaces as HTTP 400. */
 export class ToolArgumentError extends Error {
@@ -401,16 +462,57 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
           `Invalid status. Must be one of: ${SESSION_STATUSES.join(", ")}`,
         );
       }
-      const updated = await store.setSessionStatus(sessionId, status);
+
+      // Optional compare-and-set predicate. An absent value keeps the previous
+      // unconditional behaviour; a supplied one is validated against the same
+      // vocabulary as `status`, so a caller cannot predicate on a status that could
+      // never have been stored.
+      const rawExpected = body["expectedStatuses"];
+      let expectedStatuses: string[] | undefined;
+      if (rawExpected !== undefined && rawExpected !== null) {
+        if (!Array.isArray(rawExpected)) {
+          throw new ToolArgumentError(
+            "Parameter 'expectedStatuses' must be an array of session statuses.",
+          );
+        }
+        expectedStatuses = rawExpected.map((entry) => {
+          if (typeof entry !== "string") {
+            throw new ToolArgumentError(
+              "Parameter 'expectedStatuses' must contain only strings.",
+            );
+          }
+          if (!(SESSION_STATUSES as readonly string[]).includes(entry)) {
+            throw new ToolArgumentError(
+              `Invalid expected status '${entry}'. Must be one of: ` +
+                `${SESSION_STATUSES.join(", ")}`,
+            );
+          }
+          return entry;
+        });
+      }
+
+      const updated = await store.setSessionStatus(sessionId, status, {
+        ...(expectedStatuses ? { expectedStatuses } : {}),
+      });
       return { success: true, status, updated };
     },
 
     [MCP_TOOL_NAMES.GET_SESSION_REVIEW]: async (body) => {
       const sessionId = requireString(body, "sessionId");
+      const eventsLimit =
+        readOptionalCount(body, "eventsLimit") ?? DEFAULT_SESSION_EVENTS_LIMIT;
+      const includeAssessments = body["includeAssessments"] !== false;
+
+      // A limit of 0 skips the query rather than passing 0 to the driver, where
+      // `.limit(0)` means "no limit" and would return the entire collection.
       const [session, events, riskAssessments] = await Promise.all([
         store.getSession(sessionId),
-        store.getSessionEvents(sessionId),
-        store.getRiskAssessments(sessionId),
+        eventsLimit === 0
+          ? Promise.resolve([])
+          : store.getSessionEvents(sessionId, { limit: eventsLimit }),
+        includeAssessments
+          ? store.getRiskAssessments(sessionId)
+          : Promise.resolve([]),
       ]);
       return { success: true, session, events, riskAssessments };
     },

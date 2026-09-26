@@ -50,6 +50,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`get_session_review` gained two optional arguments, and the API now uses them.**
+  It returns up to 500 micro-events plus every risk assessment by default, and
+  `POST /api/v1/guardian/ingest` — which consults **only the session document** — was
+  paying for all of it on every request and discarding it. The console sends one
+  event per request, so that was a read cost proportional to a session's whole
+  history, paid per event. Two additive arguments bound it:
+  - `eventsLimit` — how many recent events to return; `0` **skips the query**
+    entirely, because MongoDB's `.limit(0)` means "no limit" and passing `0` down
+    would return the entire collection;
+  - `includeAssessments` — `false` skips the assessment query.
+
+  Both default to the previous behaviour, so every existing caller is unaffected.
+  Ingest and reactivate now pass `eventsLimit: 0, includeAssessments: false`. This is
+  the "adding an optional field is cheap preservation" case from
+  [compatibility.md](docs/compatibility.md) §2, so nothing breaks and no migration is
+  needed.
+- **`set_session_status` gained an optional `expectedStatuses` argument**, making the
+  write a compare-and-set: the update applies only while the stored status is one of
+  the listed values, so a transition that lost a race reports `updated: false`
+  instead of silently overwriting the winner. Omitted, the behaviour is unchanged —
+  an unconditional `$set`. An empty array is treated as *no predicate*, not "match
+  nothing", because an empty `$in` matches nothing and would turn a caller's empty
+  list into a silent no-op.
+
+  This is the primitive the central transition boundary needs in order to close the
+  last-writer-wins race recorded in
+  [state-transition-model.md](docs/development/state-transition-model.md) §3.2 (D7).
+  The routes do not use it yet; they adopt it with the boundary. A single-document
+  predicate is sufficient and needs no replica set, so the documented single-node
+  deployment is unaffected.
 - `installFetchStub` accepts a full `Response` from its `mcpResponse` responder, so
   the MCP adapter's status codes are reachable from a route test. A plain object
   keeps the historical HTTP 200 behaviour, so every existing caller is unaffected.
@@ -75,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than asserted to be — which is what the four doubles it replaces relied on.
 
 ### Fixed
+
+- **A brittle source-text assertion in `persistence-naming.test.ts`** matched the
+  exact `setSessionStatus` signature and sliced a fixed 300-character window from it.
+  Adding an optional parameter both broke the match and shortened the window, so a
+  signature change could have silently moved the assertions off the method body they
+  were meant to check. It now locates the method body and asserts what the test is
+  actually about — that `setSessionStatus` deletes nothing and writes exactly the
+  status and `updatedAt`.
 
 - **Documentation:** `apps/api/src/routes/guardian.ts` listed four deduplication
   layers in its module header; layer 1 — "identical risk-assessment id from the AI
