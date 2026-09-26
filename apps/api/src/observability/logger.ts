@@ -360,6 +360,21 @@ export const LOG_EVENTS = {
    * the durable document, or the live registry.
    */
   GUARDIAN_DETAIL_FALLBACK: "guardian.detail.fallback",
+  /**
+   * The live session list reconciled at least one row against the durable document.
+   *
+   * Counts only. It fires when a status was corrected or a session was dropped for being
+   * terminated or expired — the two things a process-local list could not see.
+   */
+  GUARDIAN_LIVE_LIST_RECONCILED: "guardian.live_list.reconciled",
+  /**
+   * The live session list could not reconcile: the store did not answer.
+   *
+   * The response is served with `reconciled: false` and every row marked
+   * `statusSource: "process-local"`. This event is how an operator learns that the live
+   * statuses on that page are this process's own rather than durable truth.
+   */
+  GUARDIAN_LIVE_LIST_UNRECONCILED: "guardian.live_list.unreconciled",
 
   // ── Guardian: lifecycle ────────────────────────────────────────
   /** A session was deployed. */

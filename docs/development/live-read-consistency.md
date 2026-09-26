@@ -61,6 +61,11 @@ reads the review surface.
 
 The rule: **one batched durable query per list request, and durable wins where it answers.**
 
+**Implemented.** The merge is `apps/api/src/services/session-reconciliation.ts` — a pure
+function with its own unit suite — and `GET /api/v1/guardian/sessions` is a thin adapter
+around it. The response carries an additive `reconciled` flag, and every row carries an
+additive `statusSource`.
+
 ```
                     ┌─────────────────────────────────────────┐
   request ────────► │ 1. build the local view (memory)        │
@@ -106,13 +111,20 @@ directly, and the route is a thin adapter around it. Two reasons: the rule is th
 worth testing, and a pure merge can be exercised over states that are awkward to produce
 through HTTP (a durable document newer than memory, a durable-only session, a mixed page).
 
+The repair it returns is applied through `SessionTransitionCache.reconcileStatus`, which is
+deliberately **not** `apply`: `apply` stamps the cached activity instant to the transition
+instant, which is right for a transition and wrong for a read — a status repair that also
+moved `lastActivityAt` forward would extend a session's monitoring window as a side effect
+of *looking* at it. `reconcileStatus` changes the status and nothing else, and never seeds an
+entry for a session this process does not otherwise hold.
+
 ## 4. How the live detail reconciles
 
 The rule: **read the document, then let durable win for durable-authoritative fields.**
 
-Today the route returns from `sessionStore` whenever it has the session and never reads
-MongoDB. The change is to read the document unconditionally and merge, exactly as the list
-does:
+**Not yet implemented.** The route returns from `sessionStore` whenever it has the session
+and does not read MongoDB at all. The change is to read the document unconditionally and
+merge, exactly as the list does:
 
 | Field group | Winner |
 | --- | --- |

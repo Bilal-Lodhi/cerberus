@@ -69,6 +69,7 @@ import {
   isMonitored,
   SESSION_DELETION_CODES,
   SESSION_TRANSITION_CODES,
+  type DurableSessionStatus,
 } from "../services/session-status.js";
 import {
   readDurableCounter,
@@ -77,6 +78,10 @@ import {
   readFocusLossCount,
   type DurableSessionView,
 } from "../services/session-read-model.js";
+import {
+  reconcileLiveList,
+  type LocalLiveSession,
+} from "../services/session-reconciliation.js";
 import {
   findSimilarityMatches,
   type ReferenceDocument,
@@ -211,6 +216,73 @@ export function createGuardianRouter(
    * `peakRiskScore`. Before the boundary existed this rebuild lived inside the
    * reactivate route, so it was one of five paths that each did it differently.
    */
+  /**
+   * Writes a status onto whichever cached entries already exist.
+   *
+   * One writer for both the transition boundary's repair and the read path's reconciliation,
+   * so the two cannot drift about *how* a cached status is written. They differ in one
+   * argument, and the difference is load-bearing:
+   *
+   *   - `at` — the activity instant to stamp, or `null` to leave the cached one alone. A
+   *     transition has an instant (the session was just acted on). A read does **not**: a
+   *     status repair that also moved `lastActivityAt` forward would extend a session's
+   *     monitoring window as a side effect of looking at it, which is the bypass the TTL
+   *     exists to prevent.
+   *   - `seed` — whether to rebuild a missing registry entry from the durable document.
+   *     Reactivation needs that after a restart, when the process holds nothing. A read does
+   *     not: a durable-only session is served from the document on every read, and copying it
+   *     into this process's registry would grow memory with sessions the process does not
+   *     otherwise hold.
+   */
+  function writeCachedStatus(
+    sessionId: string,
+    status: DurableSessionStatus,
+    at: string | null,
+    durable: Record<string, unknown>,
+    seed: boolean,
+  ): void {
+    const state = sessionStore.get(sessionId);
+    if (state) {
+      state.status = status;
+      if (at !== null) state.lastActivityAt = at;
+      sessionStore.set(sessionId, state);
+    }
+
+    const active = activeSessions.get(sessionId);
+    if (active) {
+      if (!isMonitored(status)) {
+        // A session that is no longer monitored must not stay in the live registry, or the
+        // next read has to filter it out again. `evict` does this too; doing it here means
+        // the registry cannot hold a terminal status even for the instant between them.
+        activeSessions.delete(sessionId);
+        return;
+      }
+      active.status = status as ActiveSession["status"];
+      if (at !== null) active.lastActivityAt = at;
+      activeSessions.set(sessionId, active);
+      return;
+    }
+
+    // No registry entry. Only a caller that asked to seed gets one, and never for a status
+    // that is not monitored: a terminated session must never re-enter the live registry, or
+    // a restart would resurrect it as actively monitored.
+    if (!seed || !isMonitored(status)) return;
+
+    const matrixId = String(durable["matrixId"] ?? durable["auditId"] ?? "");
+    activeSessions.set(sessionId, {
+      sessionId,
+      employeeId: String(durable["employeeId"] ?? state?.employeeId ?? "unknown"),
+      matrixId,
+      targetSystem: String(durable["targetSystem"] ?? ""),
+      status: status as ActiveSession["status"],
+      deployedAt: String(durable["deployedAt"] ?? durable["createdAt"] ?? at ?? ""),
+      riskIndex: Number(
+        durable["peakRiskScore"] ?? durable["overallRiskScore"] ?? durable["riskIndex"] ?? 0,
+      ),
+      ...(at !== null ? { lastActivityAt: at } : {}),
+    });
+  }
+
   const transitionCache: SessionTransitionCache = {
     read(sessionId) {
       const active = activeSessions.get(sessionId);
@@ -220,47 +292,19 @@ export function createGuardianRouter(
     },
 
     apply(sessionId, status, at, durable) {
-      const state = sessionStore.get(sessionId);
-      if (state) {
-        state.status = status;
-        state.lastActivityAt = at;
-        sessionStore.set(sessionId, state);
-      }
-
-      const active = activeSessions.get(sessionId);
-      if (active) {
-        active.status = status as ActiveSession["status"];
-        active.lastActivityAt = at;
-        activeSessions.set(sessionId, active);
-        return;
-      }
-
-      // No registry entry: rebuild one, but only for a status that is still
-      // monitored. A terminated session must never re-enter the live registry, or a
-      // restart would resurrect it as actively monitored.
-      if (!isMonitored(status)) return;
-
-      const matrixId = String(durable["matrixId"] ?? durable["auditId"] ?? "");
-      activeSessions.set(sessionId, {
-        sessionId,
-        employeeId: String(durable["employeeId"] ?? state?.employeeId ?? "unknown"),
-        matrixId,
-        targetSystem: String(durable["targetSystem"] ?? ""),
-        status: status as ActiveSession["status"],
-        deployedAt: String(
-          durable["deployedAt"] ?? durable["createdAt"] ?? at,
-        ),
-        riskIndex: Number(
-          durable["peakRiskScore"] ?? durable["overallRiskScore"] ?? durable["riskIndex"] ?? 0,
-        ),
-        lastActivityAt: at,
-      });
+      writeCachedStatus(sessionId, status, at, durable, true);
     },
 
     evict(sessionId) {
       // Only the live registry: `sessionStore` keeps the session so its counters and
       // reconstructed state remain readable for review.
       activeSessions.delete(sessionId);
+    },
+
+    reconcileStatus(sessionId, status, durable) {
+      // `at: null` — a read must not move the activity instant. `seed: false` — a
+      // durable-only session stays in the document.
+      writeCachedStatus(sessionId, status, null, durable, false);
     },
   };
 
@@ -1142,190 +1186,152 @@ export function createGuardianRouter(
   // GET /sessions
   // ═══════════════════════════════════════════════════════════════
 
-  guardianRouter.get("/sessions", async (c) => {
-    const requestId = currentRequestId();
-    const seenIds = new Set<string>();
-    const allSessions: Array<Record<string, unknown>> = [];
+  /**
+   * This process's view of its live sessions, as rows the reconciler can merge.
+   *
+   * The two maps overlap: a session that has ingested telemetry is in `sessionStore`, a
+   * session that was deployed is in `activeSessions`, and a session that was deployed *and*
+   * has ingested is in both. `sessionStore` is the source for counters — it holds the
+   * hydrated lifetime totals — and the registry is the source for identity, the deployment
+   * instant and the status the transition boundary last wrote.
+   *
+   * Nothing is filtered here. Expiry and the `isMonitored` rule are applied **once**, by the
+   * reconciler, over both sources, so the two cannot disagree about the same session. That
+   * disagreement is what the three separate paths in this route used to produce.
+   */
+  function localLiveSessions(): LocalLiveSession[] {
+    const rows = new Map<string, LocalLiveSession>();
 
-    // This endpoint is the LIVE list. A session whose monitoring window has
-    // closed is not live, whatever its durable status, so it is excluded here.
-    // It stays fully visible through GET /api/v1/sessions and
-    // GET /api/v1/sessions/:sessionId, which are the review surfaces.
-    //
-    // A *terminated* session is not live either, and it is excluded for the same
-    // reason. That exclusion was missing from the in-memory path: the TTL predicate
-    // was the only filter, so a session an operator had just terminated stayed in the
-    // live list — with `status: "terminated"` and `liveness: "active"` — until its TTL
-    // elapsed or the process restarted. The durable-recovery path below already
-    // guarded on `isMonitored`, so the two paths disagreed about the same session.
-
-    // Path A1 — live in-memory state (authoritative event counts).
-    if (sessionStore.size > 0) {
-      const entries = Array.from(sessionStore.entries()).sort((a, b) => {
-        const aTime = a[1].events[0]?.timestamp ?? "";
-        const bTime = b[1].events[0]?.timestamp ?? "";
-        return new Date(bTime).getTime() - new Date(aTime).getTime();
-      });
-
-      for (const [sessionId, state] of entries) {
-        if (sessionExpired(sessionId)) continue;
-
-        // The cache, when it holds the session, is what the transition boundary last
+    for (const [sessionId, state] of sessionStore) {
+      const active = activeSessions.get(sessionId);
+      rows.set(sessionId, {
+        sessionId,
+        employeeId: state.employeeId || active?.employeeId || "unknown",
+        matrixId: state.auditId || active?.matrixId || "",
+        targetSystem: active?.targetSystem ?? "",
+        // The registry, when it holds the session, is what the transition boundary last
         // wrote from the durable outcome. When it does not, `sessionStore` is the only
         // in-memory source and its status came from the same place.
-        const effectiveStatus = normalizeStatus(
-          activeSessions.get(sessionId)?.status ?? state.status,
-        );
-        if (!isMonitored(effectiveStatus)) continue;
-
-        seenIds.add(sessionId);
-        const active = activeSessions.get(sessionId);
-        const deployedAt =
-          active?.deployedAt ?? state.events[0]?.timestamp ?? toISOStringLocal();
-        allSessions.push({
-          sessionId,
-          employeeId: state.employeeId || active?.employeeId || "unknown",
-          auditId: state.auditId || active?.matrixId || "",
-          matrixId: state.auditId || active?.matrixId || "",
-          targetSystem: active?.targetSystem ?? "",
-          status: active?.status ?? state.status ?? "active",
-          liveness: "active" satisfies SessionLiveness,
-          deployedAt,
-          startedAt: deployedAt,
-          createdAt: deployedAt,
-          riskIndex: state.lastRiskPayload?.overallRiskScore ?? 0,
-          peakRiskScore: state.lastRiskPayload?.overallRiskScore ?? 0,
-          eventCount: Math.max(state.events.length, state.eventCount),
-          pasteCount: state.pasteCount,
-          tabSwitchCount: state.tabSwitchCount,
-          focusLossCount: state.focusLossCount,
-          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-          // console or script reading the old name keeps working.
-          fullscreenExitCount: state.focusLossCount,
-          copyAttemptCount: state.copyAttemptCount,
-          alertTriggered:
-            (state.lastRiskPayload?.overallRiskScore ?? 0) >= AUTO_LOCK_THRESHOLD,
-        });
-      }
+        status: active?.status ?? state.status ?? "active",
+        deployedAt: active?.deployedAt ?? state.events[0]?.timestamp ?? toISOStringLocal(),
+        lastActivityAt:
+          state.lastActivityAt ?? active?.lastActivityAt ?? active?.deployedAt,
+        // The reconstructed workspace and the latest payload are what this process can
+        // answer, which is what `ephemeralStateAvailable` reports. The risk *score* is not
+        // taken from here: the reconciler prefers the durable `peakRiskScore`, and takes the
+        // larger of the two so a payload this process holds but has not yet persisted is not
+        // discarded.
+        riskIndex: state.lastRiskPayload?.overallRiskScore ?? 0,
+        eventCount: Math.max(state.events.length, state.eventCount),
+        pasteCount: state.pasteCount,
+        tabSwitchCount: state.tabSwitchCount,
+        focusLossCount: state.focusLossCount,
+        copyAttemptCount: state.copyAttemptCount,
+        ephemeralStateAvailable: true,
+      });
     }
 
-    // Path A2 — deployed sessions with no events yet.
     for (const [sessionId, active] of activeSessions) {
-      if (seenIds.has(sessionId)) continue;
-      if (sessionExpired(sessionId)) continue;
-      // The boundary evicts a terminated session from this registry, so this should
-      // never fire. It is asserted anyway: the live list must not depend on every
-      // writer remembering to evict.
-      if (!isMonitored(normalizeStatus(active.status))) continue;
-      seenIds.add(sessionId);
-      allSessions.push({
+      if (rows.has(sessionId)) continue;
+      rows.set(sessionId, {
         sessionId,
         employeeId: active.employeeId || "unknown",
-        auditId: active.matrixId,
         matrixId: active.matrixId,
         targetSystem: active.targetSystem,
         status: active.status,
-        liveness: "active" satisfies SessionLiveness,
         deployedAt: active.deployedAt,
-        startedAt: active.deployedAt,
-        createdAt: active.deployedAt,
+        lastActivityAt: active.lastActivityAt ?? active.deployedAt,
         riskIndex: active.riskIndex,
-        peakRiskScore: active.riskIndex,
         eventCount: 0,
         pasteCount: 0,
         tabSwitchCount: 0,
         focusLossCount: 0,
-        // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-        // console or script reading the old name keeps working.
-        fullscreenExitCount: 0,
         copyAttemptCount: 0,
-        alertTriggered: false,
+        // The registry is this process's deployment record and holds no workspace and no
+        // payload. Reporting zero counters here is truthful *for this process*; the
+        // reconciler replaces them with the durable totals where a document exists.
+        ephemeralStateAvailable: false,
       });
     }
 
-    // Path B — durable recovery from MongoDB when memory is empty.
-    if (allSessions.length === 0) {
-      const listed = await callMcpTool<{
-        success: boolean;
-        data?: Array<Record<string, unknown>>;
-      }>(config, MCP_TOOL_NAMES.LIST_SESSIONS, {}, { requestId, timeoutMs: MCP_TIMEOUT_MS });
+    return Array.from(rows.values());
+  }
 
-      const docs = listed.ok && Array.isArray(listed.data?.data) ? listed.data!.data! : [];
+  guardianRouter.get("/sessions", async (c) => {
+    const requestId = currentRequestId();
+    const nowMs = clock.now();
 
-      for (const doc of docs) {
-        const sessionId = String(doc["sessionId"] ?? "");
-        if (!sessionId || seenIds.has(sessionId)) continue;
+    // ── 1. This process's view, before reconciliation ────────────────
+    const local = localLiveSessions();
 
-        // Restart recovery must honour expiry: a session that timed out while
-        // the process was down is not resurrected as actively monitored.
-        if (sessionExpired(sessionId, doc)) continue;
+    // ── 2. ONE durable query for the whole page — always ─────────────
+    //
+    // This used to run only when local memory was empty, and that single condition is what
+    // made the live list process-local-authoritative: a session another process terminated
+    // stayed "active" here until its TTL elapsed, a transition happened to run through this
+    // process, or the process restarted — and a session another process deployed was missing
+    // from the page entirely.
+    //
+    // It is one query for the whole page, not one per session, so the list cannot acquire an
+    // N+1 as the session count grows. See `docs/development/live-read-consistency.md` §3.
+    const listed = await callMcpTool<{
+      success?: boolean;
+      data?: Array<Record<string, unknown>>;
+    }>(config, MCP_TOOL_NAMES.LIST_SESSIONS, {}, { requestId, timeoutMs: MCP_TIMEOUT_MS });
 
-        // One durable reader, shared with the detail route's fallback, so the two
-        // surfaces cannot report different counters for the same document.
-        const view = readDurableSessionView(doc, sessionId);
+    // `null` is "the store did not answer", which is a different fact from "there are no
+    // sessions". Collapsing the two is what made an unreachable store return an empty live
+    // list with `success: true`.
+    const durableDocuments =
+      listed.ok && listed.data?.success && Array.isArray(listed.data.data)
+        ? listed.data.data
+        : null;
 
-        // A terminated session is not live, so it is not listed here at all. It stays
-        // fully visible through `GET /api/v1/sessions` and
-        // `GET /api/v1/sessions/:sessionId`, which are the review surfaces.
-        //
-        // This check was previously applied only to the registry write below, not to
-        // the list entry, so a terminated session recovered from MongoDB **was**
-        // returned by the live list — with `liveness: "active"`. The in-memory paths
-        // had the same gap in the other direction, and the three of them disagreed.
-        if (!isMonitored(view.status)) continue;
-
-        seenIds.add(sessionId);
-
-        // Rebuild the live registry from the durable document. A terminated session
-        // cannot reach here, because it was skipped above.
-        if (!activeSessions.has(sessionId)) {
-          activeSessions.set(sessionId, {
-            sessionId,
-            employeeId: view.employeeId,
-            matrixId: view.matrixId,
-            targetSystem: view.targetSystem,
-            status: view.status as ActiveSession["status"],
-            deployedAt: view.deployedAt,
-            riskIndex: view.riskScore,
-            // The durable `updatedAt` is the only activity signal that survives
-            // a restart, so recovery must carry it into the live registry.
-            lastActivityAt: view.lastActivityAt,
-          });
-        }
-
-        allSessions.push({
-          sessionId,
-          employeeId: view.employeeId,
-          auditId: view.matrixId,
-          matrixId: view.matrixId,
-          targetSystem: view.targetSystem,
-          status: view.status,
-          liveness: "active" satisfies SessionLiveness,
-          deployedAt: view.deployedAt,
-          startedAt: view.deployedAt,
-          createdAt: view.deployedAt,
-          riskIndex: view.riskScore,
-          peakRiskScore: view.riskScore,
-          eventCount: view.eventCount,
-          pasteCount: view.pasteCount,
-          tabSwitchCount: view.tabSwitchCount,
-          focusLossCount: view.focusLossCount,
-          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-          // console or script reading the old name keeps working.
-          fullscreenExitCount: view.focusLossCount,
-          copyAttemptCount: view.copyAttemptCount,
-          alertTriggered: view.riskScore >= AUTO_LOCK_THRESHOLD,
-        });
-      }
-    }
-
-    allSessions.sort((a, b) => {
-      const aTime = String(a["deployedAt"] ?? a["createdAt"] ?? "");
-      const bTime = String(b["deployedAt"] ?? b["createdAt"] ?? "");
-      return new Date(bTime).getTime() - new Date(aTime).getTime();
+    // ── 3. Merge: durable wins where it answers ──────────────────────
+    const reconciliation = reconcileLiveList(local, durableDocuments, {
+      ttlSeconds,
+      nowMs,
+      alertThreshold: AUTO_LOCK_THRESHOLD,
     });
 
-    return c.json({ success: true, data: allSessions });
+    // ── 4. Repair this process's cache toward the document ───────────
+    //
+    // One-directional on purpose: a read may correct the cache, never the document. A
+    // `terminated` repair also evicts from the live registry, so the next read does not have
+    // to rediscover the same divergence.
+    for (const repair of reconciliation.repairs) {
+      transitionCache.reconcileStatus(repair.sessionId, repair.status, repair.durable);
+    }
+
+    if (durableDocuments === null) {
+      // The statuses in this response are this process's own. The response says so rather
+      // than presenting them as durable truth, because refusing outright would take the live
+      // dashboard down during a store blip — a worse failure than a labelled stale value.
+      logger.warn(LOG_EVENTS.GUARDIAN_LIVE_LIST_UNRECONCILED, {
+        requestId,
+        dependency: "mcp",
+        classification: "store-unavailable",
+        localSessionCount: local.length,
+        claimed: "process-local status, labelled",
+      });
+    } else if (reconciliation.dropped.length > 0 || reconciliation.repairs.length > 0) {
+      logger.debug(LOG_EVENTS.GUARDIAN_LIVE_LIST_RECONCILED, {
+        requestId,
+        localSessionCount: local.length,
+        listedSessionCount: reconciliation.sessions.length,
+        droppedNotLive: reconciliation.dropped.length,
+        addedFromDurable: reconciliation.addedFromDurable.length,
+        statusCorrected: reconciliation.repairs.length,
+      });
+    }
+
+    return c.json({
+      success: true,
+      data: reconciliation.sessions,
+      // Additive. A client that needs durable truth can require this to be true; a client
+      // that does not is unaffected.
+      reconciled: reconciliation.reconciled,
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════
