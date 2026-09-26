@@ -712,5 +712,11 @@ and is otherwise stated as not met.
 | O | No known P0/P1 correctness or security defect remains | **Met for the session state paths.** The read paths reconcile, `terminalContent` has an owner, and counters cannot lose a concurrent writer's events. The two paid routes' duplicate-spend exposure is **re-accepted with its cost measured** rather than fixed — see G |
 | P | Docs, threat model and compatibility docs match implementation | **Met** — `multi-writer-model.md` §6 is an enforcement table that marks each rule enforced or not, §8b of the threat model records what did **not** move, and `compatibility.md` §1b lists every observable change |
 | Q | Published tags remain immutable | **Met** — verified at the checkpoint: all four tag objects and targets are unchanged, and nothing in this phase rewrote history |
-| R | A coherent next release candidate can be described | **Met** — [release/v0.5.0-release-notes.md](../release/v0.5.0-release-notes.md), prepared and **not published**, with the gates in [release/v0.5.0-checklist.md](../release/v0.5.0-checklist.md) |
+| R | A coherent next release candidate can be described | **Met** — [release/v0.5.0-release-notes.md](../release/v0.5.0-release-notes.md), **published** as a GitHub pre-release on 2026-09-26 (tag object `a635862e7a726f6362029e3aa711d630551a757f`, target `000ac1a7ddd837d35790a434a22969d3f6073189`), with the gates recorded in [release/v0.5.0-checklist.md](../release/v0.5.0-checklist.md) |
+
+### The release
+
+**Published as a GitHub pre-release on 2026-09-26.** Nothing else was published: no npm package, no
+container image and no hosted deployment, and nothing marked stable or latest. The four earlier tags
+are unchanged. The record is [multi-writer-checkpoint.md](multi-writer-checkpoint.md) §10.
 
