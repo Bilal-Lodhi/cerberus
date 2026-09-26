@@ -227,9 +227,25 @@ Not authoritative, and never was: everything in §3 classified B, C or D.
 
 ## 8. What is still open
 
-Tracked in [maturity-plan.md](maturity-plan.md) against the phase exit condition:
+Tracked in [maturity-plan.md](maturity-plan.md) against the phase exit condition.
+Both items below are now modelled in full rather than named:
 
 - a single central transition path, so status cannot diverge between
-  `sessionStore`, `activeSessions` and MongoDB;
+  `sessionStore`, `activeSessions` and MongoDB — see
+  [state-transition-model.md](state-transition-model.md), which maps all five
+  mutation paths, their write orderings and the explicit transition table;
 - partial-failure semantics for a session-changing operation whose persistence
-  succeeds but whose cache update does not, and the reverse.
+  succeeds but whose cache update does not, and the reverse — see
+  [failure-semantics.md](failure-semantics.md), which answers each failure window
+  operation by operation.
+
+Also newly recorded by that trace, and not previously known:
+
+- a terminated session accepts telemetry and can be moved to `locked` by a
+  high-risk batch ([state-transition-model.md](state-transition-model.md) §3.1);
+- the four deduplication layers described in `guardian.ts` were in fact three —
+  the risk-assessment-id layer was never implemented
+  ([failure-semantics.md](failure-semantics.md) §3.9);
+- three of the four in-process store doubles return success from
+  `set_session_status` without persisting anything, which is why the suite could
+  not see either of the above ([test-double-contract.md](test-double-contract.md)).

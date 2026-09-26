@@ -16,7 +16,8 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated at the maturity checkpoint (see `CHANGELOG.md` `[Unreleased]`).
+Last updated at the architecture-integrity phase start (see `CHANGELOG.md`
+`[Unreleased]`).
 
 ## Current state
 
@@ -400,7 +401,7 @@ so the maturity picture is in one place.
 | No script for the historical schema rename | Accepted limitation | The mapping is documented in [migration.md](../migration.md). Cerberus does ship a schema and data migration framework, but it does not rewrite historical names. |
 | No backup automation | Accepted limitation | Backup and restore scripts exist and are verified, but nothing schedules them, stores them off-host, or provides point-in-time recovery. See [operations/backup-restore.md](../operations/backup-restore.md). |
 | Session status vocabulary is narrower in the durable store than in the review contract | Accepted limitation | Only `active`, `locked` and `terminated` are persisted; `flagged` and `investigating` are derived at read time. |
-| No central session transition path; no partial-failure semantics | Accepted limitation | Status can still diverge between the two in-memory maps and MongoDB, and an operation whose persistence succeeds but whose cache update does not is not modelled. Recorded in [session-state-model.md](session-state-model.md). |
+| No central session transition path; no partial-failure semantics | **Active work** | Status is still written by five paths that order their cache and durable writes three different ways, and one of them can move a terminated session to `locked`. No longer an accepted limitation: this is the current phase's first objective. Modelled in [state-transition-model.md](state-transition-model.md) and [failure-semantics.md](failure-semantics.md). |
 | No `CODEOWNERS` file | Decided | Recorded: not used while Cerberus is single-maintainer. See [CONTRIBUTING.md](../../CONTRIBUTING.md#maintainership-and-review). |
 
 ## Owner decisions
@@ -459,3 +460,115 @@ registry image — remains a separate human authorisation, and none has been giv
 
 The operational-durability phase is complete: every exit condition at the top of this
 document is met.
+
+## Current phase: architecture integrity
+
+The operational-durability phase made Cerberus survive a restart predictably. What
+it did not do is make its **session lifecycle coherent**: status is written by five
+different code paths that order their cache and durable writes three different ways,
+one of them can move a terminated session back to `locked`, and the transitions the
+system documents as irreversible are not enforced at the only boundary that matters.
+
+**Goal.** Advance Cerberus from *operationally durable experimental system* to
+*architecturally coherent experimental system*: centralized session transitions,
+explicit partial-failure semantics, truthful domain vocabulary, concurrency-safe
+state mutation, bounded read/write paths, and deterministic behaviour under retry,
+restart and dependency failure.
+
+This cycle is about architecture integrity, not feature count.
+
+**Explicitly out of scope.** New surveillance scope, an endpoint agent, accounts or
+RBAC, tenancy, a second AI provider, public deployment, a new paid service, and
+publishing a release. An auth redesign is **not** the answer to the console's
+embedded key in this phase.
+
+**Exit condition.** All of the following true, or explicitly rejected with a strong
+engineering rationale recorded here:
+
+| # | Criterion | State |
+| --- | --- | --- |
+| A | Session transitions centralized or proven unnecessary | Open — model written; boundary not yet built |
+| B | Partial-failure semantics documented and tested | Partly — [failure-semantics.md](failure-semantics.md) documents them; tests pending |
+| C | Status cannot silently diverge on supported paths | Open — five paths, three orderings, results uninspected |
+| D | Terminal-content ownership coherent | Open — three candidate sources for one concept |
+| E | Focus-loss/fullscreen semantics truthful | Open — `WINDOW_BLUR` increments the fullscreen counter |
+| F | Corpus hard ceiling consistent between store, read and console | Open — a read ceiling, not a store rejection |
+| G | Review-fetch amplification reduced or justified with measurement | Open — one `get_session_review` per session per list |
+| H | State mutations concurrency-tested | Open — no concurrency test exists |
+| I | Route-level retry/idempotency contracts documented | Open |
+| J | Stale-cache/newer-DB behaviour deterministic | Open |
+| K | Migrations cover any schema/status changes | Open — depends on the vocabulary decisions below |
+| L | API/MCP compatibility preserved where reasonably possible | Open |
+| M | No P0/P1 correctness/security issue remains | Open — one confirmed P1 (terminated session is not terminal) |
+| N | Test doubles audited against real-store behavior | Partly — [test-double-contract.md](test-double-contract.md) audits them; consolidation pending |
+| O | One real-Mongo integration suite protects the highest-risk state flows | Open |
+| P | Docs, threat model and compatibility docs match implementation | Open |
+| Q | CI green | Green at the start of the phase |
+| R | `v0.1.0` and `v0.2.0` tags unchanged | Verified at the start of the phase |
+| S | A coherent next release candidate can be described | Open |
+
+### Phase queue
+
+Ordered by the value of the outcome. The queue is not a checklist to be cleared for
+its own sake: each item is either delivered, or rejected here with the engineering
+rationale for rejecting it.
+
+1. **The state-transition model, the failure-semantics map, and the test-double
+   audit.** Done — [state-transition-model.md](state-transition-model.md),
+   [failure-semantics.md](failure-semantics.md),
+   [test-double-contract.md](test-double-contract.md). Tracing the source produced
+   one confirmed P1 and five P2 findings, all recorded in `CHANGELOG.md`.
+2. **A shared faithful store double and a contract suite.** Planned. Every
+   subsequent test in this phase depends on it: three of the four existing store
+   doubles return success from `set_session_status` without persisting anything,
+   which is why the P1 above survived a 481-test suite.
+3. **The central session transition boundary.** Planned. Domain actions with
+   preconditions, a durable-first write with an atomic predicate on the expected
+   status, a canonical result, and cache repair from the durable result.
+4. **Route adoption and concurrency tests.** Planned. Deterministic barriers, not
+   sleeps.
+5. **Partial-failure semantics for the cache/durable split, and the ingest ordering
+   inversion.** Planned.
+6. **Terminal-content ownership.** Planned — one coherent direction, chosen and
+   documented rather than left implicit.
+7. **`WINDOW_BLUR` / fullscreen semantic correction.** Planned. This is the one item
+   that may need a migration, so it is decided on its own evidence.
+8. **The reference-corpus hard ceiling.** Planned — reject at the store, one stable
+   error code, tests at 199 / 200 / 201 and at the boundary under concurrency.
+9. **Review-fetch amplification.** Planned — measure first, then reduce, with
+   before/after evidence.
+10. **The real-Mongo integration suite and a bounded CI job.** Planned.
+11. **Migration race and failure hardening.** Planned.
+12. **The error model and console handling.** Planned — `docs/api-errors.md` does
+    not exist yet.
+13. **Checkpoint and release-candidate documentation.** Planned. **Nothing is
+    published.**
+
+### New findings from the state-transition trace
+
+Recorded here as well as in `CHANGELOG.md`, because criterion M is a claim about
+defects and a claim without the list is not checkable.
+
+| Finding | Severity | How it was found |
+| --- | --- | --- |
+| A terminated session accepts telemetry and can be moved to `locked` by a high-risk batch | P1 | Tracing the ingest preconditions; reproduced against a store double |
+| Status writes are last-writer-wins; terminate racing auto-lock is decided by arrival order | P2 | The transition table |
+| The durable status write's result is not inspected on auto-lock, auto-clear or terminate | P2 | Write-ordering trace |
+| Auto-clear's precondition reads the cache, so a durably `locked` session can never be auto-cleared after a restart | P2 | Write-ordering trace |
+| A failed `ingest_micro_events` is indistinguishable from a fully successful one in the response | P2 | Failure-window trace |
+| The risk assessment is persisted **after** the notification and the status write | P2 | Failure-window trace |
+| The module header claims four dedup layers; layer 1 is not implemented and `risk_assessments` has no unique index on `riskAssessmentId` | P2 | Header-versus-code comparison |
+
+## Architecture-integrity phase: the documents
+
+Three documents carry this phase's design work, and each is written from the source
+rather than from intent:
+
+- [state-transition-model.md](state-transition-model.md) — the mutations, their
+  ordering, and the transition table including the transitions the code performs
+  that the model forbids.
+- [failure-semantics.md](failure-semantics.md) — what each multi-step operation
+  guarantees when a step fails, and what it does not.
+- [test-double-contract.md](test-double-contract.md) — the doubles, the contract
+  matrix, and why a passing suite was not evidence of correctness.
+

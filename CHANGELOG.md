@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- `docs/development/state-transition-model.md` — every session lifecycle mutation
+  mapped from the source: its initiator, precondition, durable source of truth,
+  cache writes, write ordering, side effects, AI involvement, retry and
+  idempotency behaviour, terminal behaviour, failure behaviour, restart behaviour
+  and concurrency behaviour. It also states the explicit transition table, and
+  records the transitions the code performs that the model forbids.
+- `docs/development/failure-semantics.md` — what every multi-step operation
+  guarantees when one of its steps fails, window by window: DB-succeeds-cache-fails,
+  cache-changes-DB-fails, provider-succeeds-persistence-fails, process death
+  between writes, a response lost after durable success, an optional notification
+  failure, and a retry arriving after an ambiguous response. It states plainly which
+  guarantees the system can make and which it cannot.
+- `docs/development/test-double-contract.md` — a contract matrix comparing every
+  in-process store double against the real `MongoStore`, the three divergences that
+  let real defects through, and the plan for one shared faithful double plus a
+  contract suite that runs against both it and a real MongoDB.
+
+### Fixed
+
+- **Documentation:** `apps/api/src/routes/guardian.ts` listed four deduplication
+  layers in its module header; layer 1 — "identical risk-assessment id from the AI
+  provider" — **is not implemented**. Nothing in the ingest path reads
+  `riskAssessmentId` for comparison, and `risk_assessments` carries no unique index
+  on it, so a retry after a restart can write a second assessment row for one
+  incident. The false claim is removed from the header, which now lists the three
+  layers that exist and records the missing one as open work, and the finding is
+  documented in `docs/development/failure-semantics.md` §3.9. Implementing the
+  durable assessment identity is queued.
+
+### Recorded findings (not yet fixed)
+
+These were found by tracing the source for the documents above, and each is
+reproduced or traced rather than inferred. They are listed here so the change that
+fixes one can reference it.
+
+- **P1 — a terminated session is not terminal.** `POST /api/v1/guardian/ingest`
+  checks only whether the session's monitoring window has expired, never its
+  status, and `lockSession()` has no precondition either. A `terminated` session
+  that has not yet exceeded `SESSION_TTL_SECONDS` therefore accepts telemetry,
+  advances its durable counters, and — on a high-risk batch — is moved to `locked`.
+  Observed: `terminated` → ingest `200` → durable status `locked`, with two further
+  `micro_events` stored. `reactivate` refuses exactly this transition
+  (`409 SESSION_TERMINATED`), so the two paths disagree about whether `terminated`
+  is reversible. See `docs/development/state-transition-model.md` §3.1.
+- **P2 — status writes are last-writer-wins.** `setSessionStatus` has no predicate
+  on the current status, so `terminate` racing `auto-lock` is decided by arrival
+  order and nothing detects the conflict.
+- **P2 — the status write's result is not inspected on three of five paths.**
+  `auto-lock`, `auto-clear` and `terminate` write the cache first and ignore whether
+  the durable write matched, so a failed write returns `200 success: true` while
+  MongoDB holds the old status. The divergence is invisible until a restart.
+- **P2 — auto-clear's precondition reads the cache.** After a restart a durably
+  `locked` session has no cache entry, so it can never be auto-cleared.
+- **P2 — a failed `ingest_micro_events` is indistinguishable from a fully
+  successful one.** `acceptedCount === processedCount` and `duplicateCount === 0`
+  mean both "stored, all new" and "the store never answered".
+- **P2 — the risk assessment is persisted after the notification and the status
+  write.** The order is paid analysis → paid recommendation → notification →
+  status → assessment, so a process death in that window leaves a durable lock and a
+  delivered alert with no recorded evidence.
 
 ## [0.2.0] - 2026-09-25
 
