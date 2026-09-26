@@ -56,7 +56,8 @@ const Map<String, String> apiErrorMessages = {
 
   // ── Scenario authoring ──
   'PROMPT_TOO_LONG': 'The prompt is too long. Shorten it and try again.',
-  'ROLE_CONTEXT_TOO_LONG': 'The system context is too long. Shorten it and try again.',
+  'ROLE_CONTEXT_TOO_LONG':
+      'The system context is too long. Shorten it and try again.',
   'CLASSIFIER_UNAVAILABLE':
       'The request could not be validated because the classifier is unavailable, so '
       'nothing was generated. Try again shortly.',
@@ -68,14 +69,16 @@ const Map<String, String> apiErrorMessages = {
   'AUDITOR_QUERY_FAILED': 'The audit query failed. Try again.',
 
   // ── Reference corpus ──
-  'INVALID_REFERENCE_DOCUMENT': 'The document was rejected. Check its fields and try again.',
+  'INVALID_REFERENCE_DOCUMENT':
+      'The document was rejected. Check its fields and try again.',
   'REFERENCE_CORPUS_LIMIT_REACHED':
       'The reference corpus is full. Remove a document before adding another.',
   'REFERENCE_STORE_UNAVAILABLE':
       'The reference corpus is unavailable. Try again shortly.',
 
   // ── Identity ──
-  'INVALID_IDENTITY_FIELD': 'An identity field was rejected. Check it and try again.',
+  'INVALID_IDENTITY_FIELD':
+      'An identity field was rejected. Check it and try again.',
 };
 
 /// Codes whose server message carries detail the console cannot supply.
@@ -108,10 +111,14 @@ const Set<String> codesThatCarryDetail = {
 ///      error.
 ///
 /// `fallback` lets a caller name the operation ("Ingestion failed") for case 4.
-String describeApiError(Map<String, dynamic>? body, {String fallback = 'Request failed'}) {
+String describeApiError(
+  Map<String, dynamic>? body, {
+  String fallback = 'Request failed',
+}) {
   final serverMessage = body?['error'];
-  final detail =
-      serverMessage is String && serverMessage.trim().isNotEmpty ? serverMessage : null;
+  final detail = serverMessage is String && serverMessage.trim().isNotEmpty
+      ? serverMessage
+      : null;
 
   final code = body?['code'];
   if (code is String) {

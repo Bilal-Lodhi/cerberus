@@ -169,6 +169,14 @@ jobs:
       - name: Analyze
         run: flutter analyze
 
+      # `flutter analyze` does not check formatting, and the release checklist names
+      # `dart format --set-exit-if-changed` as a gate. Without this step that gate was
+      # documented but never enforced, so four files reached a release candidate
+      # unformatted — two of them edited through a tool that wrote CRLF, which the
+      # formatter rewrites. Enforcing it here is what makes the documented gate real.
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed .
+
       - name: Test
         run: flutter test
 

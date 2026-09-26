@@ -27,7 +27,9 @@ void main() {
     });
 
     test('a known code is explained even with no server message', () {
-      final message = describeApiError({'code': 'REFERENCE_CORPUS_LIMIT_REACHED'});
+      final message = describeApiError({
+        'code': 'REFERENCE_CORPUS_LIMIT_REACHED',
+      });
       expect(message, contains('full'));
       expect(message, contains('Remove a document'));
     });
@@ -47,7 +49,10 @@ void main() {
         describeApiError({}, fallback: 'Ingestion failed'),
         'Ingestion failed',
       );
-      expect(describeApiError(null, fallback: 'Ingestion failed'), 'Ingestion failed');
+      expect(
+        describeApiError(null, fallback: 'Ingestion failed'),
+        'Ingestion failed',
+      );
     });
 
     test('an empty server message does not become the displayed error', () {
@@ -61,13 +66,19 @@ void main() {
       // A gateway error, a proxy page or a future shape must not throw inside an error
       // handler — that would turn a shown error into an unhandled exception.
       expect(
-        describeApiError({'code': 42, 'error': <String>[]}, fallback: 'fallback'),
+        describeApiError({
+          'code': 42,
+          'error': <String>[],
+        }, fallback: 'fallback'),
         'fallback',
       );
     });
 
     test('a known code wins even when the server message is absent', () {
-      expect(describeApiError({'code': 'RATE_LIMITED'}), contains('Too many requests'));
+      expect(
+        describeApiError({'code': 'RATE_LIMITED'}),
+        contains('Too many requests'),
+      );
     });
   });
 
@@ -117,7 +128,8 @@ void main() {
       expect(
         extra,
         isEmpty,
-        reason: 'the console explains codes that are not documented: ${extra.join(", ")}',
+        reason:
+            'the console explains codes that are not documented: ${extra.join(", ")}',
       );
     });
 

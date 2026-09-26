@@ -1,6 +1,6 @@
 {
   "name": "cerberus",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "Apache-2.0",
   "description": "Cerberus — real-time insider-threat and data-exfiltration telemetry guardian.",
