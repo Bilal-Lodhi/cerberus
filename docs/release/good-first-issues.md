@@ -176,15 +176,22 @@ doc comment states the historical cache "was never populated".
 
 ## 3. Reconcile the session-status vocabulary
 
-> **Status: already fixed during extraction.** Fixed by
+> **Status: already fixed during extraction, and the residual vocabulary spread is now
+> closed too.** Fixed by
 > `fix(api): never resurrect a terminated session after a restart`. Session
 > creation now writes `status: "active"` (`guardian.ts:760`), `createSession`
 > defaults to `"active"` and honours a caller-supplied status
 > (`mongo-client.ts:148-166`), and `normalizeStatus` recognises `terminated`
 > through `PERSISTED_SESSION_STATUSES` (`guardian.ts:983-999`). Regression tests
-> exist at `apps/api/test/dedup.test.ts:238-248`. The residual vocabulary spread
-> is documented as a deliberate deferral in `docs/architecture.md:345-352`. Kept
-> here as a record; do not re-file it as an issue.
+> exist at `apps/api/test/dedup.test.ts:238-248`. Kept here as a record; do not
+> re-file it as an issue.
+>
+> **The residual spread is closed.** `ActiveSession.status` is now
+> `active | locked`, `SessionReviewResponse.status` is
+> `active | locked | terminated`, `PERSISTED_SESSION_STATUSES` is the same three values as
+> the adapter's `SESSION_STATUSES`, the derived review values moved to a separate
+> `disposition` field, and `cleared` was removed from the vocabulary entirely. See
+> [development/state-transition-model.md](../development/state-transition-model.md) §1.
 
 Three different sets of session status values exist in the codebase, and a fourth
 behaviour sits on top of them. `ActiveSession` permits five values, the MCP

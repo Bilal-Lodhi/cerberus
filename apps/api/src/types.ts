@@ -389,7 +389,15 @@ export interface ActiveSession {
   employeeId: string;
   matrixId: string;
   targetSystem: string;
-  status: "active" | "flagged" | "investigating" | "cleared" | "locked";
+  /**
+   * The lifecycle status of a session the live registry holds.
+   *
+   * `active` or `locked` only: the registry holds sessions that are still monitored, and
+   * `terminated` is not monitored. The derived review vocabulary (`flagged`,
+   * `investigating`) is not a status and never appears here — see
+   * `SessionReviewResponse.disposition`.
+   */
+  status: "active" | "locked";
   deployedAt: string;
   riskIndex: number;
   /**
@@ -441,13 +449,16 @@ export interface SessionReviewResponse {
   employeeId: string;
   auditId: string;
   /**
-   * The **lifecycle** status, the same vocabulary every other surface reports.
+   * The **lifecycle** status, the same vocabulary every other surface reports:
+   * `active`, `locked` or `terminated`.
    *
    * `flagged` and `investigating` are no longer produced here; they are a
-   * {@link ReviewDisposition}. `cleared` is unreachable — nothing has ever produced it —
-   * and is kept in the union only because a legacy document could still hold it.
+   * {@link ReviewDisposition}. `cleared` was removed from the vocabulary: nothing ever
+   * produced it, and the one clear behaviour the product has — lifting a lock — writes
+   * `active`, so a legacy document holding it normalizes to `active`. See
+   * `services/session-status.ts`.
    */
-  status: "active" | "flagged" | "investigating" | "cleared" | "locked" | "terminated";
+  status: "active" | "locked" | "terminated";
   /** Derived from the evidence. Never persisted. */
   disposition?: ReviewDisposition;
   /**

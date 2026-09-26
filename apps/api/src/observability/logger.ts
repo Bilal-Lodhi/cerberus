@@ -314,6 +314,12 @@ export const LOG_EVENTS = {
   SESSION_TRANSITION: "session.transition",
   /** A session lifecycle action that was refused. */
   SESSION_TRANSITION_REFUSED: "session.transition.refused",
+  /**
+   * A document held a status the store cannot hold, and a transition replaced it.
+   *
+   * A data-integrity signal worth knowing about, because a stored field was rewritten.
+   */
+  SESSION_TRANSITION_REPAIRED: "session.transition.repaired",
   /** A best-effort outbound notification. */
   NOTIFICATION: "notification.outbound",
   /** A provider attempt inside the retry loop. */

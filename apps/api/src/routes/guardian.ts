@@ -2286,7 +2286,9 @@ export function collectPasteContents(events: MicroEvent[]): string[] {
  */
 export {
   PERSISTED_SESSION_STATUSES,
+  LEGACY_DERIVED_SESSION_STATUSES,
   type PersistedSessionStatus,
+  type LegacyDerivedSessionStatus,
   normalizeStatus,
   isMonitored,
 } from "../services/session-status.js";

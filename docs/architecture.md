@@ -535,14 +535,17 @@ deliberate or unresolved gaps rather than defects.
   documents are retained indefinitely. Cleanup of historical data is a separate
   retention policy that is not implemented. The full contract is in
   [configuration.md](configuration.md#session-lifetime-session_ttl_seconds).
-- **Session status vocabulary is narrow.** `ActiveSession` in
-  `apps/api/src/types.ts` permits `active | flagged | investigating | cleared |
-  locked`, while the MCP adapter's `SESSION_STATUSES` permits only
-  `active | locked | terminated`. Only the intersection is written durably:
-  sessions are created as `active`, and the guardian writes `locked`,
-  `active` and `terminated`. The richer review-only states (`flagged`,
-  `investigating`) are derived at read time by `apps/api/src/routes/review.ts`
-  rather than persisted. Widening the persisted set is deferred.
+- **Session status vocabulary is narrow, and it is one vocabulary.** `SESSION_STATUSES`
+  in the MCP adapter and `PERSISTED_SESSION_STATUSES` in
+  `apps/api/src/services/session-status.ts` are the same three values: `active`,
+  `locked`, `terminated`. Sessions are created as `active`, and the guardian writes
+  `locked`, `active` and `terminated`. The derived review values (`flagged`,
+  `investigating`) are a **disposition**, reported separately and never persisted, and
+  `cleared` was removed: nothing ever produced it, and the one clear behaviour the
+  product has — lifting a lock — writes `active`. A legacy document holding a retired
+  value is normalised to `active` and repaired on its next transition. See
+  [development/state-transition-model.md](development/state-transition-model.md) §1 and
+  [development/read-model.md](development/read-model.md).
 - **No rate limiting, no replay protection beyond TLS, and no automated key
   rotation.** See [security/threat-model.md](security/threat-model.md).
 - **Single shared API key.** Cerberus cannot attribute an action to an individual

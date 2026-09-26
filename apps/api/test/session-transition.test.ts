@@ -30,11 +30,13 @@ import {
 } from "../src/services/session-transition.js";
 import { createManualClock } from "../src/services/session-liveness.js";
 import {
+  LEGACY_DERIVED_SESSION_STATUSES,
   SESSION_TRANSITION_CODES,
   normalizeStatus,
   type DurableSessionStatus,
   type PersistedSessionStatus,
 } from "../src/services/session-status.js";
+import { configureLogging, resetLogging } from "../src/observability/logger.js";
 import {
   authorizedHeaders,
   installFetchStub,
@@ -683,7 +685,7 @@ describe("session transition boundary", () => {
 
   test("acceptsTelemetry is false only for a terminated session", () => {
     assert.equal(acceptsTelemetry("terminated"), false);
-    for (const status of ["active", "locked", "flagged", "investigating", "cleared"] as const) {
+    for (const status of ["active", "locked"] as const) {
       assert.equal(acceptsTelemetry(status), true, `${status} should accept telemetry`);
     }
   });
@@ -741,18 +743,59 @@ describe("session transition boundary", () => {
     assert.equal(result.httpStatus, 409);
   });
 
-  test("a document holding a derived status is refused as an invalid transition", async () => {
-    // `flagged` is never written, so a document holding it is a data-integrity
-    // problem. It is not terminal, so the refusal says "not a legal start state"
-    // rather than pretending the session has ended.
-    await mcp.createSession({ sessionId: "b-derived", employeeId: "op-1", auditId: "a" });
-    mcp.sessions.get("b-derived")!["status"] = "flagged";
+  test("a document holding a retired value is repaired, and the repair is logged", async () => {
+    // `flagged`, `investigating` and `cleared` are not statuses and nothing has ever
+    // written them. A document holding one is a legacy or hand-edited record, and
+    // `normalizeStatus` maps it onto `active` — the same answer an entirely unrecognised
+    // value gets. So `terminate` is a legal transition from it, and it is applied.
+    //
+    // Before the vocabulary was resolved, `flagged` was a recognised status that no
+    // transition could start from, so this returned `INVALID_SESSION_TRANSITION` — a
+    // refusal that told the operator nothing they could act on about a state the system
+    // cannot produce.
+    //
+    // The predicate is the subtle part: a compare-and-set expressed in durable statuses
+    // would match nothing against a retired value, so the write would report
+    // `SESSION_CONFLICT` on every attempt and the session could never be terminated. The
+    // write is therefore unconditional for such a document, which is what makes it a
+    // repair rather than a permanent dead end.
+    const records: Array<Record<string, unknown>> = [];
+    configureLogging({
+      level: "debug",
+      format: "json",
+      sink: (_line, record) => records.push(record as unknown as Record<string, unknown>),
+    });
 
-    const result = await boundary().terminate("b-derived");
+    try {
+      for (const retired of LEGACY_DERIVED_SESSION_STATUSES) {
+        const sessionId = `b-retired-${retired}`;
+        await mcp.createSession({ sessionId, employeeId: "op-1", auditId: "a" });
+        mcp.sessions.get(sessionId)!["status"] = retired;
 
-    assert.equal(result.ok, false);
-    if (result.ok) return;
-    assert.equal(result.code, SESSION_TRANSITION_CODES.INVALID_SESSION_TRANSITION);
+        const result = await boundary().terminate(sessionId);
+
+        assert.equal(result.ok, true, `${retired} blocked a legal transition`);
+        if (!result.ok) continue;
+        assert.equal(result.previousStatus, "active", `${retired} did not normalise`);
+        assert.equal(result.status, "terminated");
+        assert.equal(
+          mcp.sessions.get(sessionId)?.["status"],
+          "terminated",
+          `${retired} was not repaired in the document`,
+        );
+
+        const repair = records.find(
+          (record) =>
+            record["event"] === "session.transition.repaired" &&
+            record["sessionId"] === sessionId,
+        );
+        assert.ok(repair, `the repair of ${retired} was not logged`);
+        assert.equal(repair["storedStatus"], retired, "the raw value was not recorded");
+        assert.equal(repair["normalisedStatus"], "active");
+      }
+    } finally {
+      resetLogging();
+    }
   });
 
   test("a legal no-op reports applied: false and writes no status", async () => {
