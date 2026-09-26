@@ -423,6 +423,60 @@ export class MongoStore {
   }
 
   /**
+   * Writes the terminal workspace content, optionally gated on the document's state.
+   *
+   * ── Why this is not just `updateSession` ──────────────────────────────
+   *
+   * `monitored_sessions.terminalContent` is one fact — "the workspace as monitoring ended" —
+   * and `updateSession` writes it unconditionally, which makes two processes terminating the
+   * same session decide it by arrival order. The last writer wins, and the last writer is
+   * whichever process happened to hold the **staler** reconstruction of the workspace.
+   *
+   * `expectedStatuses` turns the write into a compare-and-set on the lifecycle state, so the
+   * process whose `terminate` transition actually applied is the one that owns the field.
+   * `onlyIfAbsent` narrows it further, to the repair case: a session that is already
+   * terminated but holds no content — because the winning process died between the transition
+   * and the write — may be repaired by a later caller, while a session that already holds
+   * content never is.
+   *
+   * Both options are optional, so a direct MCP client calling the tool with neither keeps the
+   * previous unconditional behaviour and the published capability is unchanged.
+   *
+   * Returns whether a document matched. `false` means the write did not happen — the session
+   * does not exist, its status was not one of `expectedStatuses`, or content was already
+   * present and `onlyIfAbsent` was set.
+   */
+  async updateSessionTerminalContent(
+    sessionId: string,
+    terminalContent: string,
+    options: { expectedStatuses?: readonly string[]; onlyIfAbsent?: boolean } = {},
+  ): Promise<boolean> {
+    const filter: Document = { sessionId };
+
+    const expected = options.expectedStatuses;
+    if (expected && expected.length > 0) {
+      filter["status"] = { $in: [...expected] };
+    }
+
+    if (options.onlyIfAbsent) {
+      // A document that has never been written holds no field; one written with an empty
+      // string holds a field that says nothing. Both are "no content", and neither should
+      // block a repair.
+      filter["$or"] = [
+        { terminalContent: { $exists: false } },
+        { terminalContent: null },
+        { terminalContent: "" },
+      ];
+    }
+
+    const result = await this.collection("sessions").updateOne(filter, {
+      $set: { terminalContent, updatedAt: new Date() },
+    });
+
+    return result.matchedCount > 0;
+  }
+
+  /**
    * Permanently deletes a session and every document derived from it.
    *
    * ── The order is load-bearing ─────────────────────────────────────────

@@ -336,4 +336,154 @@ describe("terminal-content ownership", () => {
       "the tool created a session document",
     );
   });
+
+  // ── The ownership rule, across two processes ──────────────────────
+  //
+  // The field is one fact — "the workspace as monitoring ended" — and it used to have no
+  // owner: `terminate` wrote it **before** the transition and unconditionally, so two
+  // processes terminating the same session both wrote and the last writer won, with whichever
+  // process happened to hold the *staler* reconstruction. The rule is now that the process
+  // whose terminal transition actually applied owns it.
+
+  describe("the transition that applied owns the field", () => {
+    let processA: ReturnType<typeof createApp>;
+    let processB: ReturnType<typeof createApp>;
+
+    beforeEach(() => {
+      const config = makeConfigWithTtl(3600);
+      processA = createApp(config);
+      processB = createApp(config);
+    });
+
+    /** Ingest one large paste into a specific process. */
+    async function ingestInto(
+      target: ReturnType<typeof createApp>,
+      sessionId: string,
+      text: string,
+    ): Promise<void> {
+      const res = await target.request("/api/v1/guardian/ingest", {
+        method: "POST",
+        headers: authorizedHeaders(),
+        body: JSON.stringify({ events: [largePaste(sessionId, text)] }),
+      });
+      assert.equal(res.status, 200, await res.text());
+    }
+
+    async function terminateVia(
+      target: ReturnType<typeof createApp>,
+      sessionId: string,
+    ): Promise<number> {
+      const res = await target.request(
+        `/api/v1/guardian/sessions/${sessionId}/terminate`,
+        { method: "POST", headers: authorizedHeaders() },
+      );
+      return res.status;
+    }
+
+    async function reviewVia(
+      target: ReturnType<typeof createApp>,
+      sessionId: string,
+    ): Promise<Record<string, unknown>> {
+      const res = await target.request(`/api/v1/sessions/${sessionId}`, {
+        headers: authorizedHeaders(),
+      });
+      assert.equal(res.status, 200);
+      return ((await res.json()) as { data: Record<string, unknown> }).data;
+    }
+
+    async function currentCodeVia(
+      target: ReturnType<typeof createApp>,
+      sessionId: string,
+    ): Promise<string> {
+      const res = await target.request(`/api/v1/guardian/sessions/${sessionId}`, {
+        headers: authorizedHeaders(),
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { session?: { currentCode?: string } };
+      return body.session?.currentCode ?? "";
+    }
+
+    test("a second terminate does not overwrite the workspace the first preserved", async () => {
+      // Both processes ingest the same session, so both hold a **different** reconstruction:
+      // A holds what A saw and B holds what B saw. Both are legitimate; only one may own the
+      // field.
+      await ingestInto(processA, "tc-owner", "A SAW THIS");
+      await ingestInto(processB, "tc-owner", "B SAW THAT");
+
+      const aWorkspace = await currentCodeVia(processA, "tc-owner");
+      const bWorkspace = await currentCodeVia(processB, "tc-owner");
+      // Both non-empty, and different. Without the first assertion the test could pass
+      // vacuously: B holding no workspace would fall back to the durable content and skip the
+      // write for a reason that has nothing to do with ownership.
+      assert.notEqual(aWorkspace, "", "precondition: process A holds a workspace");
+      assert.notEqual(bWorkspace, "", "precondition: process B holds a workspace");
+      assert.notEqual(
+        aWorkspace,
+        bWorkspace,
+        "precondition: the two processes must hold different reconstructions",
+      );
+
+      // A terminates first, so A's transition applies and A owns the field.
+      assert.equal(await terminateVia(processA, "tc-owner"), 200);
+      const winner = await reviewVia(processA, "tc-owner");
+      assert.equal(
+        winner["terminalContent"],
+        aWorkspace,
+        "the process whose transition applied did not own the field",
+      );
+
+      // B terminates second. Its transition is a legal no-op — the session is already
+      // terminated — so it did not claim the session and must not overwrite.
+      assert.equal(
+        await terminateVia(processB, "tc-owner"),
+        200,
+        "re-terminating an already-terminated session must stay a legal no-op",
+      );
+
+      const after = await reviewVia(processB, "tc-owner");
+      assert.equal(
+        after["terminalContent"],
+        aWorkspace,
+        "a terminate that did not claim the session overwrote the preserved workspace",
+      );
+    });
+
+    test("a terminate that is refused writes no content at all", async () => {
+      // The old order wrote the workspace **before** the transition, so a refused terminate
+      // still wrote content. A session that does not exist cannot own terminal content.
+      assert.equal(await terminateVia(processA, "tc-ghost"), 404);
+
+      assert.equal(
+        mcp.sessions.get("tc-ghost"),
+        undefined,
+        "a refused terminate created or touched a session document",
+      );
+    });
+
+    test("a terminated session with no content is repaired by a later terminate", async () => {
+      // The case `onlyIfAbsent` exists for: the winning process died between its transition
+      // and its content write, so the session is terminated and holds nothing. A later
+      // terminate may fill it from the documented fallback — and must never overwrite content
+      // that is already there, which the previous test covers.
+      mcp.seedSession({
+        sessionId: "tc-repair",
+        status: "terminated",
+        employeeId: "op-1",
+        auditId: "audit-1",
+      });
+      mcp.seedAssessment("tc-repair", {
+        overallRiskScore: 60,
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        codeSnapshot: "FROM THE SNAPSHOT",
+      });
+
+      assert.equal(await terminateVia(processA, "tc-repair"), 200);
+
+      assert.equal(
+        (await reviewVia(processA, "tc-repair"))["terminalContent"],
+        "FROM THE SNAPSHOT",
+        "a terminated session with no content was not repaired",
+      );
+    });
+  });
 });

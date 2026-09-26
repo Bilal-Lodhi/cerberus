@@ -80,7 +80,7 @@ reconciliation exists to remove.
 | **`last activity`** (`updatedAt`) | Durable authoritative | Yes | B's own `lastActivityAt` when B ingested more recently, otherwise the durable `updatedAt` | Any durable read | Yes — both are server clocks and the TTL predicate takes the more recent | One batch interval, or B's process lifetime | No — a stale process does not write `updatedAt` unless it writes something else |
 | **`currentCode`** | Ephemeral | N/A — one reconstruction per process | B's own reconstruction, or `""` if B never ingested | Never; `terminalContent` is the durable owner | **Yes, explicitly** — the response marks `ephemeralStateAvailable` | B's process lifetime | **Yes — see §5.3** |
 | **`lastRiskPayload`** | Reconstructed | Yes (A stores a new assessment) | B's own latest in-memory payload, or `null` | The review surface reconstructs from `risk_assessments`; the live detail does not | Yes for the live detail (labelled ephemeral); no for review, which reads durable | B's process lifetime | No — assessments are append-only under a unique identity |
-| **`terminalContent`** | Durable authoritative | **Yes** — the write has no predicate | The durable value on the review surface | Never | **No** — it is one fact: "the workspace as monitoring ended" | Permanent (last writer wins) | **Yes — see §5.3** |
+| **`terminalContent`** | Durable authoritative | Yes | The durable value on the review surface | The transition that applied writes it; a later terminate may only repair an empty field | **No** — it is one fact: "the workspace as monitoring ended" | Zero — the write is gated on the status the transition produced | **No** — a terminate that did not claim the session writes only when the field is absent |
 | **Review disposition** (`flagged`/`investigating`/`none`) | Derived | N/A — never stored | Derived from durable assessments | Recomputed on every read | No | None | N/A |
 | **Identity binding** (operator handle) | Ephemeral | N/A — no durable home | A handle minted by A is **unknown to B** | Never | **Yes** — documented as a per-process display handle, not a credential | The process lifetime of whichever replica minted it | N/A |
 | **Rate-limit bucket** | Ephemeral | N/A — no shared state | B's own bucket decision | Never | **Yes** — N replicas enforce up to N× the configured limit | The process lifetime | N/A |
@@ -145,17 +145,38 @@ and is exactly the answer to "how risky did this session get".
 a score this process never saw is reported and a payload this process holds but has not yet
 persisted is not discarded.
 
-### 5.3 `terminalContent` has no ownership rule
+### 5.3 `terminalContent` had no ownership rule — fixed
 
-`POST /sessions/:sessionId/terminate` preserves the workspace **before** the status
-transition, and `update_session_terminal_content` is an unconditional `$set`. So two
-processes terminating the same session both write, and the last writer wins — with
-whichever process happened to hold the staler `currentCode`. The field's own definition
-("the workspace as monitoring ended") makes it a single fact with no single owner.
+`POST /sessions/:sessionId/terminate` preserved the workspace **before** the status
+transition, and `update_session_terminal_content` was an unconditional `$set`. So two
+processes terminating the same session both wrote, and the last writer won — with whichever
+process happened to hold the staler `currentCode`. The field's own definition ("the workspace
+as monitoring ended") makes it a single fact with no single owner.
 
-The rule this needs is **first successful terminal transition owns `terminalContent`**: the
-transition that actually moves the document to `terminated` is the one whose workspace is
-preserved, and a process that lost that race must not overwrite it.
+**Fixed. The process whose terminal transition actually applied owns the field.**
+
+The order is the rule, and only the *write* moved:
+
+1. **Read** the workspace while the session is still live — "terminal content" means the
+   workspace as it was when monitoring stopped, so it must be read before monitoring stops.
+2. **Claim** it: the status transition, which is already predicate-checked, is the atomic claim.
+   A concurrent terminate that loses reports `SESSION_CONFLICT` and never reaches the write.
+3. **Write** the content gated on the status the transition produced. A terminate that *did*
+   apply writes with `expectedStatuses: ["terminated"]`. A terminate that found the session
+   already terminated did not claim it, so it may only **repair** — `onlyIfAbsent` writes when
+   the document holds no content, which is the case where the winning process died between its
+   transition and its write. It never overwrites a workspace another process preserved.
+
+Two consequences worth stating:
+
+- **A refused terminate now writes nothing.** Previously the content was written first, so a
+  terminate refused with `404` had already written content for a session that does not exist.
+- **`applied` on the content write reports whether the write happened**, not merely that the
+  request was well-formed. Before, a gated write that matched nothing still reported
+  `applied: true` — the same class of lie the existence check had removed one layer down.
+
+The published MCP capability is unchanged for a client that supplies neither gate: with no
+`expectedStatuses` and no `onlyIfAbsent`, the write is unconditional, as it always was.
 
 ### 5.4 There is no durable idempotency state
 
@@ -179,7 +200,7 @@ Which rules from §3 hold today, and where.
 | Durable wins for **counters** on both live surfaces | the merge takes `max(local, durable)` | **Enforced** |
 | A stale process cannot lower a counter | `$max` at the store | **Enforced** |
 | A stale process cannot regress a status | `expectedStatuses` compare-and-set | **Enforced** |
-| A stale process cannot overwrite `terminalContent` | — | **Not enforced** (§5.3) |
+| A stale process cannot overwrite `terminalContent` | `updateSessionTerminalContent` takes `expectedStatuses` and `onlyIfAbsent`; the terminate route writes after the claim, gated on it | **Enforced** |
 | A read repairs the cache only **toward** the document | `SessionTransitionCache.reconcileStatus` — status only, never the activity instant, never seeding | **Enforced** |
 | A read never extends a monitoring window | `reconcileStatus` takes `at: null`, so the cached activity instant is untouched | **Enforced** |
 | Duplicate events count once | `micro_events` unique `(sessionId, eventId)` + `$setOnInsert` + the accepted-set report | **Enforced** |

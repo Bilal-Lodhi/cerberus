@@ -1359,37 +1359,27 @@ export function createGuardianRouter(
     const sessionId = c.req.param("sessionId");
     const requestId = currentRequestId();
 
-    // Preserve the workspace **before** ending monitoring, because that is what "terminal
-    // content" means: the workspace as it was when monitoring stopped. This is the write
-    // that makes `monitored_sessions.terminalContent` the field's owner rather than a
-    // field no route ever populated — which is why the review path used to recover the
-    // workspace from a three-source chain with no rule about which won.
+    // ── The order is the ownership rule ───────────────────────────────
     //
-    // Best-effort and non-fatal: a failure here must not stop an operator terminating a
-    // session. The review path still falls back to the newest assessment's
-    // `codeSnapshot`, which is a *different* fact (the workspace when that assessment ran)
-    // but is better than an empty panel.
+    // Read the workspace **while the session is still live** — "terminal content" means the
+    // workspace as it was when monitoring stopped, so it must be read before monitoring stops.
+    // But the **write** happens after the transition, and that is the whole point: the
+    // transition is the atomic claim on the session, and the process whose claim applied is the
+    // one that owns the field.
+    //
+    // Before this, the content was written first and unconditionally, so two processes
+    // terminating the same session both wrote and the last writer won — with whichever process
+    // happened to hold the *staler* reconstruction of the workspace. The field is one fact and
+    // it had no single owner.
+    //
+    // Reading is best-effort and non-fatal: a failure must not stop an operator ending
+    // monitoring. The review path still falls back to the newest assessment's `codeSnapshot`,
+    // which is a *different* fact — the workspace when that assessment ran — but better than an
+    // empty panel.
     const inMemoryCode = sessionStore.get(sessionId)?.currentCode;
+    let workspace: string | null = null;
     try {
-      const workspace = await transitions.workspaceToPreserve(
-        sessionId,
-        inMemoryCode,
-        requestId,
-      );
-      if (workspace) {
-        const preserved = await transitions.updateTerminalContent(
-          sessionId,
-          workspace,
-          requestId,
-        );
-        if (!preserved.ok) {
-          logger.warn(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, {
-            sessionId,
-            preserved: false,
-            errorCode: preserved.code,
-          });
-        }
-      }
+      workspace = await transitions.workspaceToPreserve(sessionId, inMemoryCode, requestId);
     } catch (error) {
       logger.failure(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, error, {
         sessionId,
@@ -1397,10 +1387,53 @@ export function createGuardianRouter(
       });
     }
 
+    // The claim. A concurrent terminate that loses this predicate reports `SESSION_CONFLICT`
+    // and never reaches the content write below.
     const result = await transitions.terminate(sessionId, requestId);
     if (!result.ok) {
       const { body, status } = refusalResponse(result);
       return c.json({ ...body, correlationId: requestId }, status);
+    }
+
+    if (workspace) {
+      try {
+        // `applied` means this process moved the document to `terminated`, so it owns the
+        // field: the write is gated on the status the transition produced. A terminate that
+        // found the session **already** terminated did not claim it, so it may only repair —
+        // `onlyIfAbsent` writes when the document holds no content, which is the case where the
+        // winning process died between its transition and its write. It never overwrites a
+        // workspace another process preserved.
+        const preserved = await transitions.updateTerminalContent(
+          sessionId,
+          workspace,
+          requestId,
+          result.applied
+            ? { expectedStatuses: ["terminated"] }
+            : { expectedStatuses: ["terminated"], onlyIfAbsent: true },
+        );
+
+        if (!preserved.ok) {
+          logger.warn(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, {
+            sessionId,
+            preserved: false,
+            errorCode: preserved.code,
+          });
+        } else if (!preserved.applied) {
+          // Not a failure: either this process lost the claim and the field is already owned,
+          // or the session holds content from the process that won. Logged at debug so the
+          // distinction is visible without making a normal race look like an incident.
+          logger.debug(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, {
+            sessionId,
+            preserved: false,
+            reason: "not-the-owner",
+          });
+        }
+      } catch (error) {
+        logger.failure(LOG_EVENTS.GUARDIAN_TERMINAL_CONTENT, error, {
+          sessionId,
+          preserved: false,
+        });
+      }
     }
 
     // `endedAt` is display state derived from the transition instant; it is not part

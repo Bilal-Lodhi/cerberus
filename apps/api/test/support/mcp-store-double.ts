@@ -333,6 +333,38 @@ export class McpStoreDouble {
   }
 
   /**
+   * The same compare-and-set as the real store, evaluated against the same three conditions.
+   *
+   * A double that ignored the gates would make the ownership rule look enforced while it was
+   * not — which is the failure mode `docs/development/test-double-contract.md` records four
+   * instances of. `store-contract.test.ts` runs the same cases against this and against a real
+   * MongoDB.
+   */
+  async updateSessionTerminalContent(
+    sessionId: string,
+    terminalContent: string,
+    options: { expectedStatuses?: readonly string[]; onlyIfAbsent?: boolean } = {},
+  ): Promise<boolean> {
+    const document = this.sessions.get(sessionId);
+    if (!document) return false;
+
+    const expected = options.expectedStatuses;
+    if (expected && expected.length > 0 && !expected.includes(String(document["status"]))) {
+      return false;
+    }
+
+    if (options.onlyIfAbsent) {
+      const stored = document["terminalContent"];
+      // Absent, null or empty all mean "no content", mirroring the real `$or`.
+      if (typeof stored === "string" && stored.length > 0) return false;
+    }
+
+    document["terminalContent"] = terminalContent;
+    document["updatedAt"] = new Date();
+    return true;
+  }
+
+  /**
    * The same order and the same per-component reporting as the real store: derived
    * documents first, the session record last, each component caught on its own. See
    * `MongoStore.deleteSession`.

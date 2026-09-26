@@ -216,11 +216,18 @@ export interface SessionTransitions {
    * Not a status transition, but it is lifecycle state owned by the session document
    * and it was previously reachable only through a published MCP tool no route
    * called. Routing it here gives terminal content one owner and one existence check.
+   *
+   * `options` carries the ownership gates. `expectedStatuses` makes the write a
+   * compare-and-set on the lifecycle status, so the process whose terminal transition
+   * actually applied owns the field; `onlyIfAbsent` narrows it to repairing a terminated
+   * session that holds no content yet. `applied` on the result reports whether the write
+   * happened, which is a different fact from whether the request was valid.
    */
   updateTerminalContent(
     sessionId: string,
     content: string,
     requestId?: string,
+    options?: { expectedStatuses?: readonly string[]; onlyIfAbsent?: boolean },
   ): Promise<SessionTransitionResult>;
 }
 
@@ -547,21 +554,25 @@ export function createSessionTransitions(
 
     workspaceToPreserve,
 
-    async updateTerminalContent(sessionId, content, requestId = randomUUID()) {
+    async updateTerminalContent(sessionId, content, requestId = randomUUID(), options = {}) {
       // Content, not status: no transition is validated, but the session must exist,
-      // because `updateSession` matches on `sessionId` and reports success either way.
-      // A write for a session that does not exist is a caller error, and the previous
-      // behaviour — `{success: true}` for a document that was never touched — made it
-      // indistinguishable from a real write.
+      // because the store matches on `sessionId` and reports a no-op either way.
       const loaded = await readDurable(sessionId, requestId);
       if (!loaded.ok) return loaded.refusal;
 
       const current = statusOf(loaded.document);
 
-      const written = await callMcpTool<{ success?: boolean }>(
+      const written = await callMcpTool<{ success?: boolean; updated?: boolean }>(
         config,
         MCP_TOOL_NAMES.UPDATE_SESSION_TERMINAL_CONTENT,
-        { sessionId, terminalContent: content },
+        {
+          sessionId,
+          terminalContent: content,
+          ...(options.expectedStatuses
+            ? { expectedStatuses: [...options.expectedStatuses] }
+            : {}),
+          ...(options.onlyIfAbsent ? { onlyIfAbsent: true } : {}),
+        },
         { requestId, timeoutMs: MCP_TIMEOUT_MS },
       );
 
@@ -575,10 +586,12 @@ export function createSessionTransitions(
       }
 
       // The status is unchanged by a content write, so both fields report what the
-      // document holds. `applied: true` means the content was written.
+      // document holds. `applied` reports whether the write **happened**: with a gate
+      // supplied, a document that failed the predicate matched nothing, and saying
+      // `applied: true` for it would be the same lie the existence check removed.
       return {
         ok: true,
-        applied: true,
+        applied: written.data.updated !== false,
         sessionId,
         status: current,
         previousStatus: current,

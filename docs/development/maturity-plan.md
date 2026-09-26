@@ -709,7 +709,7 @@ and is otherwise stated as not met.
 | L | Full release verification runnable through CI, not only a developer machine | **Met** — `.github/workflows/release-verification.yml` on `workflow_dispatch` |
 | M | Docker-dependent release evidence reproducible in CI/manual workflow | **Met** — same workflow, with a real `mongo:7` and a Docker build |
 | N | Live-state reconciliation has measured cost, no pathological query amplification | Not met — the query count is bounded by construction (one read per request on each live surface, no N+1), but the measured before/after latency is still outstanding |
-| O | No known P0/P1 correctness or security defect remains | Not met — the read paths are closed; §5.3 of the model (`terminalContent` ownership) is open |
+| O | No known P0/P1 correctness or security defect remains | **Met for the session read paths and terminal-content ownership.** §5.4 of the model — no durable idempotency on the two paid routes — remains open and is the next item |
 | P | Docs, threat model and compatibility docs match implementation | In progress — the new docs state the gaps rather than describing the target as done |
 | Q | Published tags remain immutable | **Met** — verified at the checkpoint, and nothing in this phase rewrites history |
 | R | A coherent next release candidate can be described | Not met — deferred to the checkpoint |
