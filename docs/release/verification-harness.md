@@ -40,6 +40,7 @@ command.
 | `typecheck-tests` | **The test tree typechecks**, which nothing else covers | `npm run typecheck:tests` |
 | `test` | The unit suites pass with no database; the real-database halves skip here | `npm test` |
 | `test-integration` | The same suites with every real-database half actually run | `npm test` with `CERBERUS_TEST_MONGODB_URI` |
+| `migrations-previous-release` | **A published release's database is upgraded by this build** — dry run, migrate, validate, re-run | `npm run test:migrations` |
 | `docs` | Every relative link and heading anchor resolves | `npm run check:docs` |
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
@@ -119,6 +120,41 @@ A name that is legitimately read outside the scanned trees (the Flutter console'
 `--dart-define` values, the test suite's own database URI) is listed in `READ_ELSEWHERE` in
 the script **with its reason**, so the exemption is a claim rather than a silent gap. An
 entry that becomes unnecessary fails the check too.
+
+## The upgrade gate
+
+`npm run test:migrations` takes a database as a **published release** left it and walks the
+documented upgrade: dry run, migrate, validate, re-run. Against a real MongoDB, because the
+things being verified are things only a real database does — an index that cannot be built
+over duplicates, a field renamed in place, a ledger row.
+
+The historical shape lives in `apps/api/test/support/release-fixture.ts`, described **once**
+and derived from the published release notes rather than from the code:
+
+| Release | Migrations applied | Focus-loss field | Duplicate assessment identity |
+| --- | --- | --- | --- |
+| `v0.2.0` | `0001` only | `fullscreenExitCount`, plus `focusLossCount` — the mixed state | possible; `0002` exists to remove it |
+| `v0.3.0` | all three | `focusLossCount` | not possible |
+
+Each entry names its source in the release notes, so the claim can be checked rather than
+trusted. That is the whole point: `docs/development/failure-semantics.md` records that a
+hand-built migration test drifts from the historical state it claims to represent, and keeps
+passing against a shape no deployment ever had.
+
+The gate asserts, for `v0.2.0`:
+
+- the dry run reports exactly `0002` and `0003` pending and changes nothing — not the
+  documents, not the field name;
+- migrating removes the duplicate `riskAssessmentId` and renames the counter, **keeping the
+  larger of the two values** the mixed document held;
+- the ledger then records every migration as applied;
+- `ensureIndexes()` succeeds afterwards — the ordering only a real database can prove, since
+  the unique index cannot exist while two rows share an id;
+- a second run applies nothing and removes nothing;
+- the upgraded data is readable through the store under the new field name.
+
+And for `v0.3.0`, that nothing is pending, a run applies nothing, and the documented
+`connect()` path is idempotent end to end.
 
 ## `typecheck:tests`
 
