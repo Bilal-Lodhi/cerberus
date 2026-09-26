@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped**. The harness was previously a command a maintainer ran on their own machine: the
   evidence existed, but nobody else could produce it. The workflow never tags, publishes or
   creates a release.
+- **`docs/development/multi-writer-model.md` — the multi-writer state model.** Every session
+  concept classified as durable-authoritative, reconstructed, derived, ephemeral or
+  **process-local authority** (the anti-pattern), with the six multi-writer questions
+  answered per field: can one process write it while another holds stale memory, what the
+  stale process returns, what reconciles it, whether the divergence is acceptable, how long
+  it can last, and whether a stale process can write older truth back. It states the
+  invariant the read paths owe, the four places the current implementation breaks it, and an
+  enforcement table that marks each rule enforced or not rather than describing the target as
+  done.
+- **`docs/development/live-read-consistency.md` — the freshness contract.** What *current*
+  means on each surface, defined as four precise terms (durable current, bounded-stale, local
+  best effort, absent), why there is deliberately **no** bounded-stale surface, how the live
+  list and live detail reconcile against durable truth, why cache repair is one-directional,
+  and the failure-injection matrix each behaviour must satisfy.
+- **The multi-writer phase in `docs/development/maturity-plan.md`**, with the charter's
+  eighteen exit conditions tracked individually and each marked met only where something in
+  this repository proves it.
 
 ### Changed
 
