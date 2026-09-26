@@ -188,7 +188,6 @@ export interface ReconcileLiveListOptions {
 function maxCounter(a: number, b: number): number {
   return Math.max(a, b);
 }
-
 /** A finite, non-negative counter, or 0. Mirrors the durable reader's tolerance. */
 function safeCounter(value: number): number {
   return Number.isFinite(value) && value >= 0 ? value : 0;
@@ -382,5 +381,195 @@ export function reconcileLiveList(
     addedFromDurable,
     repairs,
     localOnly,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Live detail
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * This process's view of one session, before reconciliation.
+ *
+ * Adds the two fields only the process that ingested the events can answer — the
+ * reconstructed workspace and the latest risk payload — to the shared durable fields.
+ */
+export interface LocalLiveDetail extends LocalLiveSession {
+  /** This process's reconstructed workspace, or `""`. */
+  currentCode: string;
+  /** This process's most recent risk payload, or `null`. */
+  lastRiskPayload: unknown;
+}
+
+/** A reconciled live-detail session. */
+export interface ReconciledLiveDetail {
+  sessionId: string;
+  employeeId: string;
+  auditId: string;
+  matrixId: string;
+  eventCount: number;
+  pasteCount: number;
+  tabSwitchCount: number;
+  focusLossCount: number;
+  /** Deprecated alias for `focusLossCount`. Same value. */
+  fullscreenExitCount: number;
+  copyAttemptCount: number;
+  currentCodeLength: number;
+  currentCode: string;
+  lastRiskPayload: unknown;
+  riskIndex: number;
+  overallRiskScore: number;
+  peakRiskScore: number;
+  startedAt: string;
+  deployedAt: string;
+  status: PersistedSessionStatus;
+  /** **Additive.** Which source answered for `status`. */
+  statusSource: "durable" | "process-local";
+  /** **Additive.** Whether the durable document answered for the durable fields. */
+  reconciled: boolean;
+  liveness: SessionLiveness;
+  lastActivityAt: string;
+  targetSystem: string;
+  /**
+   * Where this response's *reconstructed* state came from.
+   *
+   * `"memory"` when this process ingested events for the session and therefore holds the
+   * workspace; `"durable"` when it does not. The durable fields are served from the document
+   * in both cases, which is what `statusSource` and `reconciled` report.
+   */
+  source: "memory" | "durable";
+  ephemeralStateAvailable: boolean;
+}
+
+/**
+ * What the store answered with, mirroring `readDurableSessionDocument`'s result.
+ *
+ * Three cases, not two, because `absent` and `unavailable` are different facts: `absent` is
+ * "the store answered and there is no such session" — a `404` — while `unavailable` is "the
+ * store did not answer", from which nothing at all can be claimed. Collapsing them is what
+ * made an unreachable store answer `404` for a session that exists.
+ */
+export type DurableDetailInput =
+  | { kind: "document"; document: Record<string, unknown> }
+  | { kind: "absent" }
+  | { kind: "unavailable" };
+
+export interface LiveDetailReconciliation {
+  session: ReconciledLiveDetail;
+  reconciled: boolean;
+  /** Present when this process's cached status contradicts the document. */
+  repair: {
+    sessionId: string;
+    status: PersistedSessionStatus;
+    durable: Record<string, unknown>;
+  } | null;
+}
+
+/**
+ * Merges this process's detail view with the durable document.
+ *
+ * Returns `null` only when neither source holds the session, which is the caller's `404`.
+ * A `null` document with a local view is *not* that case: it means the store did not answer,
+ * and the local view is served with `reconciled: false` and `statusSource: "process-local"`
+ * rather than presented as durable truth.
+ *
+ * `reconciled` is true whenever the store **answered**, including when it answered that no
+ * such session exists: the response was then checked against durable truth and the local view
+ * is all there is. It is false only when the store did not answer.
+ *
+ * The three risk fields are deliberately equal, as they were before: `peakRiskScore` is the
+ * durable peak maintained with `$max`, and `riskIndex`/`overallRiskScore` have always been
+ * reported from the same value on every surface. Reporting the reconciled maximum is what
+ * stops a session another process scored from reading as `0` here.
+ */
+export function reconcileLiveDetail(
+  local: LocalLiveDetail | null,
+  durable: DurableDetailInput,
+  options: ReconcileLiveListOptions,
+): LiveDetailReconciliation | null {
+  const durableDocument = durable.kind === "document" ? durable.document : null;
+
+  if (!local && !durableDocument) return null;
+
+  const { ttlSeconds, nowMs } = options;
+  const clock = fixedClock(nowMs);
+
+  const sessionId = local?.sessionId ?? String(durableDocument?.["sessionId"] ?? "");
+  const view = durableDocument ? readDurableSessionView(durableDocument, sessionId) : null;
+
+  const status = view ? view.status : normalizeStatus(local?.status ?? "active");
+  const statusSource: ReconciledLiveDetail["statusSource"] = view
+    ? "durable"
+    : "process-local";
+
+  const activity = {
+    lastActivityAt: local?.lastActivityAt ?? null,
+    persistedUpdatedAt: durableDocument
+      ? readDurableString(durableDocument, "updatedAt")
+      : null,
+  };
+
+  // The risk this process knows about from its own latest payload. With no payload it is 0,
+  // and the durable peak is then the only score there is.
+  const localRiskScore = safeCounter(local?.riskIndex ?? 0);
+  const peakRiskScore = maxCounter(localRiskScore, view?.riskScore ?? 0);
+
+  const deployedAt = view?.deployedAt ?? local?.deployedAt ?? "";
+  const currentCode = local?.currentCode ?? "";
+
+  const repair =
+    view && durableDocument && normalizeStatus(local?.status ?? "") !== view.status
+      ? { sessionId, status: view.status, durable: durableDocument }
+      : null;
+
+  return {
+    session: {
+      sessionId,
+      employeeId: view?.employeeId ?? local?.employeeId ?? "unknown",
+      auditId: view?.matrixId ?? local?.matrixId ?? "",
+      matrixId: view?.matrixId ?? local?.matrixId ?? "",
+      eventCount: maxCounter(safeCounter(local?.eventCount ?? 0), view?.eventCount ?? 0),
+      pasteCount: maxCounter(safeCounter(local?.pasteCount ?? 0), view?.pasteCount ?? 0),
+      tabSwitchCount: maxCounter(
+        safeCounter(local?.tabSwitchCount ?? 0),
+        view?.tabSwitchCount ?? 0,
+      ),
+      focusLossCount: maxCounter(
+        safeCounter(local?.focusLossCount ?? 0),
+        view?.focusLossCount ?? 0,
+      ),
+      fullscreenExitCount: maxCounter(
+        safeCounter(local?.focusLossCount ?? 0),
+        view?.focusLossCount ?? 0,
+      ),
+      copyAttemptCount: maxCounter(
+        safeCounter(local?.copyAttemptCount ?? 0),
+        view?.copyAttemptCount ?? 0,
+      ),
+      currentCodeLength: currentCode.length,
+      currentCode,
+      lastRiskPayload: local?.lastRiskPayload ?? null,
+      riskIndex: peakRiskScore,
+      overallRiskScore: peakRiskScore,
+      peakRiskScore,
+      startedAt: deployedAt,
+      deployedAt,
+      status,
+      statusSource,
+      reconciled: durable.kind !== "unavailable",
+      // Derived from the more recent of the two server-generated instants, so a stale local
+      // timestamp cannot keep a closed window open and a stale durable one cannot close a
+      // live window.
+      liveness: resolveLiveness(activity, ttlSeconds, clock),
+      lastActivityAt: view?.lastActivityAt ?? local?.lastActivityAt ?? deployedAt,
+      targetSystem: view?.targetSystem ?? local?.targetSystem ?? "",
+      source: local ? "memory" : "durable",
+      // The local view's own flag, not "a local view exists": a session this process merely
+      // *deployed* is in the registry and holds no workspace, so it is present locally and
+      // still has no ephemeral state to offer.
+      ephemeralStateAvailable: local?.ephemeralStateAvailable ?? false,
+    },
+    reconciled: durable.kind !== "unavailable",
+    repair,
   };
 }

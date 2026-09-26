@@ -71,12 +71,12 @@ reconciliation exists to remove.
 
 | Concept | Class | A can write while B is stale? | B returns before reconciliation | Reconciles | Divergence acceptable? | Max divergence | Stale write-back possible? |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Lifecycle status** (`active`/`locked`/`terminated`) | Durable authoritative | Yes | B's cached status — **including `active` for a durably `terminated` session** | The live list's batched durable query, on **every** request; a transition (the boundary reconciles from its durable read); a restart. The live **detail** still does not. | **No** — it is a false statement about whether monitoring continues | **Zero on the live list.** Unbounded on the live detail until a transition runs or B restarts | **No** — `set_session_status` is predicated on the observed status, so a stale transition reports `SESSION_CONFLICT` |
+| **Lifecycle status** (`active`/`locked`/`terminated`) | Durable authoritative | Yes | B's cached status — **including `active` for a durably `terminated` session** | The batched durable query on every live-list request, and the document read on every live-detail request; also a transition (the boundary reconciles from its durable read) and a restart | **No** — it is a false statement about whether monitoring continues | **Zero on both live surfaces** | **No** — `set_session_status` is predicated on the observed status, so a stale transition reports `SESSION_CONFLICT` |
 | **Lock state** | Durable authoritative | Yes | As lifecycle status: it *is* `status === "locked"` | As lifecycle status | No | As lifecycle status | No — same predicate |
-| **Liveness** (`active`/`expired`) | Derived | N/A — never stored | A value derived from B's own activity view, which is memory-based when B has the session in `sessionStore` | Nothing caches it; recomputed per read. The live list derives it from the **more recent** of the local and durable activity instants, so neither side can move the window | Yes at the TTL boundary, no when it contradicts a durable `updatedAt` | Zero on the live list; until a durable read on the detail | N/A |
-| **`eventCount`** | Durable authoritative | Yes | B's hydrated total plus what B has itself seen — **can be lower than durable** | `$max` at the store; the live list's durable query; hydration on the first ingest of the session in B | Yes — bounded, and it can only be behind, never wrong-high | One request on the live list; until B hydrates on the detail | **No** — `$max` refuses a lower total |
+| **Liveness** (`active`/`expired`) | Derived | N/A — never stored | A value derived from B's own activity view, which is memory-based when B has the session in `sessionStore` | Nothing caches it; recomputed per read, from the **more recent** of the local and durable activity instants, so neither side can move the window | Yes at the TTL boundary, no when it contradicts a durable `updatedAt` | Zero on both live surfaces | N/A |
+| **`eventCount`** | Durable authoritative | Yes | B's hydrated total plus what B has itself seen — **can be lower than durable** | `$max` at the store; the merge on both live surfaces; hydration on the first ingest of the session in B | Yes — bounded, and it can only be behind, never wrong-high | One request on both live surfaces; until B hydrates on the ingest path | **No** — `$max` refuses a lower total |
 | **`pasteCount`, `tabSwitchCount`, `focusLossCount`, `copyAttemptCount`** | Durable authoritative | Yes | As `eventCount` | As `eventCount` | Yes, as `eventCount` | As `eventCount` | No — `$max` |
-| **`peakRiskScore`** | Durable authoritative | Yes | On the memory paths, B's own latest payload score — **`0` for a session another process scored** | `$max` at the store; the live list takes `max(local, durable)` | **No** — "this session was never risky" is a false negative | One request on the live list; unbounded on the detail | **No** — `$max` |
+| **`peakRiskScore`** | Durable authoritative | Yes | On the memory paths, B's own latest payload score — **`0` for a session another process scored** | `$max` at the store; both live surfaces take `max(local, durable)` | **No** — "this session was never risky" is a false negative | One request on both live surfaces | **No** — `$max` |
 | **`last activity`** (`updatedAt`) | Durable authoritative | Yes | B's own `lastActivityAt` when B ingested more recently, otherwise the durable `updatedAt` | Any durable read | Yes — both are server clocks and the TTL predicate takes the more recent | One batch interval, or B's process lifetime | No — a stale process does not write `updatedAt` unless it writes something else |
 | **`currentCode`** | Ephemeral | N/A — one reconstruction per process | B's own reconstruction, or `""` if B never ingested | Never; `terminalContent` is the durable owner | **Yes, explicitly** — the response marks `ephemeralStateAvailable` | B's process lifetime | **Yes — see §5.3** |
 | **`lastRiskPayload`** | Reconstructed | Yes (A stores a new assessment) | B's own latest in-memory payload, or `null` | The review surface reconstructs from `risk_assessments`; the live detail does not | Yes for the live detail (labelled ephemeral); no for review, which reads durable | B's process lifetime | No — assessments are append-only under a unique identity |
@@ -115,31 +115,35 @@ Two consequences, both false statements:
   `activeSessions` holds only what B deployed, so the live list omitted A's sessions. That
   is worse than a stale value: the session was not misreported, it was absent.
 
-**The live list is fixed. The live detail is not yet.**
+**Both live surfaces are fixed.**
 
-The list now issues **one batched durable query per request** — always, not only when memory
-is empty — and merges durable over local, so a durably-terminated session is dropped in the
-same request that would have reported it, and another process's sessions appear. The merge
-is `services/session-reconciliation.ts`: a pure function, unit-tested over the states that
-are awkward to produce through HTTP, with the route as a thin adapter. The repair it returns
-is applied through `SessionTransitionCache.reconcileStatus`, which changes the cached status
-and deliberately **not** the cached activity instant — a read must not extend a monitoring
-window as a side effect of looking at it.
+The list issues **one batched durable query per request** — always, not only when memory is
+empty — and merges durable over local, so a durably-terminated session is dropped in the same
+request that would have reported it, and another process's sessions appear. The detail reads
+the session document on **every** request, including when it holds the session, and merges the
+same way.
 
-The detail route still answers from memory when it holds the session, and is the next change.
-The durable-recovery path already did the right thing; it was simply unreachable whenever B
-held any local state.
+The merge is `services/session-reconciliation.ts`: a pure function, unit-tested over the states
+that are awkward to produce through HTTP, with the routes as thin adapters. The repair it
+returns is applied through `SessionTransitionCache.reconcileStatus`, which changes the cached
+status and deliberately **not** the cached activity instant — a read must not extend a
+monitoring window as a side effect of looking at it.
+
+The cost is one bounded read per detail request and one per list request, on paths that
+previously paid none. That is the price of the answer being true, and it is the same read the
+restart-recovery path already made. The durable-recovery path always did the right thing; it
+was simply unreachable whenever B held any local state.
 
 ### 5.2 `peakRiskScore` was reported as `0` on the memory paths
 
-The list and detail memory paths compute the risk from `session.lastRiskPayload` — this
-process's most recent payload. A session that B has ingested but never analysed reported
-`0` even when its durable `peakRiskScore` is 90. The durable value is maintained with `$max`
+The list and detail memory paths computed the risk from `session.lastRiskPayload` — this
+process's most recent payload. A session that B had ingested but never analysed reported
+`0` even when its durable `peakRiskScore` was 90. The durable value is maintained with `$max`
 and is exactly the answer to "how risky did this session get".
 
-**The live list is fixed**: the merge takes `max(local, durable)` for the peak score, so a
-score this process never saw is reported and a payload this process holds but has not yet
-persisted is not discarded. The detail route still reads its own payload only.
+**Both live surfaces are fixed**: the merge takes `max(local, durable)` for the peak score, so
+a score this process never saw is reported and a payload this process holds but has not yet
+persisted is not discarded.
 
 ### 5.3 `terminalContent` has no ownership rule
 
@@ -170,10 +174,9 @@ Which rules from §3 hold today, and where.
 | --- | --- | --- |
 | Durable wins for **status** on a transition | `services/session-transition.ts` — reads durable, validates, writes with a predicate, repairs caches from the outcome | **Enforced** |
 | Durable wins for **status** on the live **list** | `services/session-reconciliation.ts`, wired into `GET /sessions`; one batched durable query per request | **Enforced** |
-| Durable wins for **status** on the live **detail** | — | **Not enforced** (§5.1) |
+| Durable wins for **status** on the live **detail** | the same module, wired into `GET /sessions/:sessionId`; the document is read on every request | **Enforced** |
 | Durable wins for **counters** | `buildSessionCountsUpdate` applies `$max`; hydration seeds before the first event | **Enforced** on any path that hydrates |
-| Durable wins for **counters** on the live **list** | the merge takes `max(local, durable)` | **Enforced** |
-| Durable wins for **counters** on the live **detail** | — | **Not enforced** (§5.2) |
+| Durable wins for **counters** on both live surfaces | the merge takes `max(local, durable)` | **Enforced** |
 | A stale process cannot lower a counter | `$max` at the store | **Enforced** |
 | A stale process cannot regress a status | `expectedStatuses` compare-and-set | **Enforced** |
 | A stale process cannot overwrite `terminalContent` | — | **Not enforced** (§5.3) |
@@ -182,7 +185,7 @@ Which rules from §3 hold today, and where.
 | Duplicate events count once | `micro_events` unique `(sessionId, eventId)` + `$setOnInsert` + the accepted-set report | **Enforced** |
 | Derived values are never persisted | `ReviewDisposition` and `SessionLiveness` are computed at read time | **Enforced** |
 | Ephemeral state is labelled | `source` and `ephemeralStateAvailable` on detail; `statusSource` and `ephemeralStateAvailable` on every list row | **Enforced** on both live surfaces |
-| A live read that cannot reconcile says so | `reconciled: false` on the list response, every row `statusSource: "process-local"` | **Enforced** |
+| A live read that cannot reconcile says so | `reconciled: false` on the list body and on the detail session, with every row `statusSource: "process-local"` | **Enforced** |
 
 ## 7. What this document does not claim
 
