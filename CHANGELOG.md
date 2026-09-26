@@ -7,15 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> **A release candidate is prepared and not published.** The theme, the observable changes,
-> the upgrade path and ten things it does not claim are in
-> [`docs/release/v0.4.0-release-notes.md`](docs/release/v0.4.0-release-notes.md); the gates
-> and the steps that *are* publication are in
-> [`docs/release/v0.4.0-checklist.md`](docs/release/v0.4.0-checklist.md); and the cycle's
-> record is
-> [`docs/development/operability-checkpoint.md`](docs/development/operability-checkpoint.md).
-> The version below is deliberately still `0.3.0` — the bump is part of publication, which
-> is not authorised. **No schema migration ships with this cycle.**
+_Nothing yet._
+
+## [0.4.0] - 2026-09-26
+
+**Published as a GitHub pre-release** on 2026-09-26. Annotated tag `v0.4.0`. No npm package,
+no container image and no hosted deployment were published, and nothing was marked stable or
+latest. This is an experimental research system and is not production ready — see
+[docs/release/v0.4.0-release-notes.md](docs/release/v0.4.0-release-notes.md) for what the
+release does and does not claim.
+
+The theme is **operability and read integrity**: structured logs and one request identifier
+per request, a durable read fallback for session detail, one lifecycle vocabulary across the
+four surfaces that answer for a session, exact per-component deletion reporting, and a
+release-verification harness that runs every release-critical gate in one non-publishing
+command. **No schema migration ships with this release.**
 
 ### Removed
 

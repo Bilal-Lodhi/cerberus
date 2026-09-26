@@ -1,0 +1,14 @@
+{
+  "//": [
+    "Attribution the guard must not reject.",
+    "",
+    "Each entry is a claim a reviewer can check. An empty list is the right default: the",
+    "guard already allows every address in a deliverable domain, including the bot",
+    "identities GitHub uses (`dependabot[bot]@users.noreply.github.com`,",
+    "`github-actions[bot]@users.noreply.github.com`).",
+    "",
+    "Add an entry only when a real, explained attribution is being rejected. Never add one",
+    "to silence a synthetic identity — that is the defect the guard exists to catch."
+  ],
+  "allow": []
+}
