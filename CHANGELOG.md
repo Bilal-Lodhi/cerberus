@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A durable read fallback for `GET /api/v1/guardian/sessions/:id`.** The route read the
+  two in-memory maps only, so immediately after a restart it answered `404` for a session
+  that exists durably — and kept doing so until `GET /api/v1/guardian/sessions` was called,
+  because that was the only path that rebuilt the registry. One session was `404` on this
+  surface and `200` on the review surface, from the same process, at the same instant. The
+  route now reads `sessionStore` (no persistence call), then the durable document, then the
+  live registry alone.
+- **`source` and `ephemeralStateAvailable` on the detail response.** `source` is
+  `"memory"` or `"durable"`; `ephemeralStateAvailable` is `true` only when this process
+  holds the session's reconstructed workspace and latest risk payload. A durable answer
+  reports `currentCode` empty and `lastRiskPayload` null rather than inventing them, and
+  the two flags say so. The numeric risk scores **are** durable and are reported.
+- **One shared durable reader** for the live list and the detail fallback, so the two
+  surfaces cannot report different counters for the same document.
 - **`docs/development/operability-model.md`** — every request path mapped against nine
   operability columns (auth, request id, logs, dependencies, durable writes, response
   status, stable error code, degraded behaviour, fields that must never be logged), the
@@ -52,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A session detail answered `404` for a session that exists, immediately after a
+  restart.** Recorded as open item D4 in `state-transition-model.md` §5 and as a known
+  limitation in the `v0.3.0` release notes; now closed. An unreachable store with nothing
+  in memory is a `503 SESSION_STORE_UNAVAILABLE` rather than a `404`, because `404` would
+  assert that a session does not exist — which a store that did not answer cannot establish.
+- **A durable answer reported `liveness: "active"` for a session whose durable monitoring
+  window had closed.** The fallback first derived liveness from the empty in-memory maps
+  rather than from the durable activity instant — the same class of restart-dependent
+  answer the fallback exists to remove. Found by this work's own test suite.
+- **The detail route under-reported every counter for a session the registry held but
+  `sessionStore` did not.** Its registry branch reported zero, so a session deployed before
+  a restart reported `eventCount: 0` here while the live list reported the durable total.
+  Both surfaces now read the durable document through one shared reader.
 - **The documented `correlationId` promise was false for four of five route groups.**
   `index.ts` set one `X-Correlation-Id` per response while `routes/guardian.ts`,
   `routes/review.ts`, `routes/reference.ts` and `routes/auditor.ts` each minted their own

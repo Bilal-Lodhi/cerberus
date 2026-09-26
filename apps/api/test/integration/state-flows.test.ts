@@ -218,7 +218,90 @@ if (REAL_MONGODB_URI) {
       });
     });
 
-    // ── Auto-lock, termination and evidence ─────────────────────────
+    test("session detail survives a restart with no recovery step first", async () => {
+      await withRealStack(async ({ app, restart }) => {
+        const sessionId = "flow-detail-restart";
+
+        await app.request("/api/v1/guardian/ingest", {
+          method: "POST",
+          headers: authorizedHeaders(),
+          body: JSON.stringify({
+            events: [keystroke(sessionId, "d1", 100), keystroke(sessionId, "d2", 200)],
+          }),
+        });
+
+        // A fresh process, and **no** list call and no ingest: the durable fallback
+        // alone must answer. Before this, the route read the two in-memory maps only,
+        // so this exact request returned 404 for a session that exists durably.
+        const restarted = restart();
+        const detail = await restarted.request(
+          `/api/v1/guardian/sessions/${sessionId}`,
+          { headers: authorizedHeaders() },
+        );
+        assert.equal(detail.status, 200, "a restart lost a session that exists durably");
+        const body = (await detail.json()) as {
+          session: {
+            eventCount: number;
+            source: string;
+            ephemeralStateAvailable: boolean;
+            status: string;
+            deployedAt: string;
+            employeeId: string;
+          };
+        };
+
+        assert.equal(body.session.eventCount, 2, "the durable event total was not served");
+        assert.equal(body.session.source, "durable");
+        assert.equal(
+          body.session.ephemeralStateAvailable,
+          false,
+          "a durable answer claimed ephemeral state it does not hold",
+        );
+
+        // The live list and the detail route must agree about the same real document.
+        const list = await restarted.request("/api/v1/guardian/sessions", {
+          headers: authorizedHeaders(),
+        });
+        const listed = (await list.json()) as { data: Array<Record<string, unknown>> };
+        const entry = listed.data.find((row) => row["sessionId"] === sessionId);
+        assert.ok(entry, "the live list lost the session");
+
+        assert.equal(entry["eventCount"], body.session.eventCount);
+        assert.equal(entry["status"], body.session.status);
+        assert.equal(entry["deployedAt"], body.session.deployedAt);
+        assert.equal(entry["employeeId"], body.session.employeeId);
+      });
+    });
+
+    test("a terminated session stays readable across a restart", async () => {
+      await withRealStack(async ({ app, restart }) => {
+        const sessionId = "flow-detail-terminated";
+
+        await app.request("/api/v1/guardian/ingest", {
+          method: "POST",
+          headers: authorizedHeaders(),
+          body: JSON.stringify({ events: [keystroke(sessionId, "t1", 100)] }),
+        });
+        const terminated = await app.request(
+          `/api/v1/guardian/sessions/${sessionId}/terminate`,
+          { method: "POST", headers: authorizedHeaders() },
+        );
+        assert.equal(terminated.status, 200);
+
+        const restarted = restart();
+        const detail = await restarted.request(
+          `/api/v1/guardian/sessions/${sessionId}`,
+          { headers: authorizedHeaders() },
+        );
+
+        assert.equal(detail.status, 200, "a terminated session must stay readable for review");
+        const body = (await detail.json()) as {
+          session: { status: string; eventCount: number };
+        };
+        assert.equal(body.session.status, "terminated");
+        assert.equal(body.session.eventCount, 1, "termination deleted evidence");
+      });
+    });
 
     test("auto-lock writes its evidence before the status, and both survive a restart", async () => {
       await withRealStack(

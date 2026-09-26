@@ -118,11 +118,12 @@ route in mind.
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `GET /api/v1/guardian/sessions` | operator key | one identifier | `routes/guardian.ts`, `services/mcp-client.ts` | one `list_sessions` MCP call, **only when memory holds no live session** | — | `200` | — | Falls back to MongoDB when the in-memory store is empty, and rebuilds the live registry from the durable documents. A store failure yields an empty list rather than an error. | — |
-| `GET /api/v1/guardian/sessions/:id` | operator key | one identifier | none | **none today** | — | `200`, `404` | `SESSION_NOT_FOUND` | **No durable fallback.** Immediately after a restart this answers `404` for a session that exists durably, until `GET /api/v1/guardian/sessions` is called, because that is the path that rebuilds the registry. Recorded as open item D4 in `state-transition-model.md` §5. | `currentCode` is returned to the caller by contract, so it must not also be logged |
+| `GET /api/v1/guardian/sessions/:id` | operator key | one identifier | `guardian.detail.fallback` (when the answer did not come from in-memory session state) | none when the session is in memory; one `get_session_review` (`eventsLimit: 0`, `includeAssessments: false`) otherwise | — | `200`, `404`, `503` | `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE` | **Durable fallback.** Reads `sessionStore` first (no persistence call), then the durable document, then the live registry alone. A durable answer reports `source: "durable"` and `ephemeralStateAvailable: false`, and leaves `currentCode` empty and `lastRiskPayload` null rather than inventing them. An unreachable store with nothing in memory is `503`, because `404` would assert that a session does not exist — which cannot be verified. | `currentCode` is returned to the caller by contract, so it must not also be logged |
 
-This is the read-integrity gap the v0.4.0 cycle exists to close. It is a
-correctness defect, not a design choice: the same session is `404` on one surface
-and `200` on the review surface, from the same process, at the same instant.
+This route no longer has a read-integrity gap: it answers for a session that exists
+durably, immediately after a restart, with no recovery step first. What it still does
+**not** do is read the durable status when this process holds the session in memory —
+see §9 for that residual staleness and why it is accepted.
 
 ### 3.8 Review surfaces
 
@@ -429,10 +430,15 @@ that made this false for four of five route groups before this cycle.
 
 ### 8.5 Was a detail served from durable storage or from memory?
 
-`GET /api/v1/sessions/:id` serves from live memory when the store does not answer.
-Today the response does **not** say which source answered. Adding that is part of
-the durable-fallback work; until then, the distinction is only visible in the
-request log's `dependency` field.
+`GET /api/v1/guardian/sessions/:id` reports it in the response itself:
+
+| Field | Meaning |
+| --- | --- |
+| `source` | `"memory"` when the answer came from the in-memory session state or the live registry; `"durable"` when the durable document supplied the counters and the status. |
+| `ephemeralStateAvailable` | `true` only when this process holds the session's **ephemeral** state — the reconstructed workspace and the latest risk payload. A durable answer reports `false` and leaves `currentCode` empty and `lastRiskPayload` null rather than inventing them. |
+
+`GET /api/v1/sessions/:id` (the review surface) serves from live memory when the store
+does not answer, and that is recorded on its request log line rather than in its body.
 
 ### 8.6 What diagnostics deliberately do not exist
 
@@ -461,11 +467,31 @@ answers usefully.
 | `terminate` / `reactivate` | `503 SESSION_STORE_UNAVAILABLE`, nothing changed | unaffected | unaffected |
 | `DELETE /guardian/sessions/:id` | `503 SESSION_STORE_UNAVAILABLE`, nothing changed | unaffected | unaffected |
 | `GET /guardian/sessions` | degrade — empty list rather than an error | unaffected | unaffected |
-| `GET /guardian/sessions/:id` | **`404` for a session that exists** (open defect, §3.7) | unaffected | unaffected |
+| `GET /guardian/sessions/:id` | degrade — the durable document answers when it can; `503 SESSION_STORE_UNAVAILABLE` when it cannot and nothing is in memory; the live registry answers for a session this process deployed | unaffected | unaffected |
 | `GET /sessions` | degrade — durable entries still listed from the failed-read fallback | unaffected | unaffected |
 | `GET /sessions/:id` | degrade — serves from live memory when the session is in memory, else `404` | unaffected | unaffected |
 | reference corpus CRUD | `503 REFERENCE_STORE_UNAVAILABLE` | unaffected | unaffected |
 | corpus read during analysis | degrade — empty corpus, similarity skipped, analysis proceeds | unaffected | unaffected |
+
+### 9.1 The one read divergence that is deliberate
+
+The **live** surfaces (`GET /api/v1/guardian/sessions` and
+`GET /api/v1/guardian/sessions/:id`) report the status this process holds in memory. The
+**review** surfaces (`GET /api/v1/sessions` and `GET /api/v1/sessions/:id`) read the
+durable document directly.
+
+That means a status changed durably by *another* writer is visible on the review surface
+immediately, and on the live surfaces only once a transition reconciles the cache — which
+the transition boundary does whenever it reads a durable status it disagrees with
+(`state-transition-model.md` §4). The window is closed by that reconciliation rather than
+left open.
+
+Reading the durable status on every live read would close it sooner, at the cost of a
+persistence call on the list path and a second one on the detail path — the hot paths a
+monitoring console polls continuously. The trade is deliberate, it is asserted in
+`apps/api/test/session-detail-fallback.test.ts` ("a stale cache against a newer durable
+document"), and the review surface is the answer for a caller that needs the durable
+truth at this instant. `docs/api-errors.md` says the same thing from the client's side.
 
 ## 10. Implementation status
 
@@ -485,8 +511,8 @@ were behaviour. Updated as the work lands.
 | §6.4 ambient propagation | **Implemented** with `AsyncLocalStorage`; `callMcpTool` reads the ambient id and an explicit `requestId` still overrides it. | `apps/api/test/observability-logger.test.ts`, "attaches the ambient request id". |
 | §7.1 never-logged list | **Implemented and asserted.** Driven through real requests at `debug`, with the absence of every listed value asserted. | `apps/api/test/logging-secrets.test.ts`. |
 | §7.2 two-layer redaction | **Implemented.** A known-secret registry fed from configuration, plus pattern scrubbing and a linear PEM scanner. | `apps/api/test/observability-redaction.test.ts`. |
-| §8.5 detail-source reporting | **Not implemented.** Still open: the review detail response does not say whether it answered from memory or from durable storage. | — |
-| §3.7 durable detail fallback | **Not implemented.** Open item D4. | — |
+| §8.5 detail-source reporting | **Implemented.** `source` and `ephemeralStateAvailable` on the detail response. | `apps/api/test/session-detail-fallback.test.ts`, "reports the ephemeral fields as absent rather than inventing them". |
+| §3.7 durable detail fallback | **Implemented.** `sessionStore` → durable document → live registry, with a `503` rather than a `404` when the store cannot be reached. | `apps/api/test/session-detail-fallback.test.ts` (18 cases) and the real-MongoDB flows in `apps/api/test/integration/state-flows.test.ts`. |
 | §9 degraded-state matrix | **Described from source.** | The file each claim names. |
 
 ### 10.1 A defect this work found in itself
@@ -523,4 +549,5 @@ seconds, asserted in `logging-secrets.test.ts`.
 - [`development/session-state-model.md`](session-state-model.md) — which session
   state is durable, reconstructable, ephemeral or derived.
 - [`development/state-transition-model.md`](state-transition-model.md) — the
-  transition table, and open items D4 and the `cleared` vocabulary.
+  transition table, the cache-reconciliation rule that closes the §9.1 window, and
+  the open `cleared` vocabulary decision.

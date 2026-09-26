@@ -100,14 +100,21 @@ describe("incoming identifier validation", () => {
 
 describe("route template resolution", () => {
   test("resolves the registered template rather than the concrete path", async () => {
-    const app = createApp(makeConfig());
-    const res = await app.request("/api/v1/guardian/sessions/op-trader-001", {
-      headers: authorizedHeaders(),
-    });
+    // The store is stubbed so the answer is deterministic: the detail route now has a
+    // durable fallback, and an unreachable store is a `503` rather than a `404`.
+    const stub = installFetchStub();
+    try {
+      const app = createApp(makeConfig());
+      const res = await app.request("/api/v1/guardian/sessions/op-trader-001", {
+        headers: authorizedHeaders(),
+      });
 
-    assert.equal(res.status, 404);
-    const line = requestLines()[0];
-    assert.equal(line.route, "/api/v1/guardian/sessions/:sessionId");
+      assert.equal(res.status, 404);
+      const line = requestLines()[0];
+      assert.equal(line.route, "/api/v1/guardian/sessions/:sessionId");
+    } finally {
+      stub.restore();
+    }
   });
 
   test("reports an unmatched request without recording its path", async () => {

@@ -87,7 +87,7 @@ meaning.
 | `SESSION_TERMINATED` | 409 | The session is `terminated`, which is irreversible. Returned by `reactivate` **and** by telemetry ingest. | Deploy a new session. Do not retry. |
 | `SESSION_CONFLICT` | 409 | The durable status changed between the read and the write, so the transition was applied to a state the caller did not see. **The write did not happen.** | Re-read the session, then retry if the transition is still wanted. |
 | `SESSION_NOT_FOUND` | 404 | No session document matches. Returned by every surface that can report it: the transition boundary, the live detail route, the review list's per-session read, the review detail route, and session deletion. | Check the id. |
-| `SESSION_STORE_UNAVAILABLE` | 503 | The persistence layer did not answer, or answered with a failure. **Nothing was changed.** | Retry with backoff. |
+| `SESSION_STORE_UNAVAILABLE` | 503 | The persistence layer did not answer, or answered with a failure. **Nothing was changed.** Returned by the transition boundary, by a `DELETE`, and by a **read** of a session detail when the store cannot be reached and this process holds nothing for the session. | Retry with backoff. |
 | `INVALID_SESSION_TRANSITION` | 409 | The requested transition is not in the table for the session's current status, and the session is not terminal — which means the document holds a status the durable vocabulary cannot produce (`flagged`, `investigating`, `cleared`). | This is a data-integrity signal. Report it with the `correlationId`; do not retry. |
 
 **One code, one meaning.** `SESSION_TERMINATED` is returned by two routes on purpose:
@@ -97,6 +97,22 @@ would make a client handle the same condition twice.
 A refusal that read the durable status also **reconciles the in-memory cache** to the
 value it read, so a status that diverged because another writer moved it is corrected
 rather than reported. A refusal never changes the durable status.
+
+**A read can now return `SESSION_STORE_UNAVAILABLE` too.** `GET
+/api/v1/guardian/sessions/:id` answers from this process's memory first, then from the
+durable document, then from the live registry alone. When the store cannot be reached and
+none of those holds the session, the answer is `503` — **not** `404`, because `404` would
+assert that no such session exists, which cannot be verified from a store that did not
+answer. The response carries `source` (`"memory"` or `"durable"`) and
+`ephemeralStateAvailable`, so a caller can tell where a detail came from and whether this
+process holds the reconstructed workspace for it. See
+[development/operability-model.md](development/operability-model.md) §3.7 and §8.5.
+
+The **live** surfaces report the status this process holds in memory, while the **review**
+surfaces read the durable document. A status changed durably by another writer is
+therefore visible on the review surface immediately, and on the live surfaces once a
+transition reconciles the cache. That division is deliberate and is stated in
+`operability-model.md` §9.1.
 
 ## 5. Telemetry ingestion
 

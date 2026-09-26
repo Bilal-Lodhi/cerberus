@@ -68,6 +68,7 @@ import {
   normalizeStatus,
   isMonitored,
   SESSION_TRANSITION_CODES,
+  type PersistedSessionStatus,
 } from "../services/session-status.js";
 import {
   findSimilarityMatches,
@@ -832,8 +833,43 @@ export function createGuardianRouter(
   // GET /sessions/:sessionId
   // ═══════════════════════════════════════════════════════════════
 
-  guardianRouter.get("/sessions/:sessionId", (c) => {
+  /**
+   * Session detail, with a durable fallback.
+   *
+   * ── Why this route needed one ─────────────────────────────────────────
+   *
+   * This route read the two in-memory maps only. Immediately after a restart it
+   * therefore answered `404` for a session that exists durably, and it kept doing so
+   * until `GET /api/v1/guardian/sessions` was called — because that was the only path
+   * that rebuilt the registry from MongoDB. One session was `404` on this surface and
+   * `200` on the review surface, from the same process, at the same instant. Recorded
+   * as open item D4 in `docs/development/state-transition-model.md`.
+   *
+   * ── The read model, in priority order ─────────────────────────────────
+   *
+   *   1. **`sessionStore`** — this process ingested events for the session, so it holds
+   *      the authoritative hydrated counters *and* the reconstructed workspace. Served
+   *      with no persistence call, so the hot path pays nothing for this fix.
+   *   2. **The durable document** — the authority for every durable field. Also
+   *      consulted when the registry holds the session but `sessionStore` does not, which
+   *      is what makes this route agree with the live list about counters: the registry
+   *      entry carries no counters at all, so a session deployed before a restart used to
+   *      report `eventCount: 0` here while the live list reported the durable total.
+   *   3. **The registry alone** — a session deployed by this process whose durable
+   *      document does not exist (`mongoDocumentId: "local-only"`) or cannot be read. A
+   *      legitimate source for registry-owned facts, and the only one that can answer.
+   *
+   * ── What a durable answer does and does not claim ─────────────────────
+   *
+   * The response carries `source` — `"memory"` or `"durable"` — and
+   * `ephemeralStateAvailable`, which is `true` only when this process holds the
+   * ephemeral state: the reconstructed workspace and the latest risk payload. A durable
+   * answer reports those as empty and `null` rather than inventing them, and the two
+   * flags say so. The numeric risk scores **are** durable and are reported.
+   */
+  guardianRouter.get("/sessions/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
+    const requestId = currentRequestId();
     const session = sessionStore.get(sessionId);
     const activeSession = activeSessions.get(sessionId);
 
@@ -871,52 +907,130 @@ export function createGuardianRouter(
           liveness,
           lastActivityAt: session.lastActivityAt ?? activeSession?.deployedAt ?? "",
           targetSystem: activeSession?.targetSystem ?? "",
+          // This process ingested events for the session, so it holds the workspace and
+          // the latest payload. That is what `ephemeralStateAvailable` means.
+          source: "memory" as const,
+          ephemeralStateAvailable: true,
         },
       });
     }
 
-    if (activeSession) {
-      return c.json({
-        success: true,
-        session: {
-          sessionId: activeSession.sessionId,
-          employeeId: activeSession.employeeId,
-          auditId: activeSession.matrixId,
-          matrixId: activeSession.matrixId,
-          eventCount: 0,
-          pasteCount: 0,
-          tabSwitchCount: 0,
-          focusLossCount: 0,
-          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-          // console or script reading the old name keeps working.
-          fullscreenExitCount: 0,
-          copyAttemptCount: 0,
-          currentCodeLength: 0,
-          currentCode: "",
-          lastRiskPayload: null,
-          riskIndex: activeSession.riskIndex,
-          overallRiskScore: activeSession.riskIndex,
-          peakRiskScore: activeSession.riskIndex,
-          startedAt: activeSession.deployedAt,
-          deployedAt: activeSession.deployedAt,
-          status: activeSession.status,
-          liveness,
-          lastActivityAt: activeSession.deployedAt,
-          targetSystem: activeSession.targetSystem,
-        },
+    // No in-memory session state. The durable document is the authority for every
+    // durable field; the registry contributes only what the document cannot.
+    const durable = await readDurableSessionDocument(sessionId, requestId);
+
+    if (durable.kind === "unavailable") {
+      if (activeSession) {
+        // The registry can still answer for a session this process deployed, and
+        // answering is better than refusing: it is the process's own record.
+        logger.warn(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
+          sessionId,
+          source: "registry",
+          dependency: "mcp",
+          classification: "store-unavailable",
+        });
+        return c.json({
+          success: true,
+          session: registrySessionView(sessionId, activeSession, liveness),
+        });
+      }
+
+      // Nothing can be claimed about whether the session exists, so nothing is. A
+      // `404` here would assert something the process cannot verify — which is the
+      // wrong answer this route used to give for an unreachable store.
+      logger.error(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
+        sessionId,
+        dependency: "mcp",
+        classification: "store-unavailable",
+        claimed: "nothing",
       });
+      return c.json(
+        {
+          success: false,
+          error:
+            "The session could not be read because the persistence layer did not " +
+            "answer. Its existence is unknown.",
+          code: SESSION_TRANSITION_CODES.SESSION_STORE_UNAVAILABLE,
+          sessionId,
+          correlationId: requestId,
+        },
+        503,
+      );
     }
 
-    return c.json(
-      {
-        success: false,
-        error: "Session not found",
-        // One condition, one code, across every surface that can report it.
-        code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
-        correlationId: currentRequestId(),
+    if (durable.kind === "absent") {
+      if (activeSession) {
+        // Deployed by this process, with no durable document: `create_session` did not
+        // reach the store, which the deploy response already reported as `local-only`.
+        return c.json({
+          success: true,
+          session: registrySessionView(sessionId, activeSession, liveness),
+        });
+      }
+
+      return c.json(
+        {
+          success: false,
+          error: `Session '${sessionId}' not found`,
+          // One condition, one code, across every surface that can report it.
+          code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+          sessionId,
+          correlationId: requestId,
+        },
+        404,
+      );
+    }
+
+    const view = durable.view;
+    logger.debug(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
+      sessionId,
+      source: "durable",
+      status: view.status,
+    });
+
+    return c.json({
+      success: true,
+      session: {
+        sessionId: view.sessionId,
+        employeeId: view.employeeId,
+        auditId: view.matrixId,
+        matrixId: view.matrixId,
+        eventCount: view.eventCount,
+        pasteCount: view.pasteCount,
+        tabSwitchCount: view.tabSwitchCount,
+        focusLossCount: view.focusLossCount,
+        fullscreenExitCount: view.focusLossCount,
+        copyAttemptCount: view.copyAttemptCount,
+        // Not reconstructable here, and reported as absent rather than as zero-valued
+        // facts: this process holds no workspace for the session. The review surface
+        // (`GET /api/v1/sessions/:id`) is where the durable workspace is served.
+        currentCodeLength: 0,
+        currentCode: "",
+        lastRiskPayload: null,
+        // These three *are* durable: the store maintains `peakRiskScore` with `$max` on
+        // every ingest, so it survives a restart. The scores are reported; the payload
+        // they came from is not reconstructed.
+        riskIndex: view.riskScore,
+        overallRiskScore: view.riskScore,
+        peakRiskScore: view.riskScore,
+        startedAt: view.deployedAt,
+        deployedAt: view.deployedAt,
+        status: view.status,
+        // Derived from the **durable** activity instant, not from the empty in-memory
+        // maps. Computing it the other way reported `active` for a session whose durable
+        // window had closed, which is the same class of restart-dependent answer this
+        // fallback exists to remove.
+        liveness: resolveLiveness(
+          { lastActivityAt: null, persistedUpdatedAt: view.lastActivityAt },
+          ttlSeconds,
+          clock,
+        ),
+        lastActivityAt: view.lastActivityAt,
+        targetSystem: view.targetSystem,
+        source: "durable" as const,
+        ephemeralStateAvailable: false,
       },
-      404,
-    );
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -1142,7 +1256,9 @@ export function createGuardianRouter(
         // the process was down is not resurrected as actively monitored.
         if (sessionExpired(sessionId, doc)) continue;
 
-        const status = normalizeStatus(String(doc["status"] ?? "active"));
+        // One durable reader, shared with the detail route's fallback, so the two
+        // surfaces cannot report different counters for the same document.
+        const view = readDurableSessionView(doc, sessionId);
 
         // A terminated session is not live, so it is not listed here at all. It stays
         // fully visible through `GET /api/v1/sessions` and
@@ -1152,56 +1268,49 @@ export function createGuardianRouter(
         // the list entry, so a terminated session recovered from MongoDB **was**
         // returned by the live list — with `liveness: "active"`. The in-memory paths
         // had the same gap in the other direction, and the three of them disagreed.
-        if (!isMonitored(status)) continue;
+        if (!isMonitored(view.status)) continue;
 
         seenIds.add(sessionId);
-
-        const employeeId = String(doc["employeeId"] ?? "unknown");
-        const matrixId = String(doc["matrixId"] ?? doc["auditId"] ?? "");
-        const deployedAt = String(doc["deployedAt"] ?? doc["createdAt"] ?? toISOStringLocal());
-        const riskScore = Number(
-          doc["peakRiskScore"] ?? doc["overallRiskScore"] ?? doc["riskIndex"] ?? 0,
-        );
 
         // Rebuild the live registry from the durable document. A terminated session
         // cannot reach here, because it was skipped above.
         if (!activeSessions.has(sessionId)) {
           activeSessions.set(sessionId, {
             sessionId,
-            employeeId,
-            matrixId,
-            targetSystem: String(doc["targetSystem"] ?? ""),
-            status: status as ActiveSession["status"],
-            deployedAt,
-            riskIndex: riskScore,
+            employeeId: view.employeeId,
+            matrixId: view.matrixId,
+            targetSystem: view.targetSystem,
+            status: view.status as ActiveSession["status"],
+            deployedAt: view.deployedAt,
+            riskIndex: view.riskScore,
             // The durable `updatedAt` is the only activity signal that survives
             // a restart, so recovery must carry it into the live registry.
-            lastActivityAt: String(doc["updatedAt"] ?? deployedAt),
+            lastActivityAt: view.lastActivityAt,
           });
         }
 
         allSessions.push({
           sessionId,
-          employeeId,
-          auditId: matrixId,
-          matrixId,
-          targetSystem: String(doc["targetSystem"] ?? ""),
-          status,
+          employeeId: view.employeeId,
+          auditId: view.matrixId,
+          matrixId: view.matrixId,
+          targetSystem: view.targetSystem,
+          status: view.status,
           liveness: "active" satisfies SessionLiveness,
-          deployedAt,
-          startedAt: deployedAt,
-          createdAt: deployedAt,
-          riskIndex: riskScore,
-          peakRiskScore: riskScore,
-          eventCount: Number(doc["eventCount"] ?? 0),
-          pasteCount: Number(doc["pasteCount"] ?? 0),
-          tabSwitchCount: Number(doc["tabSwitchCount"] ?? 0),
-          focusLossCount: readFocusLossCount(doc),
+          deployedAt: view.deployedAt,
+          startedAt: view.deployedAt,
+          createdAt: view.deployedAt,
+          riskIndex: view.riskScore,
+          peakRiskScore: view.riskScore,
+          eventCount: view.eventCount,
+          pasteCount: view.pasteCount,
+          tabSwitchCount: view.tabSwitchCount,
+          focusLossCount: view.focusLossCount,
           // Deprecated alias for `focusLossCount`. Same value, kept so an existing
           // console or script reading the old name keeps working.
-          fullscreenExitCount: readFocusLossCount(doc),
-          copyAttemptCount: Number(doc["copyAttemptCount"] ?? 0),
-          alertTriggered: riskScore >= AUTO_LOCK_THRESHOLD,
+          fullscreenExitCount: view.focusLossCount,
+          copyAttemptCount: view.copyAttemptCount,
+          alertTriggered: view.riskScore >= AUTO_LOCK_THRESHOLD,
         });
       }
     }
@@ -1555,6 +1664,152 @@ export function createGuardianRouter(
       readDurableCounter(durable, "focusLossCount"),
       readDurableCounter(durable, "fullscreenExitCount"),
     );
+  }
+
+  // ─── The durable read model ──────────────────────────────────────
+  //
+  // One reader for every surface that answers from a durable session document, so the
+  // live list and the detail route cannot drift apart about the same document. They did:
+  // the detail route's registry branch reported zero for every counter, so a session
+  // deployed before a restart reported `eventCount: 0` on the detail surface while the
+  // live list reported the durable total.
+
+  /** The durable-derived fields of a session, read from its document. */
+  interface DurableSessionView {
+    sessionId: string;
+    employeeId: string;
+    /** The scenario matrix id, tolerating the legacy `auditId` spelling. */
+    matrixId: string;
+    targetSystem: string;
+    status: PersistedSessionStatus;
+    deployedAt: string;
+    lastActivityAt: string;
+    /** `peakRiskScore`, falling back to the older spellings. */
+    riskScore: number;
+    eventCount: number;
+    pasteCount: number;
+    tabSwitchCount: number;
+    focusLossCount: number;
+    copyAttemptCount: number;
+  }
+
+  /**
+   * Reads the durable view of a session document.
+   *
+   * Every field is read through the same tolerant readers the hydration path uses, so a
+   * document that holds a legacy field name or an unusable value is reported the same
+   * way wherever it is read. `deployedAt` falls back to `createdAt` and then to the
+   * current instant: a document with neither is malformed — `create_session` always
+   * writes one — and a fabricated-but-plausible instant is a smaller problem than a
+   * missing one on a display surface. The live list has always done this; sharing the
+   * reader is what makes the two agree.
+   */
+  function readDurableSessionView(
+    document: Record<string, unknown>,
+    sessionId: string,
+  ): DurableSessionView {
+    const deployedAt = String(
+      document["deployedAt"] ?? document["createdAt"] ?? toISOStringLocal(),
+    );
+
+    return {
+      sessionId,
+      employeeId: String(document["employeeId"] ?? "unknown"),
+      matrixId: String(document["matrixId"] ?? document["auditId"] ?? ""),
+      targetSystem: String(document["targetSystem"] ?? ""),
+      status: normalizeStatus(String(document["status"] ?? "active")),
+      deployedAt,
+      lastActivityAt: String(document["updatedAt"] ?? deployedAt),
+      riskScore: Number(
+        document["peakRiskScore"] ??
+          document["overallRiskScore"] ??
+          document["riskIndex"] ??
+          0,
+      ),
+      eventCount: readDurableCounter(document, "eventCount"),
+      pasteCount: readDurableCounter(document, "pasteCount"),
+      tabSwitchCount: readDurableCounter(document, "tabSwitchCount"),
+      focusLossCount: readFocusLossCount(document),
+      copyAttemptCount: readDurableCounter(document, "copyAttemptCount"),
+    };
+  }
+
+  /**
+   * Reads the durable session document, distinguishing "absent" from "unreadable".
+   *
+   * The distinction is the whole point: `absent` means the store answered and no such
+   * session exists, which is a `404`. `unavailable` means the store did not answer, and
+   * nothing at all can be claimed — which is a `503`, not a `404`.
+   */
+  async function readDurableSessionDocument(
+    sessionId: string,
+    requestId: string,
+  ): Promise<
+    | { kind: "document"; view: DurableSessionView }
+    | { kind: "absent" }
+    | { kind: "unavailable" }
+  > {
+    const response = await callMcpTool<{
+      success?: boolean;
+      session?: Record<string, unknown> | null;
+    }>(
+      config,
+      MCP_TOOL_NAMES.GET_SESSION_REVIEW,
+      // The document only. Neither the events nor the assessments are used here, and
+      // asking for them would make a detail read cost a session's whole history.
+      { sessionId, eventsLimit: 0, includeAssessments: false },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    );
+
+    if (!response.ok || !response.data?.success) return { kind: "unavailable" };
+
+    const document = response.data.session ?? null;
+    if (!document) return { kind: "absent" };
+
+    return { kind: "document", view: readDurableSessionView(document, sessionId) };
+  }
+
+  /**
+   * The view for a session this process deployed whose durable document cannot supply
+   * the answer.
+   *
+   * Counters are reported as zero, and that is truthful **for this process**: nothing has
+   * been ingested here. `source: "memory"` with `ephemeralStateAvailable: false` says
+   * exactly that — the registry is the source and it holds no workspace.
+   */
+  function registrySessionView(
+    sessionId: string,
+    active: ActiveSession,
+    liveness: SessionLiveness,
+  ): Record<string, unknown> {
+    return {
+      sessionId,
+      employeeId: active.employeeId,
+      auditId: active.matrixId,
+      matrixId: active.matrixId,
+      eventCount: 0,
+      pasteCount: 0,
+      tabSwitchCount: 0,
+      focusLossCount: 0,
+      // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+      // console or script reading the old name keeps working.
+      fullscreenExitCount: 0,
+      copyAttemptCount: 0,
+      currentCodeLength: 0,
+      currentCode: "",
+      lastRiskPayload: null,
+      riskIndex: active.riskIndex,
+      overallRiskScore: active.riskIndex,
+      peakRiskScore: active.riskIndex,
+      startedAt: active.deployedAt,
+      deployedAt: active.deployedAt,
+      status: active.status,
+      liveness,
+      lastActivityAt: active.deployedAt,
+      targetSystem: active.targetSystem,
+      source: "memory" as const,
+      ephemeralStateAvailable: false,
+    };
   }
 
   /**
