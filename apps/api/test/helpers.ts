@@ -116,6 +116,18 @@ export interface FetchStub {
  *
  * Throwing from `mcpResponse` still models a transport failure: the rejected
  * promise is caught by `callMcpTool` and surfaces as `{ok: false}` with no status.
+ *
+ * ── Replacing a stub mid-test ─────────────────────────────────────────
+ *
+ * The OpenAI SDK captures `fetch` when its client is constructed, and
+ * `getAIProvider()` memoises that client in a module-level singleton. So a test that
+ * swaps this stub **after** a paid path has already run will keep talking to the
+ * *old* stub's `fetch`, and a changed `aiResponse` will appear to be ignored.
+ *
+ * Call `resetAIProvider()` after `stub.restore()` and before installing the
+ * replacement, whenever the test has already driven a paid path. This is a real
+ * source of a confusing failure, so it is stated here rather than left to be
+ * rediscovered.
  */
 export function installFetchStub(options: {
   mcpResponse?: (

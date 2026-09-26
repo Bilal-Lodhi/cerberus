@@ -487,24 +487,24 @@ engineering rationale recorded here:
 
 | # | Criterion | State |
 | --- | --- | --- |
-| A | Session transitions centralized or proven unnecessary | Open — model written; boundary not yet built |
-| B | Partial-failure semantics documented and tested | Partly — [failure-semantics.md](failure-semantics.md) documents them; tests pending |
-| C | Status cannot silently diverge on supported paths | Open — five paths, three orderings, results uninspected |
-| D | Terminal-content ownership coherent | Open — three candidate sources for one concept |
+| A | Session transitions centralized or proven unnecessary | **Done** — [session-transition.ts](../../apps/api/src/services/session-transition.ts), with the vocabulary in [session-status.ts](../../apps/api/src/services/session-status.ts). One order for every action: read durable → validate → write durably with a predicate → repair caches |
+| B | Partial-failure semantics documented and tested | Partly — [failure-semantics.md](failure-semantics.md) documents them, and the status-change guarantee is now tested; the assessment-ordering and events-write windows are open |
+| C | Status cannot silently diverge on supported paths | **Done** — the durable document is the authority, the write is predicate-checked, the result is inspected, the caches are repaired from the durable outcome, and a refusal reconciles a stale cache |
+| D | Terminal-content ownership coherent | Open — three candidate sources for one concept, though the boundary now gives the durable write one owner and an existence check |
 | E | Focus-loss/fullscreen semantics truthful | Open — `WINDOW_BLUR` increments the fullscreen counter |
 | F | Corpus hard ceiling consistent between store, read and console | Open — a read ceiling, not a store rejection |
-| G | Review-fetch amplification reduced or justified with measurement | Open — one `get_session_review` per session per list |
-| H | State mutations concurrency-tested | Open — no concurrency test exists |
+| G | Review-fetch amplification reduced or justified with measurement | Partly — **ingest and reactivate are fixed** (`get_session_review` now takes `eventsLimit` / `includeAssessments`, and both pass `0` / `false`); the per-session fetch on the list path still needs measurement |
+| H | State mutations concurrency-tested | **Done** — four deterministic concurrency cases: terminate racing auto-lock, two terminates racing, two ingests racing, and a duplicate event across two concurrent batches |
 | I | Route-level retry/idempotency contracts documented | Open |
-| J | Stale-cache/newer-DB behaviour deterministic | Open |
+| J | Stale-cache/newer-DB behaviour deterministic | **Done** — three tests: the durable status decides over the cache, a refusal reconciles the cache, and a durable lock the cache does not know about is applied rather than ignored |
 | K | Migrations cover any schema/status changes | Open — depends on the vocabulary decisions below |
-| L | API/MCP compatibility preserved where reasonably possible | Open |
-| M | No P0/P1 correctness/security issue remains | Open — one confirmed P1 (terminated session is not terminal) |
+| L | API/MCP compatibility preserved where reasonably possible | **Done so far** — every MCP change this cycle is an added optional argument, and the new error codes are additive. `terminate`'s `503` replaces a misleading `404` |
+| M | No P0/P1 correctness/security issue remains | **Done** — the confirmed P1 (a terminated session was not terminal) is fixed, with regression tests. Remaining known items are P2 |
 | N | Test doubles audited against real-store behavior | **Done** — [test-double-contract.md](test-double-contract.md) audits them, and one shared faithful double replaces four divergent ones, verified against a real MongoDB 7 |
-| O | One real-Mongo integration suite protects the highest-risk state flows | Open |
-| P | Docs, threat model and compatibility docs match implementation | Open |
-| Q | CI green | Green at the start of the phase |
-| R | `v0.1.0` and `v0.2.0` tags unchanged | Verified at the start of the phase |
+| O | One real-Mongo integration suite protects the highest-risk state flows | Partly — the contract suite runs against a real MongoDB, and the transition table is covered in-process; a dedicated disposable-Mongo integration suite and a bounded CI job are still open |
+| P | Docs, threat model and compatibility docs match implementation | Partly — [api-errors.md](../api-errors.md) is new, and the transition model is updated; the threat model and compatibility docs need a pass |
+| Q | CI green | Green on every pull request so far |
+| R | `v0.1.0` and `v0.2.0` tags unchanged | Verified at the start of the phase; re-verified before the checkpoint |
 | S | A coherent next release candidate can be described | Open |
 
 ### Phase queue
@@ -526,13 +526,20 @@ rationale for rejecting it.
    against it and against a real `MongoStore` when `CERBERUS_TEST_MONGODB_URI` is
    set. Verified on a real MongoDB 7: 546 tests, 0 skipped, 0 failed. Recorded in
    [test-double-contract.md](test-double-contract.md) §6.
-3. **The central session transition boundary.** Planned. Domain actions with
-   preconditions, a durable-first write with an atomic predicate on the expected
-   status, a canonical result, and cache repair from the durable result.
-4. **Route adoption and concurrency tests.** Planned. Deterministic barriers, not
-   sleeps.
+3. **The central session transition boundary.** Done. One place a lifecycle status
+   changes, with domain actions rather than a generic setter, an explicit transition
+   table, a durable-first order, a compare-and-set write, a canonical result that
+   distinguishes applied / no-op / refused / conflict, and caches repaired from the
+   durable outcome. Ingest also refuses a terminated session, which fixes the
+   confirmed P1. The enforced table, the history it replaced and the four remaining
+   P2 items are in [state-transition-model.md](state-transition-model.md).
+4. **Route adoption and concurrency tests.** Done — terminate, reactivate, auto-lock
+   and auto-clear all delegate to the boundary, and four concurrency cases interleave
+   deterministically rather than by sleeping.
 5. **Partial-failure semantics for the cache/durable split, and the ingest ordering
-   inversion.** Planned.
+   inversion.** Partly — the cache/durable split is closed by the boundary; the ingest
+   ordering inversion (assessment written after the notification and the status write)
+   is open.
 6. **Terminal-content ownership.** Planned — one coherent direction, chosen and
    documented rather than left implicit.
 7. **`WINDOW_BLUR` / fullscreen semantic correction.** Planned. This is the one item

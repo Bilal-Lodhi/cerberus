@@ -58,6 +58,17 @@ import {
   type SessionLiveness,
 } from "../services/session-liveness.js";
 import {
+  acceptsTelemetry,
+  createSessionTransitions,
+  type SessionTransitionCache,
+  type SessionTransitionResult,
+} from "../services/session-transition.js";
+import {
+  normalizeStatus,
+  isMonitored,
+  SESSION_TRANSITION_CODES,
+} from "../services/session-status.js";
+import {
   findSimilarityMatches,
   type ReferenceDocument,
 } from "../services/text-similarity.js";
@@ -84,8 +95,15 @@ export const AUTO_CLEAR_THRESHOLD = 25;
 
 /** Stable error code returned when telemetry targets an expired session. */
 export const SESSION_EXPIRED_CODE = "SESSION_EXPIRED";
-/** Stable error code returned when a terminal-state session is reactivated. */
-export const SESSION_TERMINATED_CODE = "SESSION_TERMINATED";
+/**
+ * Stable error code returned when an action is refused because the session is
+ * terminal.
+ *
+ * An alias of the transition boundary's own code rather than a second literal, so the
+ * value has one definition. It is returned by `reactivate` and by ingest, which is
+ * deliberate: one meaning — the session has ended — rather than a code per action.
+ */
+export const SESSION_TERMINATED_CODE = SESSION_TRANSITION_CODES.SESSION_TERMINAL;
 
 /**
  * Maximum number of micro-events accepted in a single ingest batch.
@@ -161,6 +179,93 @@ export function createGuardianRouter(
   const sessionStore = new Map<string, SessionState>();
   /** Deployment registry, so freshly deployed sessions appear before any events. */
   const activeSessions = new Map<string, ActiveSession>();
+
+  /**
+   * The cache surface the transition boundary repairs.
+   *
+   * `apply` seeds a missing `activeSessions` entry from the durable document, which is
+   * what reactivation needs after a restart: the process holds nothing for the session,
+   * and the registry entry has to be rebuilt from the sources that survived — the
+   * durable `employeeId`, `matrixId`/`auditId`, `targetSystem`, `deployedAt` and
+   * `peakRiskScore`. Before the boundary existed this rebuild lived inside the
+   * reactivate route, so it was one of five paths that each did it differently.
+   */
+  const transitionCache: SessionTransitionCache = {
+    read(sessionId) {
+      const active = activeSessions.get(sessionId);
+      if (active) return normalizeStatus(active.status);
+      const state = sessionStore.get(sessionId);
+      return state ? normalizeStatus(state.status) : null;
+    },
+
+    apply(sessionId, status, at, durable) {
+      const state = sessionStore.get(sessionId);
+      if (state) {
+        state.status = status;
+        state.lastActivityAt = at;
+        sessionStore.set(sessionId, state);
+      }
+
+      const active = activeSessions.get(sessionId);
+      if (active) {
+        active.status = status as ActiveSession["status"];
+        active.lastActivityAt = at;
+        activeSessions.set(sessionId, active);
+        return;
+      }
+
+      // No registry entry: rebuild one, but only for a status that is still
+      // monitored. A terminated session must never re-enter the live registry, or a
+      // restart would resurrect it as actively monitored.
+      if (!isMonitored(status)) return;
+
+      const matrixId = String(durable["matrixId"] ?? durable["auditId"] ?? "");
+      activeSessions.set(sessionId, {
+        sessionId,
+        employeeId: String(durable["employeeId"] ?? state?.employeeId ?? "unknown"),
+        matrixId,
+        targetSystem: String(durable["targetSystem"] ?? ""),
+        status: status as ActiveSession["status"],
+        deployedAt: String(
+          durable["deployedAt"] ?? durable["createdAt"] ?? at,
+        ),
+        riskIndex: Number(
+          durable["peakRiskScore"] ?? durable["overallRiskScore"] ?? durable["riskIndex"] ?? 0,
+        ),
+        lastActivityAt: at,
+      });
+    },
+
+    evict(sessionId) {
+      // Only the live registry: `sessionStore` keeps the session so its counters and
+      // reconstructed state remain readable for review.
+      activeSessions.delete(sessionId);
+    },
+  };
+
+  /** The one place a session lifecycle status changes. */
+  const transitions = createSessionTransitions({ config, clock, cache: transitionCache });
+
+  /**
+   * Renders a refused transition as an HTTP response.
+   *
+   * Every refusal already carries a stable code, the right status and a
+   * client-facing message, so a route does not re-derive any of them.
+   */
+  function refusalResponse(refusal: Extract<SessionTransitionResult, { ok: false }>) {
+    return {
+      body: {
+        success: false as const,
+        error: refusal.message,
+        code: refusal.code,
+        sessionId: refusal.sessionId,
+        ...(refusal.previousStatus !== undefined
+          ? { status: refusal.previousStatus }
+          : {}),
+      },
+      status: refusal.httpStatus as 404 | 409 | 503,
+    };
+  }
 
   const notifySlackWebhook = process.env["SLACK_WEBHOOK_URL"] ?? "";
   const sendgridKey = process.env["SENDGRID_API_KEY"] ?? "";
@@ -269,6 +374,42 @@ export function createGuardianRouter(
             code: SESSION_EXPIRED_CODE,
             sessionId,
             liveness: "expired" satisfies SessionLiveness,
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      // 2b. Refuse telemetry for a session that has been terminated.
+      //
+      //     `terminated` is the one irreversible lifecycle state, and this check is
+      //     what makes it terminal. Without it, a terminated session that had not yet
+      //     exceeded its TTL accepted telemetry, advanced its durable counters, and —
+      //     on a high-risk batch — was moved to `locked` by the auto-lock path, which
+      //     had no precondition either. Observed before the fix: `terminated` →
+      //     ingest `200` → durable status `locked`, with two further `micro_events`
+      //     stored. `reactivate` already refused exactly that transition, so the two
+      //     paths disagreed about whether `terminated` was reversible.
+      //
+      //     The status is read from the document this request already fetched, so the
+      //     check costs nothing extra. `acceptsTelemetry` is the boundary's rule, not
+      //     a second copy of it.
+      if (
+        durableSession &&
+        !acceptsTelemetry(normalizeStatus(String(durableSession["status"] ?? "active")))
+      ) {
+        console.warn(
+          `[guardian] [${requestId}] rejected ingest for terminated session '${sessionId}'`,
+        );
+        return c.json(
+          {
+            success: false,
+            error:
+              `Session '${sessionId}' is terminated and no longer accepts telemetry. ` +
+              "Deploy a new session to resume monitoring.",
+            code: SESSION_TRANSITION_CODES.SESSION_TERMINAL,
+            sessionId,
+            status: "terminated",
             correlationId: requestId,
           },
           409,
@@ -756,6 +897,13 @@ export function createGuardianRouter(
     // closed is not live, whatever its durable status, so it is excluded here.
     // It stays fully visible through GET /api/v1/sessions and
     // GET /api/v1/sessions/:sessionId, which are the review surfaces.
+    //
+    // A *terminated* session is not live either, and it is excluded for the same
+    // reason. That exclusion was missing from the in-memory path: the TTL predicate
+    // was the only filter, so a session an operator had just terminated stayed in the
+    // live list — with `status: "terminated"` and `liveness: "active"` — until its TTL
+    // elapsed or the process restarted. The durable-recovery path below already
+    // guarded on `isMonitored`, so the two paths disagreed about the same session.
 
     // Path A1 — live in-memory state (authoritative event counts).
     if (sessionStore.size > 0) {
@@ -767,6 +915,15 @@ export function createGuardianRouter(
 
       for (const [sessionId, state] of entries) {
         if (sessionExpired(sessionId)) continue;
+
+        // The cache, when it holds the session, is what the transition boundary last
+        // wrote from the durable outcome. When it does not, `sessionStore` is the only
+        // in-memory source and its status came from the same place.
+        const effectiveStatus = normalizeStatus(
+          activeSessions.get(sessionId)?.status ?? state.status,
+        );
+        if (!isMonitored(effectiveStatus)) continue;
+
         seenIds.add(sessionId);
         const active = activeSessions.get(sessionId);
         const deployedAt =
@@ -799,6 +956,10 @@ export function createGuardianRouter(
     for (const [sessionId, active] of activeSessions) {
       if (seenIds.has(sessionId)) continue;
       if (sessionExpired(sessionId)) continue;
+      // The boundary evicts a terminated session from this registry, so this should
+      // never fire. It is asserted anyway: the live list must not depend on every
+      // writer remembering to evict.
+      if (!isMonitored(normalizeStatus(active.status))) continue;
       seenIds.add(sessionId);
       allSessions.push({
         sessionId,
@@ -839,6 +1000,18 @@ export function createGuardianRouter(
         // the process was down is not resurrected as actively monitored.
         if (sessionExpired(sessionId, doc)) continue;
 
+        const status = normalizeStatus(String(doc["status"] ?? "active"));
+
+        // A terminated session is not live, so it is not listed here at all. It stays
+        // fully visible through `GET /api/v1/sessions` and
+        // `GET /api/v1/sessions/:sessionId`, which are the review surfaces.
+        //
+        // This check was previously applied only to the registry write below, not to
+        // the list entry, so a terminated session recovered from MongoDB **was**
+        // returned by the live list — with `liveness: "active"`. The in-memory paths
+        // had the same gap in the other direction, and the three of them disagreed.
+        if (!isMonitored(status)) continue;
+
         seenIds.add(sessionId);
 
         const employeeId = String(doc["employeeId"] ?? "unknown");
@@ -847,11 +1020,10 @@ export function createGuardianRouter(
         const riskScore = Number(
           doc["peakRiskScore"] ?? doc["overallRiskScore"] ?? doc["riskIndex"] ?? 0,
         );
-        const status = normalizeStatus(String(doc["status"] ?? "active"));
 
-        // A terminated session is listed for review but must never re-enter the
-        // live registry, or a restart would resurrect it as actively monitored.
-        if (!activeSessions.has(sessionId) && isMonitored(status)) {
+        // Rebuild the live registry from the durable document. A terminated session
+        // cannot reach here, because it was skipped above.
+        if (!activeSessions.has(sessionId)) {
           activeSessions.set(sessionId, {
             sessionId,
             employeeId,
@@ -910,118 +1082,40 @@ export function createGuardianRouter(
    * batch arriving. Ingest refuses an expired session with `409 SESSION_EXPIRED`
    * and points here.
    *
-   * Idempotent for a live session. A `terminated` session is refused: the
-   * terminal state is not reversible, exactly as in the restart-recovery path.
+   * Idempotent for a live session. A `terminated` session is refused with
+   * `409 SESSION_TERMINATED`: the terminal state is not reversible, exactly as in the
+   * restart-recovery path.
+   *
+   * The durable status is read and written by the transition boundary, so this route
+   * no longer rebuilds the live-registry entry itself — that rebuild is one of the
+   * things the boundary's cache adapter owns, and doing it in two places is how the
+   * five paths drifted apart in the first place.
    */
   guardianRouter.post("/sessions/:sessionId/reactivate", async (c) => {
     const sessionId = c.req.param("sessionId");
     const requestId = randomUUID();
 
-    const state = sessionStore.get(sessionId);
-    const active = activeSessions.get(sessionId);
-
-    // Fall back to the durable record so a session that expired while the
-    // process was down can still be reopened.
-    // Fall back to the durable record so a session that expired while the
-    // process was down can still be reopened.
-    let durable: Record<string, unknown> | null = null;
-    if (!state && !active) {
-      // Only the session document is consulted, so neither the events nor the
-      // assessments are asked for. See `ensureMongoSession` for why `eventsLimit: 0`
-      // rather than a small number.
-      const review = await callMcpTool<{
-        success: boolean;
-        session?: Record<string, unknown> | null;
-      }>(
-        config,
-        MCP_TOOL_NAMES.GET_SESSION_REVIEW,
-        { sessionId, eventsLimit: 0, includeAssessments: false },
-        { requestId, timeoutMs: MCP_TIMEOUT_MS },
-      );
-      if (review.ok && review.data?.success && review.data.session) {
-        durable = review.data.session;
-      }
-    }
-
-    if (!state && !active && !durable) {
-      return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
-    }
-
-    const previousStatus = String(
-      active?.status ?? state?.status ?? durable?.["status"] ?? "active",
-    );
-    if (normalizeStatus(previousStatus) === "terminated") {
-      return c.json(
-        {
-          success: false,
-          error:
-            `Session '${sessionId}' is terminated and cannot be reactivated. ` +
-            "Deploy a new session instead.",
-          code: SESSION_TERMINATED_CODE,
-          sessionId,
-          status: "terminated",
-          correlationId: requestId,
-        },
-        409,
-      );
+    const result = await transitions.reactivate(sessionId, requestId);
+    if (!result.ok) {
+      const { body, status } = refusalResponse(result);
+      return c.json({ ...body, correlationId: requestId }, status);
     }
 
     const reactivatedAt = toISOStringLocal(new Date(clock.now()));
 
-    // Durable status becomes `active` — the same transition the auto-clear path
-    // already performs, and it grants no new authority: the caller holds the
-    // operator key that can terminate or delete the session outright. The lock
-    // decision itself is not erased; it stays in the persisted risk assessments
-    // and the review timeline.
-    await callMcpTool(
-      config,
-      MCP_TOOL_NAMES.SET_SESSION_STATUS,
-      { sessionId, status: "active" },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
-    );
-
-    if (state) {
-      state.status = "active";
-      touchSession(state);
-      sessionStore.set(sessionId, state);
-    }
-
-    activeSessions.set(sessionId, {
-      sessionId,
-      employeeId: String(
-        active?.employeeId ?? state?.employeeId ?? durable?.["employeeId"] ?? "unknown",
-      ),
-      matrixId: String(
-        active?.matrixId ??
-          state?.auditId ??
-          durable?.["matrixId"] ??
-          durable?.["auditId"] ??
-          "",
-      ),
-      targetSystem: String(active?.targetSystem ?? durable?.["targetSystem"] ?? ""),
-      status: "active",
-      deployedAt: String(
-        active?.deployedAt ??
-          durable?.["deployedAt"] ??
-          durable?.["createdAt"] ??
-          reactivatedAt,
-      ),
-      riskIndex: active?.riskIndex ?? state?.lastRiskPayload?.overallRiskScore ?? 0,
-      lastActivityAt: reactivatedAt,
-    });
-
     console.log(
       `[guardian] [${requestId}] session '${sessionId}' reactivated ` +
-        `(ttl=${ttlSeconds}s, previous status=${previousStatus})`,
+        `(ttl=${ttlSeconds}s, previous status=${result.previousStatus}, ` +
+        `applied=${result.applied})`,
     );
 
     return c.json({
       success: true,
       sessionId,
-      status: "active",
+      status: result.status,
       liveness: "active" satisfies SessionLiveness,
       reactivatedAt,
-      previousStatus,
+      previousStatus: result.previousStatus,
     });
   });
 
@@ -1029,39 +1123,36 @@ export function createGuardianRouter(
   // POST /sessions/:sessionId/terminate  — stop monitoring, keep data
   // ═══════════════════════════════════════════════════════════════
 
+  /**
+   * Stops monitoring and preserves every document.
+   *
+   * The durable write happens **before** either cache is touched, and its result
+   * decides the response. Previously the cache was mutated first and the durable
+   * result was used only to compute `found`, so a failed write returned
+   * `200 success: true` while MongoDB still said `active` — and a restart resurrected
+   * a session the operator had terminated.
+   */
   guardianRouter.post("/sessions/:sessionId/terminate", async (c) => {
     const sessionId = c.req.param("sessionId");
     const requestId = randomUUID();
-    let found = false;
 
-    if (activeSessions.has(sessionId)) {
-      activeSessions.delete(sessionId);
-      found = true;
+    const result = await transitions.terminate(sessionId, requestId);
+    if (!result.ok) {
+      const { body, status } = refusalResponse(result);
+      return c.json(body, status);
     }
 
+    // `endedAt` is display state derived from the transition instant; it is not part
+    // of the durable status, and `status: "terminated"` is the durable signal.
     const state = sessionStore.get(sessionId);
     if (state) {
-      state.status = "terminated";
       state.endedAt = toISOStringLocal(new Date(clock.now()));
-      touchSession(state);
-      sessionStore.set(sessionId, state);
-      found = true;
     }
 
-    // Only count a durable update that actually matched a document.
-    const result = await callMcpTool<{ updated?: boolean }>(
-      config,
-      MCP_TOOL_NAMES.SET_SESSION_STATUS,
-      { sessionId, status: "terminated" },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    console.log(
+      `[guardian] [${requestId}] session '${sessionId}' terminated (data preserved, ` +
+        `applied=${result.applied})`,
     );
-    if (result.ok && result.data?.updated === true) found = true;
-
-    if (!found) {
-      return c.json({ success: false, error: `Session '${sessionId}' not found` }, 404);
-    }
-
-    console.log(`[guardian] [${requestId}] session '${sessionId}' terminated (data preserved)`);
     return c.json({ success: true, sessionId, message: "Session terminated (data preserved)" });
   });
 
@@ -1388,60 +1479,56 @@ export function createGuardianRouter(
     sessionStore.set(event.sessionId, existing);
   }
 
+  /**
+   * Auto-locks a session on a high blended score.
+   *
+   * Delegates to the transition boundary, which reads the durable status, refuses the
+   * transition for a `terminated` session, writes the status with a predicate on the
+   * status it read, and repairs the caches from the durable outcome. The previous
+   * implementation wrote the caches **first** and did not inspect the durable result,
+   * so a failed write left the API reporting `locked` while MongoDB said `active` —
+   * invisible until a restart, at which point the lock disappeared.
+   */
   async function lockSession(
     sessionId: string,
     riskPayload: RiskAssessmentPayload,
     requestId: string,
   ): Promise<void> {
-    const activityAt = toISOStringLocal(new Date(clock.now()));
-    const active = activeSessions.get(sessionId);
-    if (active) {
-      active.status = "locked";
-      active.lastActivityAt = activityAt;
-      activeSessions.set(sessionId, active);
-    }
-    const state = sessionStore.get(sessionId);
-    if (state) {
-      state.status = "locked";
-      touchSession(state);
-      sessionStore.set(sessionId, state);
-    }
+    const result = await transitions.autoLock(sessionId, requestId);
 
-    await callMcpTool(
-      config,
-      MCP_TOOL_NAMES.SET_SESSION_STATUS,
-      { sessionId, status: "locked", reason: riskPayload.incidentSummary },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
-    );
+    if (!result.ok) {
+      // A refusal is not fatal to the batch: the telemetry is already durable and the
+      // assessment is still stored. It is logged because it means the session is not
+      // in the state the score suggests it should be.
+      console.warn(
+        `[guardian] [${requestId}] auto-lock refused for session '${sessionId}': ` +
+          `${result.code} (status=${result.previousStatus ?? "unknown"})`,
+      );
+      return;
+    }
 
     console.log(
-      `[guardian] [${requestId}] session '${sessionId}' AUTO-LOCKED at risk ${riskPayload.overallRiskScore}`,
+      `[guardian] [${requestId}] session '${sessionId}' AUTO-LOCKED at risk ` +
+        `${riskPayload.overallRiskScore} (applied=${result.applied})`,
     );
   }
 
+  /** Auto-clears a locked session once its score falls below the clear threshold. */
   async function unlockSession(sessionId: string, requestId: string): Promise<void> {
-    const activityAt = toISOStringLocal(new Date(clock.now()));
-    const active = activeSessions.get(sessionId);
-    if (active) {
-      active.status = "active";
-      active.lastActivityAt = activityAt;
-      activeSessions.set(sessionId, active);
-    }
-    const state = sessionStore.get(sessionId);
-    if (state) {
-      state.status = "active";
-      touchSession(state);
-      sessionStore.set(sessionId, state);
+    const result = await transitions.autoClear(sessionId, requestId);
+
+    if (!result.ok) {
+      console.warn(
+        `[guardian] [${requestId}] auto-clear refused for session '${sessionId}': ` +
+          `${result.code} (status=${result.previousStatus ?? "unknown"})`,
+      );
+      return;
     }
 
-    await callMcpTool(
-      config,
-      MCP_TOOL_NAMES.SET_SESSION_STATUS,
-      { sessionId, status: "active" },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    console.log(
+      `[guardian] [${requestId}] session '${sessionId}' auto-cleared ` +
+        `(applied=${result.applied})`,
     );
-
-    console.log(`[guardian] [${requestId}] session '${sessionId}' auto-cleared`);
   }
 
   return { router: guardianRouter, sessionStore, activeSessions };
@@ -1655,32 +1742,16 @@ export function collectPasteContents(events: MicroEvent[]): string[] {
 /**
  * Every status a session document may legitimately carry.
  *
- * This is the union of the review vocabulary and the MCP adapter's writable
- * set, and it deliberately includes `terminated`: a session recovered from
- * MongoDB after a restart must not be reported as live again.
+ * Re-exported from `../services/session-status.js`, which owns the vocabulary so the
+ * transition boundary can import it without importing a route module. Kept exported
+ * here because existing importers and tests resolve it from this module.
  */
-export const PERSISTED_SESSION_STATUSES = [
-  "active",
-  "flagged",
-  "investigating",
-  "cleared",
-  "locked",
-  "terminated",
-] as const;
-
-export type PersistedSessionStatus = (typeof PERSISTED_SESSION_STATUSES)[number];
-
-/** Maps an arbitrary stored value onto the known status vocabulary. */
-export function normalizeStatus(raw: string): PersistedSessionStatus {
-  return (PERSISTED_SESSION_STATUSES as readonly string[]).includes(raw)
-    ? (raw as PersistedSessionStatus)
-    : "active";
-}
-
-/** A terminated session is preserved for review but is no longer monitored. */
-export function isMonitored(status: PersistedSessionStatus): boolean {
-  return status !== "terminated";
-}
+export {
+  PERSISTED_SESSION_STATUSES,
+  type PersistedSessionStatus,
+  normalizeStatus,
+  isMonitored,
+} from "../services/session-status.js";
 
 function buildIncidentSummary(
   session: SessionState,

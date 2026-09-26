@@ -297,12 +297,19 @@ database with a pending migration is either not yet serving or already migrated.
 
 ## 5. Guarantees this system can honestly state
 
+> **Updated by the transition boundary.** The status-change row below changed from
+> "no guarantee" to a real guarantee: the boundary reads the durable status, validates
+> the transition, writes durably with a predicate, and repairs the caches from the
+> durable outcome. O3, O4 and O5 in §4 are rewritten accordingly. The assessment and
+> notification rows are still accurate and are the next item in the queue.
+
 | Operation | Guarantee |
 | --- | --- |
 | Telemetry storage | **At-most-once per `(sessionId, eventId)`.** Durable. |
 | Counter advancement | **Monotonic.** `$max` at the storage layer, so no caller and no restart can lower a durable total. |
-| Status change | **No guarantee.** Cache and durable status can disagree; the write is not atomic with the cache and its result is not inspected. |
-| Assessment storage | **No guarantee.** A paid analysis can complete with no durable record, and a retry can duplicate one. |
+| Status change | **Durable-first, validated and predicate-checked.** The durable status is read, the transition is validated against the table, the write applies only while the stored status is one it is legal from, and the caches are repaired from the durable outcome. A write that did not match is `SESSION_CONFLICT`; a store that did not answer is `SESSION_STORE_UNAVAILABLE`. **No cache can assert a status MongoDB does not hold.** |
+| Status-change refusal | **The durable status is never changed and the requested change is never applied.** The cache *is* reconciled to the durable value the refusal read, so a divergence is corrected rather than reported. |
+| Assessment storage | **No guarantee.** A paid analysis can complete with no durable record, and a retry can duplicate one. Still the next item in the queue. |
 | Notification | **Best effort.** Not durable, not retried, not ordered, no dedup key. |
 | Scenario authoring | **Honest reporting.** The response states whether persistence succeeded. |
 | Deletion | **No guarantee** that a deleted session stays deleted across a restart if the durable delete failed. |
@@ -313,21 +320,25 @@ Ordered by the value of the outcome. Each is a code change with a regression tes
 not a documentation change.
 
 1. **Status transitions become a durable-first, precondition-checked,
-   result-inspected operation.** This closes §3.4's lock-without-evidence window
-   for the status half, §3.5's step-7 window, and O3/O4/O5's silent divergence.
-2. **`terminated` becomes a precondition on ingest.** Closes the confirmed P1 in
-   [state-transition-model.md](state-transition-model.md) §3.1.
-3. **The assessment write moves ahead of the notification and the status write.**
-   Restores the ordering rule for the one durable artefact of the paid path.
-4. **The assessment write becomes idempotent on `riskAssessmentId`.** Closes §3.6's
-   duplicate-row window and makes the documented dedup layer 1 real, or removes
-   the claim from the header.
-5. **The events-write failure becomes visible in the response.** §3.1 is the
+   result-inspected operation.** **Done** — the transition boundary. This closed
+   §3.4's lock-without-evidence window for the status half, §3.5's step-7 window, and
+   O3/O4/O5's silent divergence.
+2. **`terminated` becomes a precondition on ingest.** **Done** — closes the confirmed
+   P1 in [state-transition-model.md](state-transition-model.md) §3.1.
+3. **`terminate` reports a durable failure rather than success.** **Done** — O5's
+   guarantee. `delete` (O6) is unchanged: a failed durable delete still returns `200`,
+   and is recorded as open.
+4. **The assessment write moves ahead of the notification and the status write.**
+   Open. Restores the ordering rule for the one durable artefact of the paid path, and
+   is what §3.4 and §3.5's step-6/7 windows are waiting on.
+5. **The assessment write becomes idempotent on `riskAssessmentId`.** Open. Closes
+   §3.6's duplicate-row window and makes the documented dedup layer 1 real, or removes
+   the claim from the header. The contract suite currently **characterises** the gap,
+   so the fix cannot land silently.
+6. **The events-write failure becomes visible in the response.** Open. §3.1 is the
    largest honesty gap; the fix is a field that distinguishes "the store reported
    these as new" from "the store did not answer", without changing
    `processedCount`'s meaning.
-6. **`terminate` and `delete` report a durable failure rather than success.** O5 and
-   O6 currently claim an outcome that did not durably happen.
 
 Not planned, and why:
 

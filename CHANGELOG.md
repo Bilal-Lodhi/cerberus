@@ -6,8 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-
 ### Added
+
+- **A central session transition boundary** — `apps/api/src/services/session-transition.ts`
+  — so a session lifecycle status changes in exactly one place. Status was previously
+  written by five paths (deploy, ingest's auto-lock, ingest's auto-clear, reactivate,
+  terminate) that ordered their cache and durable writes **three different ways**,
+  three of which did not inspect the durable write's result, and none of which
+  validated the current status.
+
+  The callers are domain actions rather than a generic `setStatus` — `terminate`,
+  `autoLock`, `autoClear`, `reactivate`, `updateTerminalContent` — and the legal
+  transitions are an explicit table. Every action follows one order: **read the durable
+  document → validate against the table → write durably with a predicate on the status
+  that was read → repair the caches from the durable outcome.** The result distinguishes
+  *applied*, *already in that state* (a legal no-op), *refused* and *conflict*, so a
+  route never has to guess what happened.
+- `apps/api/src/services/session-status.ts` — the status vocabulary in one place,
+  naming three sets that were previously spread across two modules: the **durable**
+  set the store can hold (`active`, `locked`, `terminated`), the **persisted** set
+  `normalizeStatus` maps onto (which additionally carries the derived `flagged`,
+  `investigating` and `cleared`), and the derived set itself, which is never written.
+  It also owns the stable transition codes and their HTTP statuses. `guardian.ts`
+  re-exports every name, so existing importers are unaffected.
+- `docs/api-errors.md` — the census of stable client-facing error codes, with the HTTP
+  status and the client-actionable meaning of each, and an explicit statement of what
+  is deliberately *not* exposed.
 
 - `docs/development/state-transition-model.md` — every session lifecycle mutation
   mapped from the source: its initiator, precondition, durable source of truth,
@@ -49,6 +73,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than endorsing it, so the fix cannot land silently.
 
 ### Changed
+
+- `POST /api/v1/guardian/sessions/:sessionId/terminate` now returns **`503`** when the
+  persistence layer cannot be reached, instead of the previous `404` — which reported
+  "not found" for a session that exists. It returns `409 SESSION_CONFLICT` when the
+  status changed while the transition was being applied, instead of silently
+  overwriting the change.
+- `GET /api/v1/guardian/sessions` excludes terminated sessions from all three of its
+  paths, not just the registry write of one.
+- `terminate` now writes the durable status **before** touching either cache. The
+  cache used to be mutated first, so a failed durable write still returned
+  `200 success: true` and a restart resurrected the session.
 
 - **`get_session_review` gained two optional arguments, and the API now uses them.**
   It returns up to 500 micro-events plus every risk assessment by default, and
@@ -95,16 +130,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanup in the real-store half of the contract suite. The lockfile change is one
   line.
 
-### Verified
-
-- The contract suite was run twice on the same commit. Without
-  `CERBERUS_TEST_MONGODB_URI`: 512 API tests, 511 pass, 1 skipped (the real half,
-  with its reason). With it pointed at a real MongoDB 7: **546 tests, 546 pass,
-  0 skipped, 0 failed**. All 37 contract cases pass against both implementations, so
-  the double is *verified* faithful to the real store for every asserted property
-  rather than asserted to be — which is what the four doubles it replaces relied on.
-
 ### Fixed
+
+- **P1 — a terminated session is not terminal.** `POST /api/v1/guardian/ingest`
+  checked only whether the session's monitoring window had expired, never its status,
+  and `lockSession()` had no precondition either. A `terminated` session that had not
+  yet exceeded `SESSION_TTL_SECONDS` therefore accepted telemetry, advanced its durable
+  counters, and — on a high-risk batch — was moved to `locked`: a state the operator
+  never chose, on a session they had explicitly stopped. `reactivate` already refused
+  exactly that transition, so the two paths disagreed about whether `terminated` was
+  reversible. Ingest now refuses a terminated session with
+  `409 SESSION_TERMINATED`, before any write, and stores nothing.
+- **A terminated session was still returned by the live session list.** The TTL
+  predicate was the only filter on the in-memory path, and the durable-recovery path
+  guarded only the *registry* write, not the list entry — so a terminated session
+  appeared in `GET /api/v1/guardian/sessions` with `liveness: "active"` until its TTL
+  elapsed or the process restarted. All three paths now exclude it, and it remains
+  fully visible through the review surfaces, which is where it belongs.
+- **A refused transition no longer leaves a stale cache behind.** A refusal that read
+  the durable status reconciles the cache to the value it read, so a status that
+  diverged because another writer moved it is corrected rather than reported. A refusal
+  still never changes the durable status and never applies the requested change.
+- **`set_session_status` result is now inspected on every path.** Auto-lock,
+  auto-clear and terminate previously wrote the cache first and ignored whether the
+  durable write matched, so a failed write returned `200 success: true` while MongoDB
+  held the old status — invisible until a restart, at which point the change vanished.
 
 - **A brittle source-text assertion in `persistence-naming.test.ts`** matched the
   exact `setSessionStatus` signature and sliced a fixed 300-character window from it.
@@ -124,30 +174,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   documented in `docs/development/failure-semantics.md` §3.9. Implementing the
   durable assessment identity is queued.
 
+### Verified
+
+- The transition table is exercised through the real routes: every allowed transition,
+  every disallowed one, a repeated transition, the terminal state, restart, a stale
+  cache versus a newer durable document, and four concurrency cases with deterministic
+  interleaving rather than sleeps.
+- 604 tests pass against a real **MongoDB 7** (0 skipped, 0 failed), and 565 without it
+  (564 pass, 1 skipped — the real-store half of the contract suite, with its reason).
+
+- The contract suite was run twice on the same commit. Without
+  `CERBERUS_TEST_MONGODB_URI`: 512 API tests, 511 pass, 1 skipped (the real half,
+  with its reason). With it pointed at a real MongoDB 7: **546 tests, 546 pass,
+  0 skipped, 0 failed**. All 37 contract cases pass against both implementations, so
+  the double is *verified* faithful to the real store for every asserted property
+  rather than asserted to be — which is what the four doubles it replaces relied on.
+
 ### Recorded findings (not yet fixed)
 
 These were found by tracing the source for the documents above, and each is
 reproduced or traced rather than inferred. They are listed here so the change that
-fixes one can reference it.
+fixes one can reference it. Three of the original six — the P1 above, the
+last-writer-wins status race, and the uninspected status-write result — are fixed by
+the transition boundary and are described under `Fixed`.
 
-- **P1 — a terminated session is not terminal.** `POST /api/v1/guardian/ingest`
-  checks only whether the session's monitoring window has expired, never its
-  status, and `lockSession()` has no precondition either. A `terminated` session
-  that has not yet exceeded `SESSION_TTL_SECONDS` therefore accepts telemetry,
-  advances its durable counters, and — on a high-risk batch — is moved to `locked`.
-  Observed: `terminated` → ingest `200` → durable status `locked`, with two further
-  `micro_events` stored. `reactivate` refuses exactly this transition
-  (`409 SESSION_TERMINATED`), so the two paths disagree about whether `terminated`
-  is reversible. See `docs/development/state-transition-model.md` §3.1.
-- **P2 — status writes are last-writer-wins.** `setSessionStatus` has no predicate
-  on the current status, so `terminate` racing `auto-lock` is decided by arrival
-  order and nothing detects the conflict.
-- **P2 — the status write's result is not inspected on three of five paths.**
-  `auto-lock`, `auto-clear` and `terminate` write the cache first and ignore whether
-  the durable write matched, so a failed write returns `200 success: true` while
-  MongoDB holds the old status. The divergence is invisible until a restart.
-- **P2 — auto-clear's precondition reads the cache.** After a restart a durably
-  `locked` session has no cache entry, so it can never be auto-cleared.
 - **P2 — a failed `ingest_micro_events` is indistinguishable from a fully
   successful one.** `acceptedCount === processedCount` and `duplicateCount === 0`
   mean both "stored, all new" and "the store never answered".
@@ -155,6 +205,10 @@ fixes one can reference it.
   write.** The order is paid analysis → paid recommendation → notification →
   status → assessment, so a process death in that window leaves a durable lock and a
   delivered alert with no recorded evidence.
+- **P2 — `GET /api/v1/guardian/sessions/:sessionId` has no durable fallback.** It
+  reads the two in-memory maps only, so immediately after a restart it answers `404`
+  for a session that exists until something calls the live list, which is the path
+  that rebuilds the registry. The review route is durable and is unaffected.
 
 ## [0.2.0] - 2026-09-25
 
