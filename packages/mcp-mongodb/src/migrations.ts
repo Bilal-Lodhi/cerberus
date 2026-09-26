@@ -39,6 +39,7 @@
 import type { Db, ObjectId } from "mongodb";
 
 import { isDuplicateKeyError } from "./mongo-client.js";
+import { ensureOperationClaimIndexes } from "./operation-claims.js";
 
 /** Collection holding the migration ledger. */
 export const MIGRATIONS_COLLECTION = "schema_migrations";
@@ -485,6 +486,44 @@ const renameFullscreenExitToFocusLoss: Migration = {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// 0004 — the paid-operation claim collection
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Creates the two indexes `operation_claims` depends on.
+ *
+ * ── Why this is a migration and not only `ensureIndexes()` ────────────
+ *
+ * Both run on a normal deployment — `connect()` applies the migrations and then creates
+ * the indexes — so this migration is not what makes a running API safe. It exists for the
+ * path where they do **not** both run: an operator who upgrades with `npm run migrate`
+ * and only then starts the services, or who inspects a database with the migration CLI.
+ * After `0004`, a database that has been migrated already carries the mutual exclusion
+ * and the retention bound, so "the schema is current" and "the claim is enforceable" are
+ * the same statement rather than two.
+ *
+ * ── Why it rewrites no data ───────────────────────────────────────────
+ *
+ * The collection is new. There is nothing to repair, nothing to classify, and therefore
+ * no way for this migration to refuse — which is why `rewritesData` is `false` and why it
+ * is safe on a `v0.5.0` database of any size. It is idempotent because `createIndex` is
+ * idempotent for an identical specification, and the specification is shared with
+ * `ensureIndexes()` through `operation-claims.ts` rather than repeated here, so the two
+ * cannot drift into an `IndexOptionsConflict`.
+ */
+const createPaidOperationClaimIndexes: Migration = {
+  id: "0004-paid-operation-claim-indexes",
+  description:
+    "Create the unique claim index and the retention TTL index on operation_claims, so a database upgraded by the migration CLI alone already enforces the claim.",
+  rewritesData: false,
+
+  async up({ db, log }) {
+    await ensureOperationClaimIndexes(db.collection("operation_claims"));
+    log("operation_claims carries the unique (routeFamily, keyHash) index and the expiresAt TTL index");
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // Registry
 // ═══════════════════════════════════════════════════════════════════
 
@@ -499,6 +538,7 @@ export const MIGRATIONS: readonly Migration[] = [
   dedupeMicroEventIdentity,
   dedupeRiskAssessmentIdentity,
   renameFullscreenExitToFocusLoss,
+  createPaidOperationClaimIndexes,
 ];
 
 // ═══════════════════════════════════════════════════════════════════

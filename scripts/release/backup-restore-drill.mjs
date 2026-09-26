@@ -48,9 +48,11 @@ const TAMPER_DATABASE = "cerberus_tampered";
 const CONTAINER = `cerberus-drill-${Date.now().toString(36)}`;
 const MONGO_IMAGE = "mongo:7";
 
-const criticalIndexes = JSON.parse(
+const criticalDocument = JSON.parse(
   readFileSync(resolve(here, "critical-indexes.json"), "utf8"),
-).indexes;
+);
+const criticalIndexes = criticalDocument.indexes;
+const criticalTtlIndexes = criticalDocument.ttlIndexes ?? [];
 
 const checks = [];
 
@@ -112,6 +114,7 @@ function seedSourceDatabase() {
     "risk_assessments",
     "reference_documents",
     "schema_migrations",
+    "operation_claims",
   ];
 
   // Empty, and must still exist so it appears in the dump.
@@ -141,18 +144,43 @@ function seedSourceDatabase() {
     db.schema_migrations.insertOne({
       migrationId: 'drill-migration-1', appliedAt: new Date(), description: 'drill'
     });
+    // A paid-operation claim, so the collection is non-empty and its indexes are dumped
+    // with it. The expiry is deliberately far in the future: the TTL monitor would
+    // otherwise sweep the document out from under the count comparison and the drill
+    // would report a restore failure that is really its own fixture expiring.
+    // (No backticks in this comment: it lives inside a template literal, and one would
+    // end the string early.)
+    db.operation_claims.insertOne({
+      routeFamily: 'scenarios', keyHash: 'drill-key-hash', fingerprint: 'drill-fingerprint',
+      fingerprintVersion: 1, status: 'completed', claimId: 'drill-claim-1',
+      createdAt: new Date(), updatedAt: new Date(),
+      leaseExpiresAt: new Date(Date.now() + 3600_000),
+      expiresAt: new Date(Date.now() + 86400_000),
+      result: { status: 201, body: { success: true } }
+    });
     `,
     SOURCE_DATABASE,
   );
 
   // The critical indexes, from the shared list — the same list the restore script verifies
-  // against, so the verification has something real to find.
+  // against, so the verification has something real to find. Both kinds are created:
+  // uniqueness and retention.
   for (const entry of criticalIndexes) {
     const keys = Object.entries(entry.key)
       .map(([field, direction]) => `"${field}": ${direction}`)
       .join(", ");
     mongosh(
       `db.getCollection('${entry.collection}').createIndex({ ${keys} }, { unique: true })`,
+      SOURCE_DATABASE,
+    );
+  }
+
+  for (const entry of criticalTtlIndexes) {
+    const keys = Object.entries(entry.key)
+      .map(([field, direction]) => `"${field}": ${direction}`)
+      .join(", ");
+    mongosh(
+      `db.getCollection('${entry.collection}').createIndex({ ${keys} }, { expireAfterSeconds: ${entry.expireAfterSeconds} })`,
       SOURCE_DATABASE,
     );
   }
@@ -198,7 +226,9 @@ async function main() {
     if (!ready) throw new Error("the disposable MongoDB never answered a ping");
 
     seedSourceDatabase();
-    console.log("fixture: 1 empty collection, 5 non-empty, the critical indexes, a ledger\n");
+    console.log(
+      "fixture: 1 empty collection, 6 non-empty, the critical indexes (unique and TTL), a ledger\n",
+    );
 
     // ── Backup ──
     console.log("── backup");
@@ -234,7 +264,7 @@ async function main() {
 
     check(
       "the manifest records a count for every collection, including the empty one",
-      Object.keys(manifest.collections).length >= 6 &&
+      Object.keys(manifest.collections).length >= 7 &&
         manifest.collections["threat_scenarios"] === 0,
       `${Object.keys(manifest.collections).length} collection(s), threat_scenarios=${manifest.collections["threat_scenarios"]}`,
     );
@@ -255,9 +285,9 @@ async function main() {
       RESTORED_DATABASE,
     ]);
     check(
-      "the restore succeeds and verifies counts and indexes",
+      "the restore succeeds and verifies counts, uniqueness and retention",
       restore.status === 0 &&
-        restore.stdout.includes("matches the backup, with its uniqueness guarantees"),
+        restore.stdout.includes("matches the backup, with its uniqueness and retention guarantees"),
       restore.status === 0 ? "" : restore.stderr.trim().split("\n").slice(-1)[0],
     );
 
@@ -271,6 +301,57 @@ async function main() {
       "the restored database holds the documents",
       restoredCounts[0] === "2" && restoredCounts[1] === "3",
       `monitored_sessions=${restoredCounts[0]}, micro_events=${restoredCounts[1]}`,
+    );
+
+    // ── The paid-operation claim survived the round trip ──
+    //
+    // A count of documents proves the record came back; it proves nothing about whether
+    // the *constraint* did. These two checks assert the constraint directly, on the
+    // restored database, by exercising it: a duplicate claim must still be refused, and
+    // the retention bound must still be there to sweep it. Both are the kind of guarantee
+    // that a restore silently drops and no count can see.
+    const restoredClaim = mongosh(
+      `print(db.operation_claims.countDocuments({ routeFamily: 'scenarios', keyHash: 'drill-key-hash' }))`,
+      RESTORED_DATABASE,
+    ).trim();
+    check(
+      "the restored database holds the paid-operation claim",
+      restoredClaim === "1",
+      `operation_claims rows for the seeded key = ${restoredClaim}`,
+    );
+
+    const duplicateVerdict = mongosh(
+      `
+      var refused = false;
+      try {
+        db.operation_claims.insertOne({
+          routeFamily: 'scenarios', keyHash: 'drill-key-hash', fingerprint: 'other',
+          fingerprintVersion: 1, status: 'pending', claimId: 'drill-claim-2',
+          createdAt: new Date(), updatedAt: new Date(),
+          leaseExpiresAt: new Date(Date.now() + 60000),
+          expiresAt: new Date(Date.now() + 86400000)
+        });
+      } catch (error) { refused = true; }
+      print(refused ? 'REFUSED' : 'ACCEPTED');
+      `,
+      RESTORED_DATABASE,
+    ).trim();
+    check(
+      "the restored database still refuses a duplicate idempotency-key claim",
+      duplicateVerdict === "REFUSED",
+      duplicateVerdict === "REFUSED"
+        ? ""
+        : "a restore that loses the unique claim index lets a retry spend a second time",
+    );
+
+    const restoredTtl = mongosh(
+      `print(db.operation_claims.getIndexes().some(function (i) { return typeof i.expireAfterSeconds === 'number'; }))`,
+      RESTORED_DATABASE,
+    ).trim();
+    check(
+      "the restored database still carries the claim retention bound",
+      restoredTtl === "true",
+      restoredTtl === "true" ? "" : "a restore that loses the TTL index leaves operation_claims unbounded",
     );
 
     // ── Refusals ──

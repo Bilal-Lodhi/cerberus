@@ -113,7 +113,11 @@ if (REAL_MONGODB_URI) {
         const pending = plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id);
         assert.deepEqual(
           pending,
-          ["0002-dedupe-risk-assessment-identity", "0003-rename-fullscreen-exit-to-focus-loss"],
+          [
+            "0002-dedupe-risk-assessment-identity",
+            "0003-rename-fullscreen-exit-to-focus-loss",
+            "0004-paid-operation-claim-indexes",
+          ],
           "the dry run did not report the migrations this release left pending",
         );
         assert.deepEqual(plan.applied, [], "a dry run applied something");
@@ -148,7 +152,11 @@ if (REAL_MONGODB_URI) {
 
         assert.deepEqual(
           result.applied,
-          ["0002-dedupe-risk-assessment-identity", "0003-rename-fullscreen-exit-to-focus-loss"],
+          [
+            "0002-dedupe-risk-assessment-identity",
+            "0003-rename-fullscreen-exit-to-focus-loss",
+            "0004-paid-operation-claim-indexes",
+          ],
         );
 
         // ── The duplicate is gone ──
@@ -244,17 +252,23 @@ if (REAL_MONGODB_URI) {
 
     // ── v0.3.0: the upgrade that is already complete ────────────────
 
-    test("v0.3.0 — nothing is pending, and a run applies nothing", async () => {
+    test("v0.3.0 — the only thing pending is the claim indexes, and a run applies exactly that", async () => {
       await withRelease("v0.3.0", async ({ store }) => {
+        // `v0.3.0` shipped every migration that existed at the time, so before this cycle
+        // it was the release that left nothing pending. That is no longer true of any
+        // published release: every one of them predates `0004`, so an upgrade from any of
+        // them has exactly one thing to do. The "nothing pending" case is asserted against
+        // a *current* database by the v0.5.0 re-run test below, which is the only place it
+        // can honestly be asserted now.
         const plan = await store.runMigrations({ dryRun: true });
         assert.deepEqual(
-          plan.plan.filter((entry) => entry.state === "pending"),
-          [],
-          "the previous release left a migration pending",
+          plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id),
+          ["0004-paid-operation-claim-indexes"],
+          "the v0.3.0 upgrade is not exactly the one migration this cycle adds",
         );
 
         const result = await store.runMigrations();
-        assert.deepEqual(result.applied, [], "the upgrade was not a no-op");
+        assert.deepEqual(result.applied, ["0004-paid-operation-claim-indexes"]);
       });
     });
 
@@ -274,6 +288,163 @@ if (REAL_MONGODB_URI) {
         assert.ok(
           indexes.some((index) => index.unique === true),
           "the unique identity index is missing after connect()",
+        );
+      });
+    });
+
+    // ── v0.5.0: the upgrade this cycle actually ships ───────────────
+
+    test("v0.5.0 — nothing but the claim collection's indexes is pending", async () => {
+      await withRelease("v0.5.0", async ({ db, store }) => {
+        // The published release left a database with no `operation_claims` collection at
+        // all, so this is the ordinary case: one migration, creating one new collection's
+        // two indexes, and nothing else.
+        const before = await db.listCollections({ name: COLLECTION_NAMES.operationClaims }).toArray();
+        assert.equal(
+          before.length,
+          0,
+          "the v0.5.0 fixture already carries operation_claims, so it does not represent the published release",
+        );
+
+        const plan = await store.runMigrations({ dryRun: true });
+        assert.deepEqual(
+          plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id),
+          ["0004-paid-operation-claim-indexes"],
+          "the v0.5.0 upgrade is not exactly the one migration this cycle adds",
+        );
+        assert.deepEqual(plan.applied, [], "a dry run applied something");
+      });
+    });
+
+    test("v0.5.0 — the dry run changes nothing at all", async () => {
+      await withRelease("v0.5.0", async ({ db, store, fixture }) => {
+        const assessmentsBefore = await count(db, COLLECTION_NAMES.riskAssessments);
+
+        await store.runMigrations({ dryRun: true });
+
+        assert.equal(
+          await count(db, COLLECTION_NAMES.riskAssessments),
+          assessmentsBefore,
+          "a dry run changed the database",
+        );
+        assert.equal(
+          (await db
+            .collection(COLLECTION_NAMES.sessions)
+            .findOne({ sessionId: fixture.sessionId }))?.["focusLossCount"],
+          4,
+          "a dry run moved a counter",
+        );
+        const created = await db.listCollections({ name: COLLECTION_NAMES.operationClaims }).toArray();
+        assert.equal(created.length, 0, "a dry run created the claim collection");
+      });
+    });
+
+    test("v0.5.0 — migrating creates the claim collection with both of its indexes", async () => {
+      await withRelease("v0.5.0", async ({ db, store }) => {
+        const result = await store.runMigrations();
+        assert.deepEqual(result.applied, ["0004-paid-operation-claim-indexes"]);
+
+        const indexes = await db.collection(COLLECTION_NAMES.operationClaims).indexes();
+
+        // The mutual exclusion. Without it a retry of a paid route spends a second time
+        // and nothing in the request path reports it.
+        assert.ok(
+          indexes.some(
+            (index) =>
+              index.unique === true &&
+              index.key["routeFamily"] === 1 &&
+              index.key["keyHash"] === 1,
+          ),
+          "the unique (routeFamily, keyHash) claim index is missing after the upgrade, so " +
+            "the paid-operation claim is not exclusive",
+        );
+
+        // The retention bound. Losing it changes no answer, which is exactly why it needs
+        // its own assertion.
+        assert.ok(
+          indexes.some(
+            (index) => index.key["expiresAt"] === 1 && index.expireAfterSeconds === 0,
+          ),
+          "the expiresAt TTL index is missing after the upgrade, so operation_claims is unbounded",
+        );
+
+        // ── And the constraint actually works on the upgraded database ──
+        //
+        // An index in `getIndexes()` is a declaration. This exercises it, because the
+        // failure mode that matters is "the index exists but does not refuse the second
+        // insert", and only an insert can tell the two apart.
+        const claim = {
+          routeFamily: "scenarios",
+          keyHash: "upgrade-check",
+          fingerprint: "f",
+          fingerprintVersion: 1,
+          status: "pending",
+          claimId: "c1",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+          expiresAt: new Date(Date.now() + 86_400_000),
+        };
+        await db.collection(COLLECTION_NAMES.operationClaims).insertOne({ ...claim });
+        await assert.rejects(
+          () => db.collection(COLLECTION_NAMES.operationClaims).insertOne({ ...claim }),
+          "the upgraded database accepted two claims for one idempotency key, so a retry " +
+            "of a paid route would spend a second time",
+        );
+      });
+    });
+
+    test("v0.5.0 — re-running the upgrade is a no-op", async () => {
+      await withRelease("v0.5.0", async ({ db, store }) => {
+        await store.runMigrations();
+        const indexesAfterFirstRun = (await db
+          .collection(COLLECTION_NAMES.operationClaims)
+          .indexes()).length;
+
+        const second = await store.runMigrations();
+
+        assert.deepEqual(second.applied, [], "a second run applied something");
+        assert.deepEqual(
+          second.plan.filter((entry) => entry.state === "pending"),
+          [],
+          "a second run reported something pending",
+        );
+        assert.equal(
+          (await db.collection(COLLECTION_NAMES.operationClaims).indexes()).length,
+          indexesAfterFirstRun,
+          "a second run changed the claim collection's indexes",
+        );
+      });
+    });
+
+    test("v0.5.0 — the documented connect path upgrades in one step and is idempotent", async () => {
+      await withRelease("v0.5.0", async ({ db, databaseName }) => {
+        // What an operator actually does: start the services. `connect()` runs the
+        // migrations and then `ensureIndexes()`, and both apply the same shared index
+        // specification — which is the drift this asserts cannot happen, because a
+        // specification that disagreed would raise `IndexOptionsConflict` here.
+        const first = new MongoStore({ uri: REAL_MONGODB_URI, databaseName });
+        await assert.doesNotReject(
+          () => first.connect(),
+          "the documented connect path failed on a v0.5.0 database",
+        );
+        await first.disconnect();
+
+        const second = new MongoStore({ uri: REAL_MONGODB_URI, databaseName });
+        await assert.doesNotReject(
+          () => second.connect(),
+          "a second connect failed, so the two index declarations disagree",
+        );
+        await second.disconnect();
+
+        const ledger = await db
+          .collection(COLLECTION_NAMES.schemaMigrations)
+          .find({})
+          .toArray();
+        assert.deepEqual(
+          ledger.map((row) => String(row["migrationId"])).sort(),
+          [...KNOWN_MIGRATION_IDS].sort(),
+          "the ledger does not record every migration as applied",
         );
       });
     });

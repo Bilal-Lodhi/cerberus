@@ -26,6 +26,7 @@ import {
   readAppliedMigrations,
   runMigrations,
 } from "../../../packages/mcp-mongodb/src/migrations.js";
+import { OPERATION_CLAIM_INDEXES } from "../../../packages/mcp-mongodb/src/operation-claims.js";
 
 /** A document as it would come back from MongoDB. */
 function doc(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -184,6 +185,8 @@ interface FakeDb {
   sessionCountCalls: () => number;
   sessionUpdateCalls: () => number;
   ledgerIndexCalls: () => number;
+  /** Every index the claim migration created, in order, as `key -> options`. */
+  claimIndexCalls: () => Array<{ key: Record<string, number>; options: Record<string, unknown> }>;
 }
 
 /**
@@ -219,6 +222,10 @@ function fakeDb(options: {
   let sessionCountCalls = 0;
   let sessionUpdateCalls = 0;
   let ledgerIndexCalls = 0;
+  const claimIndexCalls: Array<{
+    key: Record<string, number>;
+    options: Record<string, unknown>;
+  }> = [];
 
   const microEvents = {
     aggregate() {
@@ -250,6 +257,18 @@ function fakeDb(options: {
     async updateMany() {
       sessionUpdateCalls++;
       return { modifiedCount: options.legacyFocusLossDocs ?? 0 };
+    },
+  };
+
+  // Migration 0004's whole job is to create two indexes, so this is the operation the fake
+  // must model — and it records the specification rather than merely counting calls,
+  // because "it created an index" and "it created the *right* index" are different
+  // claims. The mutual exclusion is a unique index on a specific pair; an index on the
+  // wrong pair would pass a call count and leave the claim non-exclusive.
+  const operationClaims = {
+    async createIndex(key: Record<string, number>, indexOptions: Record<string, unknown> = {}) {
+      claimIndexCalls.push({ key, options: indexOptions });
+      return Object.keys(key).join("_") + "_1";
     },
   };
 
@@ -292,6 +311,7 @@ function fakeDb(options: {
       if (name === "micro_events") return microEvents;
       if (name === "risk_assessments") return riskAssessments;
       if (name === "monitored_sessions") return monitoredSessions;
+      if (name === "operation_claims") return operationClaims;
       if (name === MIGRATIONS_COLLECTION) return schemaMigrations;
       throw new Error(`the fake Db has no collection named '${name}'`);
     },
@@ -307,6 +327,7 @@ function fakeDb(options: {
     sessionCountCalls: () => sessionCountCalls,
     sessionUpdateCalls: () => sessionUpdateCalls,
     ledgerIndexCalls: () => ledgerIndexCalls,
+    claimIndexCalls: () => claimIndexCalls,
   };
 }
 
@@ -331,6 +352,7 @@ const APPLIED_ALL = [
   "0001-dedupe-micro-event-identity",
   "0002-dedupe-risk-assessment-identity",
   "0003-rename-fullscreen-exit-to-focus-loss",
+  "0004-paid-operation-claim-indexes",
 ];
 
 describe("planMigrations", () => {
@@ -389,10 +411,11 @@ describe("runMigrations", () => {
 
     assert.deepEqual(result.applied, APPLIED_ALL);
     assert.deepEqual(deletedIdBatches, [["b"]]);
-    assert.equal(ledger.length, 3);
+    assert.equal(ledger.length, 4);
     assert.equal(ledger[0]["migrationId"], "0001-dedupe-micro-event-identity");
     assert.equal(ledger[1]["migrationId"], "0002-dedupe-risk-assessment-identity");
     assert.equal(ledger[2]["migrationId"], "0003-rename-fullscreen-exit-to-focus-loss");
+    assert.equal(ledger[3]["migrationId"], "0004-paid-operation-claim-indexes");
     assert.ok(ledger[0]["appliedAt"] instanceof Date);
   });
 
@@ -472,12 +495,15 @@ describe("runMigrations", () => {
     const result = await runMigrations(db);
 
     assert.deepEqual(result.applied, APPLIED_ALL);
-    assert.equal(ledger.length, 3);
+    assert.equal(ledger.length, APPLIED_ALL.length);
     assert.match(String(ledger[0]["detail"]), /no duplicate event identities found/);
     assert.match(
       String(ledger[1]["detail"]),
       /no duplicate risk-assessment identities found/,
     );
+    // A migration that rewrites no data still reports what it did, so the ledger is a
+    // complete account rather than one that silently skips the additions.
+    assert.match(String(ledger[3]["detail"]), /operation_claims carries/);
   });
 
   test("the risk-assessment identity migration removes duplicates, ignoring _generatedAt", async () => {
@@ -675,6 +701,67 @@ describe("runMigrations", () => {
     // The later migrations still applied, so one lost race does not abandon the run.
     assert.ok(result.applied.includes("0002-dedupe-risk-assessment-identity"));
     assert.ok(result.applied.includes("0003-rename-fullscreen-exit-to-focus-loss"));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// 0004 — the paid-operation claim collection
+// ═══════════════════════════════════════════════════════════════════
+
+describe("0004 — the paid-operation claim indexes", () => {
+  test("creates the unique claim index and the retention TTL index, and nothing else", async () => {
+    const { db, claimIndexCalls } = fakeDb();
+    await runMigrations(db);
+
+    const calls = claimIndexCalls();
+
+    // The mutual exclusion. Asserted as the exact specification rather than as a call
+    // count: an index on the wrong pair would satisfy "it created an index" and leave the
+    // claim non-exclusive, which is the failure this whole collection exists to prevent.
+    assert.deepEqual(
+      calls[0],
+      { key: { routeFamily: 1, keyHash: 1 }, options: { unique: true } },
+      "0004 did not create the unique (routeFamily, keyHash) index",
+    );
+
+    // The retention bound. `expireAfterSeconds: 0` means the deadline is the value of
+    // `expiresAt`, so the window is data and the index specification is a constant.
+    assert.deepEqual(
+      calls[1],
+      { key: { expiresAt: 1 }, options: { expireAfterSeconds: 0 } },
+      "0004 did not create the expiresAt TTL index",
+    );
+
+    assert.equal(calls.length, 2, "0004 created an index the claim does not use");
+  });
+
+  test("rewrites no data, so it cannot refuse on any database", async () => {
+    // The collection is new, so there is nothing to classify and nothing to delete. This
+    // is why the migration is safe on a v0.5.0 database of any size.
+    const migration = MIGRATIONS.find((entry) => entry.id === "0004-paid-operation-claim-indexes");
+    assert.ok(migration);
+    assert.equal(migration.rewritesData, false);
+  });
+
+  test("is the last migration, so it cannot run before the data it depends on", () => {
+    assert.equal(MIGRATIONS[MIGRATIONS.length - 1].id, "0004-paid-operation-claim-indexes");
+  });
+
+  test("the shared index specification matches what the migration applied", async () => {
+    // `MongoStore.ensureIndexes()` and this migration both create these indexes, and the
+    // second one to run fails with `IndexOptionsConflict` if the two specifications
+    // disagree. This asserts the shared list is the specification; the real-MongoDB tests
+    // (`migration-from-previous-release.test.ts` for the migration,
+    // `critical-indexes.test.ts` for the store) assert that both callers actually apply it.
+    assert.deepEqual(
+      OPERATION_CLAIM_INDEXES.map((entry) => ({ key: entry.key, options: entry.options })),
+      [
+        { key: { routeFamily: 1, keyHash: 1 }, options: { unique: true } },
+        { key: { expiresAt: 1 }, options: { expireAfterSeconds: 0 } },
+      ],
+      "the shared claim-index specification changed, so the migration and the store can now " +
+        "disagree and the second to run will fail",
+    );
   });
 });
 

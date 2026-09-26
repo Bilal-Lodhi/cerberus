@@ -13,6 +13,42 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **`operation_claims` — the durable claim collection for a paid operation, and the two
+  indexes that make it work.** One document per paid-operation attempt, keyed on
+  `(routeFamily, sha256(Idempotency-Key))`. The **unique** index on that pair is the whole
+  of the mutual exclusion: two API processes racing one `Idempotency-Key` both attempt the
+  insert, the index refuses the second, and the loser reads the winner's record instead of
+  calling the provider. The **TTL** index on `expiresAt` (with `expireAfterSeconds: 0`, so
+  the deadline is the record's data rather than the index's configuration) bounds the
+  collection, which holds one record per caller-supplied key. The specification is declared
+  **once** in `packages/mcp-mongodb/src/operation-claims.ts` and applied by both
+  `MongoStore.ensureIndexes()` and migration `0004`, because two declarations that drifted
+  would make the second to run fail with `IndexOptionsConflict`. The collection stores no
+  prompt, no question and no provider output — only a claim, a request fingerprint and the
+  response to replay.
+- **Migration `0004-paid-operation-claim-indexes`.** Creates the claim collection's two
+  indexes, so a database upgraded with `npm run migrate` alone already enforces the claim
+  rather than only gaining the ability to. It rewrites no data — the collection is new, so
+  there is nothing to repair and no way for it to refuse — which is what makes it safe on a
+  `v0.5.0` database of any size.
+- **The `v0.5.0` release shape in the upgrade fixture.** `apps/api/test/support/release-fixture.ts`
+  now describes the most recent published release, derived from its own release notes
+  ("**No schema migration ships with this release.**") rather than from the code. The
+  upgrade gate asserts that a `v0.5.0` database has exactly one migration pending, that a
+  dry run changes nothing at all, that migrating creates the collection with **both**
+  indexes, that the unique index actually **refuses** a second claim for one key, and that
+  the documented `connect()` path upgrades in one idempotent step.
+- **TTL indexes are now guarded the way unique indexes are.** `critical-indexes.json` gained
+  a `ttlIndexes` list, and `apps/api/test/release/critical-indexes.test.ts` asserts it
+  against a real store in **both** directions — every entry must exist, and the store must
+  not create a TTL index the list omits. `scripts/restore-cerberus.ps1` verifies both kinds
+  after every restore. A lost unique index accepts documents the product forbids; a lost TTL
+  index changes no answer at all, which is exactly why it is easy to overlook.
+- **The backup/restore drill exercises the claim constraint, not just its declaration.** The
+  fixture now seeds an `operation_claims` record and both critical indexes, and after
+  restoring, the drill inserts a **second** claim for the same idempotency key and asserts
+  the restored database refuses it. An index in `getIndexes()` is a declaration; only an
+  insert distinguishes "the index exists" from "the index refuses the second write".
 - **`docs/development/paid-operation-state-model.md` — the state machine for the two paid
   routes.** `POST /api/v1/scenarios` and `POST /api/v1/auditor/query` are traced step by
   step from the source: which steps spend money, which write anything durable, what the

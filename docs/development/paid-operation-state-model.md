@@ -480,7 +480,7 @@ from today except for where the claim sits inside the route.
 - Nothing about idempotency changes the limiter's per-process scope. §2.1 of
   [../operations/multi-replica.md](../operations/multi-replica.md) is unchanged.
 
-### 3.15 Storage, indexes and migration — *Design*
+### 3.15 Storage, indexes and migration — *Implemented*
 
 Collection `operation_claims`. One document per claim:
 
@@ -672,7 +672,7 @@ done?".
 
 | Capability | Status | Proof, once it lands |
 | --- | --- | --- |
-| `operation_claims` collection and its two indexes | **Design** | `MongoStore.ensureIndexes`, migration `0004`, `critical-indexes.json` |
+| `operation_claims` collection and its two indexes | **Implemented** | `operation-claims.ts` (one shared specification), `MongoStore.ensureIndexes`, migration `0004`, `critical-indexes.json`, `packages/mcp-mongodb/test/operation-claims.test.ts` |
 | `Idempotency-Key` validation and the `400` contract | **Design** | `idempotency-key.test.ts` |
 | Canonical, versioned request fingerprint | **Design** | `request-fingerprint.test.ts` |
 | Atomic claim, replay, conflict, in-progress | **Design** | `paid-operation-claim.test.ts` |
@@ -680,11 +680,13 @@ done?".
 | `/auditor/query` durable claim and replay | **Design** | `auditor-idempotency.test.ts` |
 | Two-process race and replay against real MongoDB | **Design** | `test/integration/multi-process-idempotency.test.ts` |
 | Stale-lease reclaim, failure injection | **Design** | `paid-operation-recovery.test.ts` |
-| Retention bound and TTL index | **Design** | `critical-indexes.test.ts`, `operation-claims.test.ts` |
-| Migration from a `v0.5.0` database | **Design** | `migration-from-previous-release.test.ts` |
+| Retention bound and TTL index | **Implemented** | `operation-claims.ts` (`expireAfterSeconds: 0` on `expiresAt`), migration `0004`, `critical-indexes.test.ts` (both directions, against a real store) |
+| Migration from a `v0.5.0` database | **Implemented** | `release-fixture.ts` (`v0.5.0` shape), `migration-from-previous-release.test.ts` |
 | Backup/restore covers the collection and both indexes | **Design** | `backup-restore-drill.mjs`, `restore-cerberus.ps1` |
 | Release harness and CI coverage | **Design** | `verify-release.mjs`, `.github/workflows/ci.yml` |
 
-**Nothing in the table above is implemented yet.** `idempotency-model.md` remains the
-accurate description of behaviour at `b2c0e00`: no key is read, no record is written, and
-a retry spends again.
+**The schema is in `main`; the protocol is not.** `operation_claims` exists, carries both
+of its indexes, is created by migration `0004` from the same specification the store uses,
+and is verified after a restore. No route reads or writes it yet, so at this point the
+collection is inert: a retry of either paid route still spends again, exactly as
+`idempotency-model.md` describes. §3.1 to §3.14 remain **Design**.

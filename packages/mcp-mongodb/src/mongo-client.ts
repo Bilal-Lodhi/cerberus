@@ -16,6 +16,7 @@ import {
   COLLECTION_NAMES,
   DEFAULT_DATABASE_NAME,
 } from "./tool-names.js";
+import { ensureOperationClaimIndexes } from "./operation-claims.js";
 import { runMigrations, type MigrationRunResult } from "./migrations.js";
 
 export interface MongoCollections {
@@ -25,6 +26,7 @@ export interface MongoCollections {
   riskAssessments: string;
   referenceDocuments: string;
   referenceCorpusMeta: string;
+  operationClaims: string;
 }
 
 export interface MongoConfig {
@@ -434,6 +436,22 @@ export class MongoStore {
     // indexed by its own id and by recency.
     await referenceDocuments.createIndex({ referenceId: 1 }, { unique: true });
     await referenceDocuments.createIndex({ updatedAt: -1 });
+
+    // ── The paid-operation claim ─────────────────────────────────────
+    //
+    // Two indexes, and neither is an optimisation. The unique index on
+    // `(routeFamily, keyHash)` **is** the mutual exclusion for a paid operation: two API
+    // processes racing one `Idempotency-Key` both attempt the insert, the index refuses
+    // the second, and the loser reads the winner's record instead of calling the
+    // provider. Without it, a retry after a lost response spends a second time and
+    // nothing says so. The TTL index on `expiresAt` bounds the collection, which holds a
+    // record per caller-supplied key and would otherwise grow with traffic forever.
+    //
+    // The specification lives in `operation-claims.ts` and is applied by migration `0004`
+    // as well as here, from that one list. A database is brought up to date by whichever
+    // runs first, and two declarations that drifted would make the second fail with
+    // `IndexOptionsConflict` — so the list is shared rather than repeated.
+    await ensureOperationClaimIndexes(this.collection("operationClaims"));
   }
 
   // ─── Threat Scenario Operations ────────────────────────────────
