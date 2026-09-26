@@ -8,7 +8,7 @@ Two scripts do that:
 
 | Script | What it does |
 | --- | --- |
-| `scripts/backup-cerberus.ps1` | Dumps the database, counts every collection, writes a manifest, and **fails if the dump is empty or any collection dumped to 0 bytes** |
+| `scripts/backup-cerberus.ps1` | Dumps the database, counts every collection, writes a manifest, and **fails if the dump is empty, if a collection that holds documents dumped to 0 bytes, or if a collection that holds documents produced no dump file at all** |
 | `scripts/restore-cerberus.ps1` | Restores into a target database, **refuses to clobber by accident**, and **compares the restored counts against the manifest** |
 
 Neither script is required to run Cerberus. They exist so that "we have backups"
@@ -202,3 +202,34 @@ docker exec cerberus-mongo mongosh cerberus_restore --quiet --eval 'db.dropDatab
 
 Step 3 matters: counts can match while the content is wrong, and reading one
 document back is what rules that out.
+
+## Why a 0-byte collection file is not a failure
+
+`mongodump` writes a **0-byte** `.bson` file for a collection that exists and holds zero
+documents. That is a complete, usable dump — but the script used to treat *any* 0-byte file
+as an incomplete backup, so `npm run backup` **failed on a perfectly healthy deployment**
+whose `risk_assessments` or `threat_scenarios` were still empty. That is every fresh
+deployment, until an analysis runs or a scenario is authored.
+
+The check is now **count-aware**, and it is stricter rather than looser:
+
+| Case | Before | Now |
+| --- | --- | --- |
+| A collection holds 0 documents and dumps to 0 bytes | **failed** (false positive) | ok |
+| A collection holds documents and dumps to 0 bytes | failed | **failed** |
+| A collection holds documents and produced no dump file at all | passed | **failed** |
+
+The document counts are read *before* the dump is judged, because file size alone cannot
+tell a legitimately empty collection from a failed one.
+
+**A second defect was found by running the drill.** The count script embedded a `"`, which
+Windows PowerShell 5.1 mangles when passing it to `docker exec`: mongosh received a
+truncated script, printed a `SyntaxError`, and the manifest recorded **0 documents for every
+collection** while the backup itself was fine. That is worse than no manifest at all — the
+restore compares the restored counts against the manifest, so an empty manifest makes that
+comparison **vacuous**, and a restore that brought back nothing would have been reported as
+verified.
+
+The count script no longer contains a quote (mongosh's `print` joins its arguments with a
+space, so none is needed), and the backup now **fails loudly if the count read produces
+nothing**, so no future variant of the same problem can produce a vacuous manifest.

@@ -91,20 +91,17 @@ else {
     throw 'mongodump is not on PATH and no -Container was given. Install the MongoDB database tools, or pass -Container <name>.'
 }
 
-# ── Verify the dump is real ──────────────────────────────────────────────────
-$bsonFiles = @(Get-ChildItem -Path $dump -Filter *.bson -File -ErrorAction SilentlyContinue)
-if ($bsonFiles.Count -eq 0) {
-    throw "The dump at $dump contains no .bson files. The backup is not usable."
-}
-
-$empty = @($bsonFiles | Where-Object { $_.Length -eq 0 })
-if ($empty.Count -gt 0) {
-    throw "These collections dumped to 0 bytes, which means the backup is incomplete: $($empty.Name -join ', ')"
-}
-
-# ── Record what it contains, so a restore can be checked against it ──────────
+# ── Read the real per-collection counts FIRST ────────────────────────────────
+#
+# These are read before the dump is judged, not after, because they are what tells a
+# legitimate empty-collection dump from a failed one. `mongodump` writes a **0-byte**
+# `.bson` file for a collection that exists and holds zero documents, and that is a
+# complete, usable backup. Judging on file size alone therefore failed a perfectly good
+# backup of any deployment whose `risk_assessments` or `threat_scenarios` were still
+# empty — which is every fresh deployment, until an analysis runs or a scenario is
+# authored. The operator was told the backup was incomplete when it was fine.
 $counts = [ordered]@{}
-$countScript = 'db.getCollectionNames().sort().forEach(n => print(n + " " + db.getCollection(n).countDocuments({})))'
+$countScript = 'db.getCollectionNames().sort().forEach(n => print(n, db.getCollection(n).countDocuments({})))'
 
 if ($localTools) {
     $raw = & mongosh "$Uri/$Database" --quiet --eval $countScript
@@ -120,6 +117,53 @@ foreach ($line in @($raw)) {
     }
 }
 
+# ── The count read must have produced something ──────────────────────────────
+#
+# A manifest with no counts is worse than no manifest: the restore compares the restored
+# counts against it, so an empty manifest makes that comparison vacuous and a restore that
+# brought back nothing would be reported as verified.
+#
+# That is not hypothetical. The count script embedded a `"`, which Windows PowerShell 5.1
+# mangles when passing it to `docker exec`; mongosh received a truncated script, printed a
+# SyntaxError, and the manifest recorded 0 documents while the backup itself was fine. The
+# script no longer contains a quote (mongosh's `print` joins its arguments with a space, so
+# none is needed), and this check makes any future variant of the same problem loud.
+if ($counts.Count -eq 0) {
+    throw "Could not read any collection counts from '$Database'. The manifest would be empty, which would make the restore's count comparison vacuous. mongosh said: $($raw -join ' | ')"
+}
+
+# ── Verify the dump is real ──────────────────────────────────────────────────
+$bsonFiles = @(Get-ChildItem -Path $dump -Filter *.bson -File -ErrorAction SilentlyContinue)
+if ($bsonFiles.Count -eq 0) {
+    throw "The dump at $dump contains no .bson files. The backup is not usable."
+}
+
+$dumpedNames = @($bsonFiles | ForEach-Object { $_.BaseName })
+
+# A collection that HOLDS documents must have dumped them. A 0-byte file for a collection
+# whose count is 0 is correct; a 0-byte file for one whose count is not 0 is the failure
+# this check exists to catch, and the file size alone cannot tell the two apart.
+$suspicious = @(
+    $bsonFiles |
+        Where-Object { $_.Length -eq 0 -and $counts.Contains($_.BaseName) -and $counts[$_.BaseName] -gt 0 } |
+        ForEach-Object { $_.Name }
+)
+if ($suspicious.Count -gt 0) {
+    throw "These collections hold documents but dumped to 0 bytes, which means the backup is incomplete: $($suspicious -join ', ')"
+}
+
+# A collection that holds documents must have produced a dump file at all. This is stricter
+# than the size check: a collection missing from the dump entirely would otherwise pass.
+$missing = @(
+    $counts.GetEnumerator() |
+        Where-Object { $_.Value -gt 0 -and $dumpedNames -notcontains $_.Key } |
+        ForEach-Object { $_.Key }
+)
+if ($missing.Count -gt 0) {
+    throw "These collections hold documents but produced no dump file at all, which means the backup is incomplete: $($missing -join ', ')"
+}
+
+# ── Record what it contains, so a restore can be checked against it ──────────
 $manifest = [ordered]@{
     takenAtUtc   = (Get-Date).ToUniversalTime().ToString('o')
     database     = $Database
