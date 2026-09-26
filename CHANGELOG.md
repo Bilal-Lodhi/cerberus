@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A per-component report for session deletion.** A deletion cascades over three domain
+  components — `session`, `telemetry`, `assessments` — and it can partly succeed. The
+  response now names what was removed and what was not, on success and on failure alike.
+- **`PARTIAL_DELETE`** (500) for a deletion that ran and only partly succeeded, with
+  `retrySafe: true`. Deliberately distinct from `SESSION_STORE_UNAVAILABLE` (503), which
+  means nothing was attempted: a client that treated the two alike would either retry an
+  operation that never ran, or fail to retry one that half-ran.
 - **`docs/development/read-model.md`** — the four surfaces that answer for one session, the
   three vocabularies (lifecycle status, review disposition, liveness) that must not be
   conflated, the shared durable reader, what must agree and what deliberately differs, and
@@ -79,6 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A partial deletion was reported as a complete one.** `deleteSession` ran the session
+  record, its telemetry and its assessments under one `Promise.all` and the tool reported
+  only the session document's `deletedCount`, so a failed telemetry removal was
+  indistinguishable from a clean delete. Worse, the session record was removed **first** —
+  and it is what identifies the telemetry, so a failure orphaned `micro_events` and
+  `risk_assessments` that no query could find. Each component is now attempted separately
+  and reported separately, and the session record is removed **last** so a partial failure
+  leaves the session identifiable and the deletion retryable.
 - **The review detail reported `flagged` under `status`,** while the review *list* reported
   `active` for the same session — and the console's review panel treated `flagged` as
   `locked`, so a session scoring 52 was displayed as **LOCKED** while the dashboard displayed

@@ -51,6 +51,7 @@ import {
   buildSessionCountsUpdate,
   compact,
   type SessionCountsUpdate,
+  type SessionDeletionReport,
 } from "../../../../packages/mcp-mongodb/src/mongo-client.js";
 import {
   ToolArgumentError,
@@ -168,9 +169,30 @@ export class McpStoreDouble {
 
   private readonly failures = new Map<string, SimulatedFailure>();
   private readonly matchers: Array<{ fragment: string; failure: SimulatedFailure }> = [];
+  private readonly deleteComponentFailures = new Set<string>();
   private connected = true;
 
   // ─── Failure injection ──────────────────────────────────────────────
+
+  /**
+   * Makes one **component** of the next session deletions raise.
+   *
+   * `deleteSession` removes the derived documents first and the session record last, and
+   * catches each component separately so it can report what happened. Provoking that
+   * per-component failure is not possible against a real MongoDB without an artificial
+   * cluster fault, so the injection lives here — and the real-MongoDB suite verifies the
+   * parts it can: that the report's counts are the documents that were actually there,
+   * and that a second delete is a clean no-op.
+   *
+   * Pass `"session"`, `"telemetry"` or `"assessments"`.
+   */
+  failDeleteComponent(component: string): void {
+    this.deleteComponentFailures.add(component);
+  }
+
+  clearDeleteComponentFailures(): void {
+    this.deleteComponentFailures.clear();
+  }
 
   /**
    * Makes every call to `tool` fail as a transport error.
@@ -310,11 +332,47 @@ export class McpStoreDouble {
     Object.assign(document, compact(update), { updatedAt: new Date() });
   }
 
-  async deleteSession(sessionId: string): Promise<boolean> {
-    const existed = this.sessions.delete(sessionId);
-    this.events.delete(sessionId);
-    this.assessments.delete(sessionId);
-    return existed;
+  /**
+   * The same order and the same per-component reporting as the real store: derived
+   * documents first, the session record last, each component caught on its own. See
+   * `MongoStore.deleteSession`.
+   */
+  async deleteSession(sessionId: string): Promise<SessionDeletionReport> {
+    const report: SessionDeletionReport = {
+      session: 0,
+      telemetry: 0,
+      assessments: 0,
+      failed: [],
+    };
+
+    for (const [component, map] of [
+      ["telemetry", this.events],
+      ["assessments", this.assessments],
+    ] as const) {
+      if (this.deleteComponentFailures.has(component)) {
+        report.failed.push(component);
+        continue;
+      }
+      // The number of documents, not the number of sessions: the real store reports
+      // `deletedCount` from a `deleteMany`.
+      const bucket = map.get(sessionId);
+      if (bucket) {
+        report[component] = bucket.length;
+        map.delete(sessionId);
+      }
+    }
+
+    // Only when every derived document is gone, so a partial failure leaves the session
+    // identifiable and the deletion retryable.
+    if (report.failed.length === 0) {
+      if (this.deleteComponentFailures.has("session")) {
+        report.failed.push("session");
+      } else if (this.sessions.delete(sessionId)) {
+        report.session = 1;
+      }
+    }
+
+    return report;
   }
 
   /** Newest first by `createdAt`, with the real projection applied. */

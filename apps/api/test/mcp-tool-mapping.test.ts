@@ -196,7 +196,12 @@ function fakeStore(): never {
     getThreatScenario: async () => null,
     createSession: async () => "ses-1",
     updateSession: async () => undefined,
-    deleteSession: async () => true,
+    deleteSession: async () => ({
+      session: 1,
+      telemetry: 0,
+      assessments: 0,
+      failed: [],
+    }),
     ingestMicroEvents: async (events: unknown[]) => events.length,
     storeRiskAssessment: async () => "doc-2",
     updateSessionCounts: async () => undefined,

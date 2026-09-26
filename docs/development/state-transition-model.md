@@ -176,6 +176,13 @@ both are empty after a restart.
 | Failure behaviour | If the durable delete fails, the cache is already cleared and the response is `200 success: true`. A restart recovers the session from MongoDB — an operator who deleted a session sees it come back. |
 | Concurrency | Delete racing ingest: the ingest may re-create the session through `ensureMongoSession` after the delete removed it, leaving orphaned `micro_events` for a session document that no longer exists (the events are written by `sessionId` with no referential check). |
 
+**This table is the historical record of the pre-boundary delete path.** The ordering,
+retry and failure rows describe what the code did *before* the boundary, which is why
+they read as defects. The current behaviour is in §4.1: durable-first, result-inspected,
+per-component, with `500 PARTIAL_DELETE` when it only partly ran and `503
+SESSION_STORE_UNAVAILABLE` with nothing attempted. See
+[../api-errors.md](../api-errors.md) §4.1.
+
 ### T8 — Terminal content update
 
 | | |

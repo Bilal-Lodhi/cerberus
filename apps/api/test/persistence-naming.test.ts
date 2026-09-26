@@ -271,10 +271,33 @@ describe("session creation status", () => {
 describe("session deletion cascades", () => {
   const source = readSource("mongo-client.ts");
 
-  test("deleteSession removes the session, its events and its assessments", () => {
+  test("deleteSession removes the session, its events and its assessments, derived first", () => {
     assert.match(source, /async deleteSession\(sessionId: string\)/);
-    assert.match(source, /microEvents"\)\.deleteMany\(\{ sessionId \}\)/);
-    assert.match(source, /riskAssessments"\)\.deleteMany\(\{ sessionId \}\)/);
+    // The domain component names, mapped to the collections they own.
+    assert.match(source, /\["telemetry", "microEvents"\]/);
+    assert.match(source, /\["assessments", "riskAssessments"\]/);
+
+    // ── The order is the load-bearing part ──
+    //
+    // The session document is what identifies its telemetry, so removing it first makes a
+    // partial failure unrecoverable: the events and assessments are orphaned, unfindable
+    // by any query. Both derived removals must come before it.
+    const body = source.slice(source.indexOf("async deleteSession"));
+    const telemetryAt = body.indexOf('"telemetry", "microEvents"');
+    const assessmentsAt = body.indexOf('"assessments", "riskAssessments"');
+    const sessionAt = body.indexOf('this.collection("sessions").deleteOne');
+
+    assert.ok(telemetryAt >= 0, "the telemetry component was not found");
+    assert.ok(assessmentsAt >= 0, "the assessments component was not found");
+    assert.ok(sessionAt >= 0, "the session document removal was not found");
+    assert.ok(
+      telemetryAt < sessionAt,
+      "telemetry must be removed before the session document, or a failure orphans it",
+    );
+    assert.ok(
+      assessmentsAt < sessionAt,
+      "assessments must be removed before the session document, or a failure orphans them",
+    );
   });
 
   test("terminate and delete are distinct operations", () => {

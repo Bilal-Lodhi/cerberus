@@ -303,6 +303,80 @@ if (REAL_MONGODB_URI) {
       });
     });
 
+    // ── Deletion, against real documents ────────────────────────────
+
+    test("a deletion reports the documents it actually removed, per component", async () => {
+      await withRealStack(
+        async ({ app, store }) => {
+          const sessionId = "flow-delete-report";
+
+          // A high-risk batch, so there is a durable assessment as well as telemetry.
+          await app.request("/api/v1/guardian/ingest", {
+            method: "POST",
+            headers: authorizedHeaders(),
+            body: JSON.stringify({ events: [largePaste(sessionId, "p1"), keystroke(sessionId, "k1", 100)] }),
+          });
+
+          const before = {
+            events: (await store.getSessionEvents(sessionId)).length,
+            assessments: (await store.getRiskAssessments(sessionId)).length,
+          };
+          assert.ok(before.events >= 2, "the fixture did not store telemetry");
+          assert.ok(before.assessments >= 1, "the fixture did not store an assessment");
+
+          const deleted = await app.request(`/api/v1/guardian/sessions/${sessionId}`, {
+            method: "DELETE",
+            headers: authorizedHeaders(),
+          });
+          assert.equal(deleted.status, 200);
+
+          const body = (await deleted.json()) as {
+            complete: boolean;
+            components: Record<string, { deleted: number }>;
+          };
+
+          assert.equal(body.complete, true);
+          // The counts are the documents that were actually there, read back from a real
+          // database rather than assumed from a single `deletedCount`.
+          assert.equal(body.components["session"].deleted, 1);
+          assert.equal(body.components["telemetry"].deleted, before.events);
+          assert.equal(body.components["assessments"].deleted, before.assessments);
+
+          assert.equal(await store.getSession(sessionId), null);
+          assert.deepEqual(await store.getSessionEvents(sessionId), []);
+          assert.deepEqual(await store.getRiskAssessments(sessionId), []);
+        },
+        { aiResponse: HIGH_RISK_AI },
+      );
+    });
+
+    test("a second deletion against real documents is a clean no-op", async () => {
+      await withRealStack(async ({ app }) => {
+        const sessionId = "flow-delete-twice";
+        await app.request("/api/v1/guardian/ingest", {
+          method: "POST",
+          headers: authorizedHeaders(),
+          body: JSON.stringify({ events: [keystroke(sessionId, "k1", 100)] }),
+        });
+
+        const first = await app.request(`/api/v1/guardian/sessions/${sessionId}`, {
+          method: "DELETE",
+          headers: authorizedHeaders(),
+        });
+        assert.equal(first.status, 200);
+
+        // Retrying is the documented remedy for a partial deletion, so a repeat has to be
+        // safe: it reports zeros and a not-found rather than failing or double-counting.
+        const second = await app.request(`/api/v1/guardian/sessions/${sessionId}`, {
+          method: "DELETE",
+          headers: authorizedHeaders(),
+        });
+        assert.equal(second.status, 404);
+        const body = (await second.json()) as { code: string };
+        assert.equal(body.code, "SESSION_NOT_FOUND");
+      });
+    });
+
     test("auto-lock writes its evidence before the status, and both survive a restart", async () => {
       await withRealStack(
         async ({ app, restart }) => {

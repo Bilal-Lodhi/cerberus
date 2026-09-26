@@ -366,6 +366,8 @@ export const LOG_EVENTS = {
   GUARDIAN_DELETE_COMPLETE: "guardian.delete.complete",
   /** A session delete did not reach the store. Nothing was changed. */
   GUARDIAN_DELETE_FAILURE: "guardian.delete.failure",
+  /** A session delete ran and only part of it succeeded. Retrying is safe. */
+  GUARDIAN_DELETE_PARTIAL: "guardian.delete.partial",
 
   // ── Scenario authoring (paid) ──────────────────────────────────
   /** The deterministic pre-filter's verdict. */

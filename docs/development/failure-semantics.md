@@ -306,7 +306,9 @@ decides the response.
 | The store does not answer | **`503 SESSION_STORE_UNAVAILABLE`, and nothing is changed** — not the durable state, not the caches. Clearing the caches would hide a session that is still durable, which is the divergence this ordering removes. |
 | Durable delete matched nothing, but a cache held the session | `200`. A session that only ever existed in memory is deleted from this process's point of view; there is nothing durable to remove. |
 | Durable delete matched nothing and no cache held it | `404`. |
-| `deleteOne` succeeds, the two `deleteMany` calls fail | **Open.** The session document is gone and its `micro_events` / `risk_assessments` are orphaned. `deleteSession` runs the three under `Promise.all`, and the MCP tool reports only the session's `deletedCount`, so a partial deletion is reported as a complete one. |
+| A **derived** component fails (telemetry or assessments) | **Closed.** `500 PARTIAL_DELETE` with `retrySafe: true`, `components` naming what was removed and `failedComponents` naming what was not. The session record is **not** attempted, so the session stays identifiable and the operation is retryable. The caches are left alone, because the session is still durable. |
+| The **session record** removal fails, after the derived documents are gone | **Closed.** `500 PARTIAL_DELETE`. Nothing is orphaned — the session record is still there and is what identifies the rest — and a retry removes it. |
+| Successful removals, after a later component fails | **Not rolled back and not re-reported.** A retry reports `0` for them. Rolling back a destructive operation that already ran is not possible, and reporting a successful removal as failed would be a second wrong answer on top of the first. |
 | Second call | `404` — not idempotent in its response code, though idempotent in effect. |
 
 ### O7 — Threat scenario authoring
@@ -385,17 +387,17 @@ not a documentation change.
    **Done** — §3.4.1 and §3.5. A failed assessment write now skips both later steps.
 5. **The events-write failure becomes visible in the response.** **Done** —
    `telemetryPersisted`, with the counts omitted rather than guessed at.
-6. **`delete` reports a durable failure rather than success.** **Done** for an
-   unreachable store (`503`, nothing changed). A *partial* deletion is still reported as
-   complete; that needs the MCP tool to report per-collection counts, and is open.
+6. **`delete` reports a durable failure rather than success.** **Done** — an unreachable
+   store is `503` with nothing changed, and a partial deletion is `500 PARTIAL_DELETE`
+   with per-component counts, so neither is reported as the other.
 7. **The assessment write becomes idempotent on `riskAssessmentId`.** **Done** — closes
    §3.6's duplicate-row window and makes the documented dedup layer 1 real. Migration
    0002 removes pre-existing duplicates; the contract suite verified the gap by
    *characterising* it and now verifies the fix, so neither could land silently.
-8. **A partial deletion is reported as complete.** Open. `deleteSession` removes the
-   session, its events and its assessments under one `Promise.all`, and the MCP tool
-   reports only the session's `deletedCount`. Fixing it needs the tool to report
-   per-collection counts.
+8. **A partial deletion is reported as complete.** **Closed.** `deleteSession` removes
+   each component separately, reports what it removed per component, and removes the
+   session record **last** so a partial failure leaves the session identifiable rather than
+   orphaning its telemetry. The route returns `500 PARTIAL_DELETE` with `retrySafe: true`.
 
 Not planned, and why:
 

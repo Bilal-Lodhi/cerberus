@@ -67,6 +67,7 @@ import {
 import {
   normalizeStatus,
   isMonitored,
+  SESSION_DELETION_CODES,
   SESSION_TRANSITION_CODES,
 } from "../services/session-status.js";
 import {
@@ -1448,23 +1449,54 @@ export function createGuardianRouter(
   /**
    * Permanently deletes a session and every document derived from it.
    *
+   * ── The order ─────────────────────────────────────────────────────────
+   *
    * The durable deletion is attempted **first** and its answer decides the response.
-   * Previously the caches were cleared first and the durable result was only consulted
-   * to compute `deleted`, so an unreachable store produced `200 success: true` for a
-   * session that was still there — and a restart brought it back. It also produced
-   * `404 "not found"` for a session that exists, which is a different wrong answer to
-   * the same failure.
+   * Previously the caches were cleared first and the durable result was only consulted to
+   * compute `deleted`, so an unreachable store produced `200 success: true` for a session
+   * that was still there — and a restart brought it back. It also produced `404 "not
+   * found"` for a session that exists, which is a different wrong answer to the same
+   * failure.
+   *
+   * ── The report ────────────────────────────────────────────────────────
+   *
+   * A deletion cascades over three domain components — the session record, its telemetry
+   * and its assessments — and it can **partly** succeed. That is a different fact from
+   * "the store did not answer", and the two used to be indistinguishable: the tool
+   * reported only the session document's count, so a failed telemetry removal was
+   * reported as a complete deletion.
+   *
+   * The response now names what was removed per component and what was not. A partial
+   * deletion is `500 PARTIAL_DELETE` with `retrySafe: true`; an unreachable store is
+   * `503 SESSION_STORE_UNAVAILABLE` with nothing attempted. A client that treated the two
+   * alike would either retry an operation that never ran, or fail to retry one that
+   * half-ran.
+   *
+   * ── Retry semantics ───────────────────────────────────────────────────
+   *
+   * Retrying is **safe and is the remedy**. The store removes the derived documents first
+   * and the session record last, so a partial failure leaves the session identifiable and
+   * nothing orphaned: a retry removes whatever remains and completes. Successful
+   * component removals are never undone or re-reported — the second attempt simply
+   * reports `0` for them.
+   *
+   * ── Nonexistent sessions ──────────────────────────────────────────────
+   *
+   * A delete that removed nothing durable and found nothing in memory is `404`. A delete
+   * that removed nothing durable but *did* find the session in memory is `200`: a session
+   * that only ever existed in this process is deleted from the process's point of view.
    */
   guardianRouter.delete("/sessions/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
     const requestId = currentRequestId();
 
-    const result = await callMcpTool<{ deleted?: boolean }>(
-      config,
-      MCP_TOOL_NAMES.DELETE_SESSION,
-      { sessionId },
-      { requestId, timeoutMs: MCP_TIMEOUT_MS },
-    );
+    const result = await callMcpTool<{
+      deleted?: boolean;
+      complete?: boolean;
+      partial?: boolean;
+      components?: Record<string, { deleted?: number }>;
+      failedComponents?: string[];
+    }>(config, MCP_TOOL_NAMES.DELETE_SESSION, { sessionId }, { requestId, timeoutMs: MCP_TIMEOUT_MS });
 
     if (!result.ok) {
       // Nothing can be claimed about the durable state, so nothing is claimed. The
@@ -1490,19 +1522,63 @@ export function createGuardianRouter(
       );
     }
 
-    // The durable delete succeeded, or matched nothing. Either way the caches must no
+    const failedComponents = Array.isArray(result.data?.failedComponents)
+      ? result.data!.failedComponents!.map(String)
+      : [];
+    const components = result.data?.components ?? {};
+
+    // ── A partial deletion is reported as partial ──
+    //
+    // The caches are deliberately **not** cleared: the store leaves the session record in
+    // place when a derived component failed, so this process's view of the session is
+    // still the truth. Clearing them would hide a session that is still durable.
+    if (failedComponents.length > 0) {
+      logger.error(LOG_EVENTS.GUARDIAN_DELETE_PARTIAL, {
+        sessionId,
+        dependency: "mcp",
+        classification: "partial",
+        removedTelemetry: components["telemetry"]?.deleted ?? 0,
+        removedAssessments: components["assessments"]?.deleted ?? 0,
+        removedSession: components["session"]?.deleted ?? 0,
+        failedComponents,
+      });
+
+      return c.json(
+        {
+          success: false,
+          error:
+            `The session was only partly deleted: ${failedComponents.join(", ")} ` +
+            "could not be removed. Retrying the delete is safe and will finish the job.",
+          code: SESSION_DELETION_CODES.PARTIAL_DELETE,
+          sessionId,
+          complete: false,
+          partial: true,
+          // Domain component names, never collection names: a collection rename must not
+          // be a breaking change to this contract.
+          components,
+          failedComponents,
+          retrySafe: true,
+          correlationId: requestId,
+        },
+        500,
+      );
+    }
+
+    // The durable delete completed, or matched nothing. Either way the caches must no
     // longer hold the session.
     const removedFromRegistry = activeSessions.delete(sessionId);
     const removedFromStore = sessionStore.delete(sessionId);
     const deletedDurably = result.data?.deleted === true;
+    const removedDerived =
+      (components["telemetry"]?.deleted ?? 0) + (components["assessments"]?.deleted ?? 0);
 
-    if (!deletedDurably && !removedFromRegistry && !removedFromStore) {
+    if (!deletedDurably && !removedFromRegistry && !removedFromStore && removedDerived === 0) {
       return c.json(
         {
           success: false,
           error: `Session '${sessionId}' not found`,
           code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
-          correlationId: currentRequestId(),
+          correlationId: requestId,
         },
         404,
       );
@@ -1513,8 +1589,24 @@ export function createGuardianRouter(
       durable: deletedDurably,
       removedFromRegistry,
       removedFromStore,
+      removedTelemetry: components["telemetry"]?.deleted ?? 0,
+      removedAssessments: components["assessments"]?.deleted ?? 0,
     });
-    return c.json({ success: true, sessionId, message: "Session permanently deleted" });
+
+    return c.json({
+      success: true,
+      sessionId,
+      message: "Session permanently deleted",
+      // The same shape a partial deletion reports, so a client reads one contract. A
+      // successful delete is simply the one where nothing failed.
+      complete: true,
+      partial: false,
+      components,
+      failedComponents: [],
+      // Whether the session record itself was removed. `false` means the session existed
+      // only in this process, or only its derived documents remained.
+      deletedDurably,
+    });
   });
 
   // ═══════════════════════════════════════════════════════════════

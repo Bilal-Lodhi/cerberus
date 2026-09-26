@@ -114,6 +114,39 @@ therefore visible on the review surface immediately, and on the live surfaces on
 transition reconciles the cache. That division is deliberate and is stated in
 `operability-model.md` §9.1.
 
+### 4.1 Session deletion
+
+A deletion cascades over three **domain components** — `session`, `telemetry`,
+`assessments` — and it can partly succeed. That is a different fact from "the store did
+not answer", and the two are reported differently.
+
+| Code | HTTP | Meaning | Client action |
+| --- | --- | --- | --- |
+| `PARTIAL_DELETE` | 500 | The deletion ran and only part of it succeeded. The body names the components that were removed (`components`) and the ones that were not (`failedComponents`). **Retrying is safe and is the remedy.** | Retry the same `DELETE`. The store removes the derived documents first and the session record last, so a retry finishes the job and nothing is orphaned. |
+| `SESSION_STORE_UNAVAILABLE` | 503 | The store did not answer, so **nothing was attempted**. | Retry with backoff. |
+| `SESSION_NOT_FOUND` | 404 | Nothing durable matched, and this process held nothing for the session either. | Treat as done. |
+
+**A complete deletion is `200` with the same shape**: `complete: true`, `partial: false`,
+`components` with the counts that were removed, `failedComponents: []`, and
+`deletedDurably`. One contract, so a client reads one response shape whether or not the
+deletion finished.
+
+**Why the two failure codes are distinct.** A client that treated `PARTIAL_DELETE` and
+`SESSION_STORE_UNAVAILABLE` alike would either retry an operation that never ran, or fail
+to retry one that half-ran. `PARTIAL_DELETE` is `500` rather than `503` for the same
+reason: `503` in this API means "a dependency did not answer and nothing was changed".
+
+**Component names are domain names, not collection names.** `telemetry` and `assessments`
+are what a caller reasons about; freezing `micro_events` and `risk_assessments` into a
+public response would make a collection rename a breaking change to this contract.
+
+**Retry semantics, precisely.** The store removes the derived documents first and the
+session document **last**, and skips the session document entirely when a derived removal
+failed. So a partial deletion leaves the session identifiable, and nothing is orphaned:
+the session record is what identifies its telemetry, and removing it first would leave
+documents no query could find. Successful component removals are never undone and never
+re-reported — a second attempt reports `0` for them.
+
 ## 5. Telemetry ingestion
 
 | Code | HTTP | Meaning | Client action |
@@ -122,6 +155,7 @@ transition reconciles the cache. That division is deliberate and is stated in
 | `MISSING_EVENT_ID` | 400 | An event has no non-empty `eventId`. `eventId` is the durable idempotency key, so an event without one cannot be deduplicated. | Fix the client. Every event needs one. |
 | `SESSION_STORE_UNAVAILABLE` | 503 | A `DELETE` could not reach the persistence layer, so **nothing was changed** | Retry with backoff. |
 | `SESSION_NOT_FOUND` | 404 | A `DELETE` matched no session, and the session was not in memory either | Treat as done. |
+| `PARTIAL_DELETE` | 500 | See §4.1. | Retry the `DELETE`. |
 
 A batch is **idempotent on `(sessionId, eventId)`**: re-sending it stores nothing new
 and does not inflate the counters. The response reports `acceptedCount` and
