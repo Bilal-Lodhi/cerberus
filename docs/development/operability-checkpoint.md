@@ -186,8 +186,8 @@ Not fixed, not hidden, and each with the reason it is accepted rather than close
 - [`console-smoke.md`](console-smoke.md) — the browser pass, what it automates and what only
   a human can judge.
 - [`../release/verification-harness.md`](../release/verification-harness.md) — the harness
-  and its sixteen steps.
+  and its seventeen steps.
 - [`../release/v0.4.0-release-notes.md`](../release/v0.4.0-release-notes.md) — the release
-  candidate. **Prepared, not published.**
+  notes, **published as a pre-release**.
 - [`../release/v0.4.0-checklist.md`](../release/v0.4.0-checklist.md) — the gates, with the
   result of each.

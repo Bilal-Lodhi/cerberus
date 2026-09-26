@@ -626,12 +626,13 @@ The four documents that carry the work:
   found.
 - [console-smoke.md](console-smoke.md) — the browser pass, what it automates and what only a
   human can judge.
-- [../release/verification-harness.md](../release/verification-harness.md) — the sixteen-step
-  non-publishing harness, and the four gates that are specific to a release.
+- [../release/verification-harness.md](../release/verification-harness.md) — the
+  seventeen-step non-publishing harness, and the four gates that are specific to a release.
 
-The release candidate is
-[release/v0.4.0-release-notes.md](../release/v0.4.0-release-notes.md), **prepared and not
-published**, with the gates and the steps that *are* publication in
+The release is published. The notes are
+[release/v0.4.0-release-notes.md](../release/v0.4.0-release-notes.md), and the gates that
+were run for it — including the ones that must be re-run rather than assumed — are recorded
+with their results in
 [release/v0.4.0-checklist.md](../release/v0.4.0-checklist.md).
 
 ### What the next cycle inherits

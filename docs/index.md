@@ -61,8 +61,8 @@ that must be re-run rather than assumed.
 | [release/v0.2.0-checklist.md](release/v0.2.0-checklist.md) | Maintainers | **Executed.** The gates run for `v0.2.0`, with the result of each recorded. |
 | [release/v0.3.0-release-notes.md](release/v0.3.0-release-notes.md) | Everyone | **Published 2026-09-26 as a GitHub pre-release.** The theme, the observable changes, the upgrade path and — stated plainly — what the release does not claim. |
 | [release/v0.3.0-checklist.md](release/v0.3.0-checklist.md) | Maintainers | **Executed.** The gates worked through for `v0.3.0`, with the result of each recorded. |
-| [release/v0.4.0-release-notes.md](release/v0.4.0-release-notes.md) | Everyone | **Release candidate — prepared, not published.** The theme (operability and read integrity), the observable changes, the upgrade path, and ten things the release does not claim. |
-| [release/v0.4.0-checklist.md](release/v0.4.0-checklist.md) | Maintainers | **Prepared, not published.** The gates with the result of each, and the steps that *are* publication. |
+| [release/v0.4.0-release-notes.md](release/v0.4.0-release-notes.md) | Everyone | **Published 2026-09-26 as a GitHub pre-release.** The theme (operability and read integrity), the observable changes, the upgrade path, and ten things the release does not claim. |
+| [release/v0.4.0-checklist.md](release/v0.4.0-checklist.md) | Maintainers | **Executed.** The gates with the result of each, the attribution finding and its guard, and the publication steps. |
 | [release/community-health-checklist.md](release/community-health-checklist.md) | Maintainers | The community-health files and repository settings applied for the public launch. |
 | [release/repository-metadata.md](release/repository-metadata.md) | Maintainers | Repository description, topics and metadata drafts. |
 | [release/good-first-issues.md](release/good-first-issues.md) | Maintainers, new contributors | The issue candidates collected during the extraction, with the triage outcome for each. Filed candidates link to their GitHub issues. |
