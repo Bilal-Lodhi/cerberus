@@ -108,3 +108,19 @@ you need in order to diagnose the MCP token.
 - It does not protect a key that has already leaked. Ending the overlap removes
   access for anyone holding the old value, but anything that value already
   authorised has already happened.
+
+## More than one replica
+
+The procedure above is written for one process. With N, the ordering matters more, because a
+replica still holding the retired key rejects every request that lands on it — and it is
+indistinguishable from a correct replica until that happens.
+
+**The rule: the new key is everywhere before the old key is anywhere retired.** The per-replica
+check that makes that verifiable, and the MCP adapter's extra ordering constraint, are in
+[multi-replica.md](multi-replica.md) §3. The short version: roll every replica with both values
+set, confirm **each replica directly** — not through the load balancer — still accepts the old
+key, move the clients, then remove the previous value everywhere and roll again.
+
+There is no key generation id and no revocation list, and this does not add one: a replica cannot
+report which generation it is running without publishing information about the secret. The
+per-replica loop is the detection.

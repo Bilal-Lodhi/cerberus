@@ -90,3 +90,14 @@ If the deployment needs a single global ceiling, terminate at one process, or mo
 the limit to a shared store at the proxy. Cerberus does not ship a distributed
 limiter: doing so means adding Redis, which the OSS baseline deliberately does not
 require.
+
+**This is a decision, not an omission.** A Mongo-backed limiter was considered and rejected: it
+would put a write on the hot path of every request — including ingestion, which the console drives
+one event at a time — to enforce a bound that is explicitly a backstop. The full reasoning, and
+everything else that changes when you run more than one replica, is in
+[multi-replica.md](multi-replica.md) §2.1.
+
+The practical consequence is worth repeating here, because the proxy is where the fix goes: **the
+`ai` bucket bounds spend, and its ceiling multiplies by the replica count.** An operator running
+more than one replica should set the spend limit at the proxy rather than relying on
+`CERBERUS_AI_REQUESTS_PER_MINUTE`.
