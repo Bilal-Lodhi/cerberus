@@ -72,7 +72,7 @@ export const DEFAULT_DATABASE_NAME = "cerberus";
 
 /** MCP server identity reported to MCP clients. */
 export const MCP_SERVER_NAME = "cerberus-mcp-mongodb";
-export const MCP_SERVER_VERSION = "0.2.0";
+export const MCP_SERVER_VERSION = "0.3.0";
 
 /** Valid session status values accepted by `set_session_status`. */
 export const SESSION_STATUSES = ["active", "locked", "terminated"] as const;

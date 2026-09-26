@@ -7,16 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.3.0] - 2026-09-26
+
+**Published as a GitHub pre-release.** Annotated tag `v0.3.0`. No npm package, no
+container image and no hosted deployment were published, and nothing was marked stable or
+latest. This is an experimental research system and is not production ready — see
+[docs/release/v0.3.0-release-notes.md](docs/release/v0.3.0-release-notes.md) for what the
+release does and does not claim.
+
+The theme is **architecture integrity**: one canonical session transition boundary, explicit
+partial-failure semantics, truthful domain vocabulary, concurrency-safe state mutation,
+bounded read and write paths, and deterministic behaviour under retry, restart and
+dependency failure. Two migrations ship with it — `0002` and `0003`.
+
 ### Added
 
 - **The architecture-integrity checkpoint record** —
   `docs/development/architecture-integrity-checkpoint.md`. The merged changes, the twelve
   defects the cycle found and how each was found, the exit criteria with their state, the
   verification at the checkpoint, and what remains accepted.
-- **`docs/release/v0.3.0-release-notes.md` and `docs/release/v0.3.0-checklist.md`**, both
-  marked **draft**. The notes state the theme, the observable changes, the upgrade path and —
-  plainly — what the release does not claim. The checklist records the gates to work through
-  when authorising a release, every box unchecked. **Nothing is published.**
+- **`docs/release/v0.3.0-release-notes.md` and `docs/release/v0.3.0-checklist.md`.** The
+  notes state the theme, the observable changes, the upgrade path and — plainly — what the
+  release does not claim. The checklist records the gates to work through when authorising a
+  release, and the results of each for this one.
 - **`docs/api-errors.md` §11: the retry and idempotency contract for every mutation route.**
   Which are retry-safe, which are idempotent and on what key, which are non-idempotent, and
   which carry duplicate-spend risk. It records why **no `Idempotency-Key` was added** to the
@@ -262,6 +277,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing or renamed method is loud rather than surfacing only when a route happens
   to call it. One case deliberately **characterises** the missing assessment identity
   rather than endorsing it, so the fix cannot land silently.
+
+### Fixed
+
+- **Four console files were not `dart format` clean.** `flutter analyze` does not check
+  formatting, and the Flutter CI job ran `analyze` and `test` but not `format` — so a gate
+  the release checklist names was documented but never enforced. Four files reached a release
+  candidate unformatted, two of them edited through a tool that writes CRLF, which the
+  formatter rewrites. They are formatted, and **`dart format --output=none
+  --set-exit-if-changed .` is now a CI step**, so the documented gate is real rather than
+  aspirational. Formatting only: no semantic change.
 
 ### Changed
 

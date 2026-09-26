@@ -131,6 +131,7 @@ class BehavioralContext {
   final int totalFocusBreaches;
   final int totalCopyAttempts;
   final int totalDevToolsOpens;
+
   /// Focus-loss events — window blur and fullscreen exit together. Browser telemetry
   /// cannot distinguish the two, so this is what the counter has always measured.
   final int totalFocusLosses;
@@ -151,7 +152,8 @@ class BehavioralContext {
       totalDevToolsOpens: json['totalDevToolsOpens'] as int? ?? 0,
       // The truthful name, falling back to the deprecated one so an older server's
       // payload still reads. Same value under either name.
-      totalFocusLosses: json['totalFocusLosses'] as int? ??
+      totalFocusLosses:
+          json['totalFocusLosses'] as int? ??
           json['totalFullscreenExits'] as int? ??
           0,
     );

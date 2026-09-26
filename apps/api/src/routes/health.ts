@@ -21,7 +21,7 @@ import type { ReadinessProbe } from "../services/readiness.js";
 const healthRouter = new Hono();
 
 const SERVICE_NAME = "cerberus-api";
-const SERVICE_VERSION = "0.2.0";
+const SERVICE_VERSION = "0.3.0";
 
 /**
  * Capability discovery, as a `GET /health` response body.

@@ -212,7 +212,8 @@ void main() {
     final harness = build(
       handler: (_) async => json({
         'success': false,
-        'error': 'The reference corpus is full (200 documents). '
+        'error':
+            'The reference corpus is full (200 documents). '
             'Remove a document before adding another.',
         'code': 'REFERENCE_CORPUS_LIMIT_REACHED',
         'limit': 200,
@@ -352,31 +353,25 @@ void main() {
 
   // ── Failures ────────────────────────────────────────────────────────────────
 
-  test(
-    'an unavailable corpus surfaces as an error, not an exception',
-    () async {
-      final harness = build(
-        handler: (_) async => json({
-          'success': false,
-          'error': 'The reference corpus is currently unavailable.',
-          'code': 'REFERENCE_STORE_UNAVAILABLE',
-        }, 503),
-      );
+  test('an unavailable corpus surfaces as an error, not an exception', () async {
+    final harness = build(
+      handler: (_) async => json({
+        'success': false,
+        'error': 'The reference corpus is currently unavailable.',
+        'code': 'REFERENCE_STORE_UNAVAILABLE',
+      }, 503),
+    );
 
-      // Must complete rather than throw: the panel renders `error`, and an
-      // unhandled exception would take the whole dashboard down with it.
-      await harness.corpus.load();
+    // Must complete rather than throw: the panel renders `error`, and an
+    // unhandled exception would take the whole dashboard down with it.
+    await harness.corpus.load();
 
-      // The console words this itself, from `REFERENCE_STORE_UNAVAILABLE`, rather than
-      // echoing the API's prose — which `docs/api-errors.md` does not treat as a contract.
-      expect(
-        harness.corpus.error,
-        contains('reference corpus is unavailable'),
-      );
-      expect(harness.corpus.isLoading, isFalse);
-      expect(harness.corpus.documents, isEmpty);
-    },
-  );
+    // The console words this itself, from `REFERENCE_STORE_UNAVAILABLE`, rather than
+    // echoing the API's prose — which `docs/api-errors.md` does not treat as a contract.
+    expect(harness.corpus.error, contains('reference corpus is unavailable'));
+    expect(harness.corpus.isLoading, isFalse);
+    expect(harness.corpus.documents, isEmpty);
+  });
 
   test(
     'a rejected add shows the console text plus the server detail, and keeps the corpus',
