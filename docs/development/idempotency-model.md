@@ -7,6 +7,14 @@ it today, and the mechanism it will use.
 
 **Re-accepted for this phase, with the exposure stated exactly and a mechanism designed.**
 
+> **Superseded in the `v0.6.0` cycle.** The decision recorded here was for the
+> multi-writer phase. The owner has since authorized building the mechanism, and the
+> state machine — every step, every durable field, every failure path, and the exact
+> window in which the outcome is unknown — is now specified in
+> [paid-operation-state-model.md](paid-operation-state-model.md). This document is kept
+> as the record of *why* the exposure was re-accepted then, and for its §3 (what is
+> explicitly not claimed), which still holds.
+
 No durable idempotency record exists. The two routes that spend money execute the provider call
 on every request they accept, and a retry after a lost response therefore spends again.
 
@@ -19,7 +27,16 @@ worse than either. What follows is what it costs, what the mechanism is, and wha
 | Route | Paid calls per accepted request | Source |
 | --- | --- | --- |
 | `POST /api/v1/scenarios` | **2** — a semantic classifier, then matrix authoring | `routes/scenarios.ts`, `classifyScenarioRequest` and `authorThreatScenarioMatrix` |
-| `POST /api/v1/auditor/query` | **1** | `routes/auditor.ts` |
+| `POST /api/v1/auditor/query` | **2** — a pipeline-construction call, then a summarisation call | `routes/auditor.ts`, `toMongoPipeline` and `summarizeSessionRecords` |
+
+> **Correction, `v0.6.0` cycle.** This table recorded the auditor route as **one** paid
+> call. It is two. `toMongoPipeline` and `summarizeSessionRecords` are separate
+> completions, and a durable `list_sessions` read sits between them. The route's own
+> module comment and the `MAX_QUESTION_CHARS` docstring already said "sent to a paid
+> provider twice"; only this table disagreed with the code. The correction changes the
+> cost of a duplicate, not the shape of the mechanism — one route-level operation record
+> still covers one caller request. See
+> [paid-operation-state-model.md](paid-operation-state-model.md) §2.3.
 
 Neither route reads or writes anything keyed on the request. `grep -i idempot` over
 `apps/api/src` returns nothing.

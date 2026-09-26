@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+The theme is **durable idempotency and side-effect safety** for the two routes that spend
+money. **Nothing is published**: no tag, no npm package, no container image and no hosted
+deployment. This is an experimental research system and is not production ready.
+
+### Added
+
+- **`docs/development/paid-operation-state-model.md` — the state machine for the two paid
+  routes.** `POST /api/v1/scenarios` and `POST /api/v1/auditor/query` are traced step by
+  step from the source: which steps spend money, which write anything durable, what the
+  route returns, and what a retry of each means. The document specifies the target state
+  as well as the current one — the `Idempotency-Key` contract, the canonical versioned
+  request fingerprint, the atomic claim and the unique index that is the whole of the
+  mutual exclusion, replay and conflict semantics, the pending lease derived from the
+  provider timeout, stale-lease reclaim, retention and the TTL index, the redaction rules,
+  the measured query cost, and every failure path — and carries an implementation-status
+  table so it cannot describe the target as though it were shipped.
+
+### Fixed
+
+- **The recorded paid-call count for `POST /api/v1/auditor/query` was wrong.**
+  `docs/development/idempotency-model.md` and `docs/development/maturity-plan.md` both
+  recorded **one** paid call per accepted request. The route makes **two**:
+  `provider.toMongoPipeline` builds the pipeline and
+  `provider.summarizeSessionRecords` summarises the result, with a durable
+  `list_sessions` read between them. The route's own module comment and the
+  `MAX_QUESTION_CHARS` docstring already said "sent to a paid provider twice"; only the
+  two documents disagreed with the code. The correction is recorded rather than silently
+  patched, and both documents are corrected in place.
+
+### Changed
+
+- **`docs/development/idempotency-model.md` is marked superseded as a decision.** It
+  remains the record of why the duplicate-spend exposure was re-accepted during the
+  multi-writer phase, and of what is explicitly not claimed, but the mechanism it
+  designed is now specified as a state machine in
+  `docs/development/paid-operation-state-model.md`.
 
 ## [0.5.0] - 2026-09-26
 
