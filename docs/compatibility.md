@@ -111,6 +111,13 @@ A deprecation is not announced before its replacement exists. Because Cerberus i
 pre-1.0 (section 5), the gap between the two steps may be short; the requirement
 is that both are recorded, not that a fixed number of releases elapses.
 
+### 3.1 Recorded removals
+
+| Surface | Removed in | Replacement | Migration note |
+| --- | --- | --- | --- |
+| `cleared` as a session status value | `[Unreleased]` → `0.4.0` | Nothing. The value is not a state the system can reach: nothing ever produced it, `set_session_status` never accepted it, and the product's one "clear" behaviour — lifting a lock when the score falls — writes `active`. | **No action for a client.** `GET /api/v1/sessions/:id` never returns it, and the review detail's derived `flagged`/`investigating` values moved to a new `disposition` field in the same release. A **document** still holding `cleared` (or `flagged`, or `investigating`) is normalised to `active` on read and repaired to a real status on its next transition, so no data migration is required. |
+| `flagged` / `investigating` under `SessionReviewResponse.status` | `[Unreleased]` → `0.4.0` | `SessionReviewResponse.disposition` | A client that branched on `status` for `flagged` must read `disposition`. `status` now carries the lifecycle state on every surface, which is what made the old behaviour a read-integrity defect: the review detail reported `flagged` while the review list reported `active` for the same session, and the console displayed such a session as LOCKED. |
+
 ## 4. Versioning
 
 Cerberus follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html), with

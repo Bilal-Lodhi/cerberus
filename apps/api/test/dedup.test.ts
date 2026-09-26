@@ -17,7 +17,9 @@ import {
   computeKeystrokeMetrics,
   hasAnomalousKeystrokes,
   isMonitored,
+  LEGACY_DERIVED_SESSION_STATUSES,
   normalizeStatus,
+  PERSISTED_SESSION_STATUSES,
   type SessionState,
 } from "../src/routes/guardian.js";
 import type { MicroEvent } from "../src/types.js";
@@ -225,9 +227,26 @@ describe("collectPasteContents", () => {
 });
 
 describe("normalizeStatus", () => {
-  test("passes through valid statuses", () => {
+  test("passes through the statuses a document may carry", () => {
     assert.equal(normalizeStatus("locked"), "locked");
-    assert.equal(normalizeStatus("investigating"), "investigating");
+    assert.equal(normalizeStatus("active"), "active");
+    assert.equal(normalizeStatus("terminated"), "terminated");
+  });
+
+  test("maps every retired derived value onto active", () => {
+    // `cleared` had no producer at all, and the product's one clear behaviour — lifting a
+    // lock when the score falls — writes `active`, so that is what the historical value
+    // means. `flagged` and `investigating` are a review *disposition* now, reported under
+    // `SessionReviewResponse.disposition` and derived from the evidence rather than
+    // stored. A legacy document is therefore treated no differently from a corrupted one,
+    // which is the honest answer: neither is a state the system can reach.
+    for (const retired of LEGACY_DERIVED_SESSION_STATUSES) {
+      assert.equal(
+        normalizeStatus(retired),
+        "active",
+        `${retired} is still treated as a status`,
+      );
+    }
   });
 
   test("falls back to active for unknown statuses", () => {
@@ -253,10 +272,13 @@ describe("isMonitored", () => {
     assert.equal(isMonitored("terminated"), false);
   });
 
-  test("every other status is monitored", () => {
-    const monitored = ["active", "flagged", "investigating", "cleared", "locked"] as const;
-    for (const status of monitored) {
-      assert.equal(isMonitored(status), true, `${status} should be monitored`);
+  test("every status a document may carry is monitored except terminated", () => {
+    for (const status of PERSISTED_SESSION_STATUSES) {
+      assert.equal(
+        isMonitored(status),
+        status !== "terminated",
+        `${status} has the wrong monitored verdict`,
+      );
     }
   });
 });

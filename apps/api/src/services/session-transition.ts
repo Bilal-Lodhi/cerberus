@@ -321,7 +321,15 @@ export function createSessionTransitions(
     if (!loaded.ok) return loaded.refusal;
 
     const { document } = loaded;
+    const rawStatus = String(document["status"] ?? "active");
     const current = statusOf(document);
+    /**
+     * True when the document holds a value the store cannot hold.
+     *
+     * A legacy `flagged`, `cleared` or a hand-edited string. Such a document is
+     * **repaired** rather than refused: see the write below.
+     */
+    const isRepair = !isDurableStatus(rawStatus);
 
     // 2. Validate against the table, before writing anything.
     if (!isDurableStatus(current) || !rule.from.includes(current)) {
@@ -380,7 +388,21 @@ export function createSessionTransitions(
     const written = await callMcpTool<{ success?: boolean; updated?: boolean }>(
       config,
       MCP_TOOL_NAMES.SET_SESSION_STATUS,
-      { sessionId, status: rule.to, expectedStatuses: [...rule.from] },
+      {
+        sessionId,
+        status: rule.to,
+        // ── The one case with no predicate ──
+        //
+        // A document holding a value the store cannot hold — a legacy `flagged`,
+        // `cleared`, or a hand-edited string — has no meaningful predicate. No writer can
+        // produce that value, so there is no concurrent transition to detect, and
+        // predicating on the normalised value would match nothing and report
+        // `SESSION_CONFLICT` on every attempt: a session the operator could never
+        // terminate, reactivate or lock. The write is therefore unconditional, and it
+        // **repairs** the document to a real status. The repair is logged, because
+        // silently rewriting a field is worth knowing about.
+        ...(isRepair ? {} : { expectedStatuses: [...rule.from] }),
+      },
       { requestId, timeoutMs: MCP_TIMEOUT_MS },
     );
 
@@ -391,6 +413,18 @@ export function createSessionTransitions(
         sessionId,
         current,
       );
+    }
+
+    if (isRepair) {
+      logger.warn(LOG_EVENTS.SESSION_TRANSITION_REPAIRED, {
+        requestId,
+        action,
+        sessionId,
+        // The raw value, not the normalised one: it is the data-integrity signal.
+        storedStatus: rawStatus,
+        normalisedStatus: current,
+        status: rule.to,
+      });
     }
 
     if (written.data.updated !== true) {

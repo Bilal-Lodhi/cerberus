@@ -31,16 +31,16 @@ Three vocabularies are in play, and only the first is durable.
 | Vocabulary | Where | Values |
 | --- | --- | --- |
 | Durable session status | `SESSION_STATUSES`, `packages/mcp-mongodb/src/tool-names.ts` | `active`, `locked`, `terminated` |
-| Lifecycle status, as reported | `SessionReviewResponse["status"]`, `apps/api/src/types.ts` | `active`, `locked`, `terminated` on every surface. The union still lists `flagged`, `investigating` and `cleared` because a **legacy** document could hold one; nothing in this build writes them |
+| Lifecycle status, as reported | `SessionReviewResponse["status"]`, `ActiveSession["status"]`, `apps/api/src/types.ts` | `active`, `locked`, `terminated` on the review surfaces; `active`, `locked` in the live registry, because `terminated` is not monitored |
 | Review disposition | `SessionReviewResponse["disposition"]` | `flagged`, `investigating`, `none` — derived at read time by the review detail route and never persisted |
-| Live-registry status | `ActiveSession["status"]`, `apps/api/src/types.ts` | `active`, `flagged`, `investigating`, `cleared`, `locked` — **no `terminated`**; the derived members are legacy-only for the same reason |
+| Retired values | `LEGACY_DERIVED_SESSION_STATUSES`, `apps/api/src/services/session-status.ts` | `flagged`, `investigating`, `cleared` — **not statuses**. They are recognised only so that a legacy or hand-edited document is mapped onto `active` deliberately rather than by a fallback |
 
-`PERSISTED_SESSION_STATUSES` in `apps/api/src/services/session-status.ts` is the union of
-the first and last and is used by exactly one function, `normalizeStatus()`, which maps
-anything unrecognised onto `active`.
+`PERSISTED_SESSION_STATUSES` in `apps/api/src/services/session-status.ts` is what
+`normalizeStatus()` may return, and it is the **same set** as the durable one: a document
+carrying anything else is normalised to `active`.
 
-**Only `active`, `locked` and `terminated` are ever written.** `flagged`,
-`investigating` and `cleared` are never persisted:
+**Only `active`, `locked` and `terminated` are ever written.** The retired values are
+never persisted, and each has a precise reason:
 
 - `flagged` — derived at read time in `apps/api/src/routes/review.ts`: the newest
   assessment scored above 50. Reported as the **disposition**, not as the status. It used
@@ -50,13 +50,33 @@ anything unrecognised onto `active`.
   displayed it as active. See [read-model.md](read-model.md);
 - `investigating` — a `SUBMIT` event exists and the session is not flagged. Same: the
   disposition, not the status;
-- `cleared` — a member of the vocabulary with **no producer at all**. It is
-  reachable only if a document already contains it, which nothing writes. It is
-  accepted by `normalizeStatus()` and by the review response type, so it is a
-  legal value that the system cannot produce.
+- `cleared` — **removed from the vocabulary.** It had no producer at all: nothing wrote it,
+  `set_session_status` never accepted it, and the one "clear" behaviour the product has —
+  lifting a lock when the score falls — writes `active`. So the historical meaning of
+  `cleared` **is** `active`, and a document holding it normalises to `active`. It was not
+  given a producer, because doing that would mean inventing a human review workflow to
+  justify an enum. The removal is recorded in [compatibility.md](../compatibility.md) §3.
 
-`set_session_status` rejects anything outside `active | locked | terminated`, so a
-fourth persisted value is not merely discouraged — it is refused at the adapter.
+`set_session_status` rejects anything outside `active | locked | terminated`, so a fourth
+persisted value is not merely discouraged — it is refused at the adapter.
+
+### 1.1 A retired value is repaired, not refused
+
+A document holding a retired value is a data-integrity problem that the system **fixes**
+rather than reports forever.
+
+`normalizeStatus` maps it onto `active`, so every transition in the table is legal from it
+— and because the compare-and-set predicate is expressed in durable statuses, a predicate
+would match nothing and report `SESSION_CONFLICT` on every attempt. That would leave the
+session permanently un-terminable, un-reactivatable and un-lockable: a dead end the
+operator could not clear.
+
+So when the stored value is not a durable status, the status write is **unconditional** and
+the document is repaired to a real status. The repair is logged as
+`session.transition.repaired` with both the raw value and the normalised one, because
+silently rewriting a stored field is worth knowing about. `INVALID_SESSION_TRANSITION`
+therefore becomes unreachable for a normalised document; the branch is kept as a guard, and
+this is why it can no longer be provoked through a route.
 
 ## 2. The five mutation paths
 
@@ -349,7 +369,7 @@ a layering inversion and a runtime import cycle. `routes/guardian.ts` implements
 | --- | --- | --- |
 | `terminated` becomes a precondition on ingest | **done** — behaviour fix, no schema change | none |
 | Status writes gain a compare-and-set predicate | **done** — behaviour fix, no schema change | none |
-| `cleared` loses its membership of the persisted vocabulary, or gains a producer | vocabulary decision | none if no document holds it; a status rewrite if one does |
+| `cleared` loses its membership of the persisted vocabulary | **done** — removed, not given a producer. A legacy document holding it normalises to `active`, which is what the product's one clear behaviour writes | none needed: no document is known to hold it, and a document that does is repaired on its next transition (§1.1) |
 | `focusLossCount` replaces `fullscreenExitCount` as the truthful name | **field rename** — see [session-state-model.md](session-state-model.md) §5.7 | a migration if the durable field is renamed |
 
 Only the last is a schema change, and it is decided separately with the WINDOW_BLUR
@@ -357,11 +377,15 @@ work.
 
 ## 5. What remains open
 
-1. **Is `cleared` a status the system should be able to reach?** Nothing produces
-   it. Either a producer is added (an operator action that clears a session
-   without a low score) or it is removed from the vocabulary. Removing a value from
-   a published response type is a compatibility change, so this needs a decision
-   recorded in [compatibility.md](../compatibility.md).
+1. ~~**Is `cleared` a status the system should be able to reach?**~~ **Answered: no.**
+   Nothing produces it, `set_session_status` never accepted it, and the one "clear"
+   behaviour the product has — lifting a lock when the score falls — writes `active`. So
+   the historical meaning of `cleared` **is** `active`, and it was removed from the
+   vocabulary rather than given a producer. Giving it one would mean inventing a human
+   review workflow to justify an enum, which is not a decision this work can take on the
+   product's behalf. The removal is recorded in
+   [compatibility.md](../compatibility.md) §3, and a document that still holds the value
+   is normalised to `active` and repaired on its next transition (§1.1).
 2. **Should a deploy against an existing session id be a conflict rather than a
    silent no-op?** `$setOnInsert` makes it a no-op today (D6).
 3. **Should a session created by ingest get a live-registry entry?** It does not

@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`cleared` from the session status vocabulary.** It had no producer at all: nothing
+  wrote it, `set_session_status` never accepted it, and the one "clear" behaviour the
+  product has — lifting a lock when the score falls — writes `active`. So the historical
+  meaning of `cleared` **is** `active`, and a document holding it now normalises to
+  `active`. It was not given a producer, because doing that would mean inventing a human
+  review workflow to justify an enum. Recorded in `docs/compatibility.md` §3.1.
+- **`flagged` and `investigating` from every status union.** They are a review
+  **disposition**, reported under `SessionReviewResponse.disposition`, not lifecycle
+  states. `PERSISTED_SESSION_STATUSES` is now the same three values as the adapter's
+  `SESSION_STATUSES`, so a session document has exactly one status vocabulary.
+
 ### Added
 
+- **A repair path for a document holding a retired value.** `normalizeStatus` maps it onto
+  `active`, so every transition is legal from it — but a compare-and-set predicate
+  expressed in durable statuses would match nothing and report `SESSION_CONFLICT` on every
+  attempt, leaving the session permanently un-terminable. The status write is therefore
+  unconditional for such a document, and it repairs the field. Logged as
+  `session.transition.repaired` with both the raw and the normalised value, because
+  silently rewriting a stored field is worth knowing about.
 - **A per-component report for session deletion.** A deletion cascades over three domain
   components — `session`, `telemetry`, `assessments` — and it can partly succeed. The
   response now names what was removed and what was not, on success and on failure alike.

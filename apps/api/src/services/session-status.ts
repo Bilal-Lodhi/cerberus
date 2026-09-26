@@ -1,61 +1,87 @@
 /**
  * The session status vocabulary, in one place.
  *
- * Three vocabularies were previously in play across two modules, and only one of
- * them is durable. Naming them explicitly is what lets the transition boundary
- * validate a requested transition against what the store can actually hold, rather
- * than against everything a response type happens to accept.
+ * ── One vocabulary, not three ─────────────────────────────────────────
  *
- * ── The three vocabularies ────────────────────────────────────────────
+ * Three vocabularies were previously in play across two modules, and only one of them was
+ * durable. That is what let the same session report three different statuses from three
+ * surfaces, and what let an unreachable state (`cleared`) sit in the vocabulary for two
+ * releases.
  *
- *   DURABLE     what `monitored_sessions.status` may hold, and what
- *               `set_session_status` accepts. Three values.
+ * There is now **one** set of statuses a session document may carry: `active`, `locked`,
+ * `terminated`. {@link DURABLE_SESSION_STATUSES} is what the store accepts and
+ * {@link PERSISTED_SESSION_STATUSES} is what {@link normalizeStatus} may return; the two
+ * are the same set on purpose.
  *
- *   PERSISTED   the union of the durable set and the review-facing set. Used by
- *               {@link normalizeStatus} so a value that arrived from an older
- *               document, a hand-edited record or a future build is mapped onto
- *               something known rather than propagated.
+ * ── The derived values are not statuses ───────────────────────────────
  *
- *   DERIVED     `flagged`, `investigating` and `cleared` are computed at read time
- *               by the review router and are never written. They are members of
- *               PERSISTED because a document could already hold one, not because
- *               anything produces them: `cleared` has no producer at all.
+ * `flagged` and `investigating` are a **review disposition** — what the evidence suggests
+ * — and they live in `SessionReviewResponse.disposition`, derived at read time by
+ * `routes/review.ts`. Folding them into `status` made the review detail the only surface
+ * reporting a derived value under the lifecycle name, and made the console display a
+ * session as LOCKED when it was not. See
+ * [read-model.md](../../../docs/development/read-model.md).
+ *
+ * `cleared` was a member of this vocabulary with **no producer at all**: nothing wrote it,
+ * `set_session_status` never accepted it, and the one "clear" behaviour the product has —
+ * lifting a lock when the score falls — produces `active`. It was removed rather than
+ * given a producer, because giving it one would mean inventing a human review workflow to
+ * justify an enum. See {@link LEGACY_DERIVED_SESSION_STATUSES}.
  *
  * Extracted from `routes/guardian.ts` so the transition boundary can import the
- * vocabulary without importing a route module, which would be a layering inversion
- * and a runtime import cycle. `guardian.ts` re-exports every name below, so existing
- * importers are unaffected.
+ * vocabulary without importing a route module, which would be a layering inversion and a
+ * runtime import cycle. `guardian.ts` re-exports every name below, so existing importers
+ * are unaffected.
  */
 
 /**
- * Every status a session document may legitimately carry, durable or derived.
+ * Every status a session document may legitimately carry.
  *
- * This is the union of the review vocabulary and the MCP adapter's writable set, and
- * it deliberately includes `terminated`: a session recovered from MongoDB after a
- * restart must not be reported as live again.
+ * Deliberately includes `terminated`: a session recovered from MongoDB after a restart
+ * must not be reported as live again.
  */
-export const PERSISTED_SESSION_STATUSES = [
-  "active",
-  "flagged",
-  "investigating",
-  "cleared",
-  "locked",
-  "terminated",
-] as const;
+export const PERSISTED_SESSION_STATUSES = ["active", "locked", "terminated"] as const;
 
 export type PersistedSessionStatus = (typeof PERSISTED_SESSION_STATUSES)[number];
 
 /**
  * The statuses the durable store can hold.
  *
- * A strict subset of {@link PERSISTED_SESSION_STATUSES}: `set_session_status`
- * rejects anything else, so a transition boundary must validate against this set
- * rather than the wider one. A predicate that allowed `flagged` would be asking the
+ * The same set as {@link PERSISTED_SESSION_STATUSES}, named separately because the two
+ * answer different questions: one is "what may a document carry", the other is "what will
+ * `set_session_status` accept". A predicate that allowed anything else would be asking the
  * store to match a status it can never hold.
  */
 export const DURABLE_SESSION_STATUSES = ["active", "locked", "terminated"] as const;
 
 export type DurableSessionStatus = (typeof DURABLE_SESSION_STATUSES)[number];
+
+/**
+ * Values a **legacy or hand-edited** document may hold that are no longer statuses.
+ *
+ * Kept as a named list rather than deleted knowledge, so the mapping is explicit and
+ * testable rather than implied by a fallback. {@link normalizeStatus} maps every one of
+ * them onto `active`, which is:
+ *
+ *   - `cleared` — the state the product's one clear behaviour produces. Auto-clear lifts a
+ *     lock and writes `active`, so the historical meaning of `cleared` **is** `active`.
+ *     Nothing ever produced it and no document is known to hold it.
+ *   - `flagged`, `investigating` — a review disposition, not a lifecycle state. They are
+ *     reported under `SessionReviewResponse.disposition`, derived from the evidence, so
+ *     mapping the status onto `active` loses nothing that was ever persisted.
+ *
+ * `active` is also what an entirely unrecognised value maps to, so a legacy document is
+ * treated no differently from a corrupted one — which is the honest answer, since neither
+ * is a state the system can reach.
+ */
+export const LEGACY_DERIVED_SESSION_STATUSES = [
+  "flagged",
+  "investigating",
+  "cleared",
+] as const;
+
+export type LegacyDerivedSessionStatus =
+  (typeof LEGACY_DERIVED_SESSION_STATUSES)[number];
 
 /** True when `value` is a status the durable store can hold. */
 export function isDurableStatus(value: string): value is DurableSessionStatus {
