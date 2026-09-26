@@ -418,6 +418,57 @@ jobs:
       - name: Secret guards (release harness)
         run: npm run verify:secrets
 
+      # ── Attribution: no non-existent contributor ──
+      #
+      # Eleven commits merged after `v0.3.0` carry
+      # `Co-authored-by: Cerberus Maintainer <maintainer@cerberus.invalid>`, from a single
+      # cause: the branch commits were authored with a synthetic `user.email`, and the
+      # squash merge then recorded a co-author for an author that differed from the pull
+      # request's. `.invalid` is reserved by RFC 2606 and can never be deliverable, so the
+      # trailer names a contributor who does not exist.
+      #
+      # Public history is **not** rewritten to remove them — that is destructive, and the
+      # authorship on `main` is intact. This guard is therefore prospective: it checks only
+      # the commits being introduced, so it passes on a history that already contains one
+      # and fails on a new one.
+      - name: Resolve attribution-scan range
+        id: attribution_range
+        run: |
+          set -euo pipefail
+          zero="0000000000000000000000000000000000000000"
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+              ;;
+            push)
+              base="${{ github.event.before }}"
+              head="${{ github.event.after }}"
+              ;;
+            *)
+              base=""
+              head=""
+              ;;
+          esac
+
+          [ -n "$head" ] || head="$(git rev-parse HEAD)"
+
+          # A new branch or a force-push leaves no usable base. The tip is then the only
+          # commit checked, rather than the whole history: `--all` reports the recorded
+          # trailers and is the diagnostic, not the gate.
+          if [ -z "$base" ] || [ "$base" = "$zero" ] || [ "$base" = "$head" ]; then
+            range="$(git rev-parse "${head}")~1..$(git rev-parse "${head}")"
+          else
+            range="${base}..${head}"
+          fi
+
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+          echo "Attribution-scan range: $range"
+
+      - name: Reject synthetic attribution
+        run: npm run verify:attribution -- --range "${{ steps.attribution_range.outputs.range }}"
+
   # ───────────────────────────────────────────────────────────────────
   # Dependency advisories (advisory, non-blocking)
   # ───────────────────────────────────────────────────────────────────

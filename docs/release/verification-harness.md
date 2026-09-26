@@ -45,6 +45,7 @@ command.
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
 | `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
+| `attribution-guard` | No commit in range presents a non-existent contributor | `npm run verify:attribution` |
 | `backup-restore-drill` | A disposable database is backed up, restored into a scratch database, and verified — counts, uniqueness guarantees, and every refusal | `npm run verify:backup` |
 | `stale-image-defence` | The image is built `--no-cache` from this tree, and its recorded version and commit match the source and the running container | `npm run verify:image` |
 | `console-format` | The Flutter sources are formatted, which `flutter analyze` does not check | `npm run console:format` |
@@ -96,6 +97,42 @@ written:
 Release publication is a separate, human decision. See
 [release-checklist.md](release-checklist.md) and
 [v0.3.0-checklist.md](v0.3.0-checklist.md) for what that decision involves.
+
+## The attribution guard
+
+`npm run verify:attribution` rejects a commit that presents a **contributor who cannot
+exist**. It exists because eleven commits merged after `v0.3.0` carry
+`Co-authored-by: Cerberus Maintainer <maintainer@cerberus.invalid>` — the cause was a single
+one (the branch commits were authored with a synthetic `user.email`, and the squash merge
+recorded a co-author for an author that differed from the pull request's), and the scope is
+larger than a single commit. `.invalid` is reserved by RFC 2606 and can never be
+deliverable.
+
+It rejects, **in the commits being introduced only**:
+
+- an author, committer or trailer address in a **reserved domain** — `.invalid`, `.test`,
+  `.localhost`, and the RFC 2606 documentation domains;
+- an attribution trailer naming a **synthetic maintainer identity** by name, whatever its
+  domain.
+
+It **allows** legitimate external contributors, and bot identities such as
+`dependabot[bot]@users.noreply.github.com` — a guard that rejected real automation would be
+turned off within a week. A name that is genuinely needed goes in
+`scripts/release/attribution-allowlist.json` **with a reason**.
+
+**It is prospective by construction**, and that is the point:
+
+```bash
+npm run verify:attribution                     # origin/main..HEAD — passes on the current tree
+npm run verify:attribution -- --range A..B     # what CI passes
+npm run verify:attribution -- --all            # diagnostic: reports the eleven, exits non-zero
+```
+
+Public history is **not** rewritten to remove the eleven: rewriting a published branch is
+destructive, and the authorship on `main` is intact — every merge commit's author and
+committer are the real GitHub identity and `GitHub <noreply@github.com>`. Only the message
+trailers carry the synthetic name. The guard therefore passes on a history that already
+contains one, and fails on a new one.
 
 ## The two censuses
 

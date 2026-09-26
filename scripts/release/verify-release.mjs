@@ -123,6 +123,13 @@ const STEPS = [
     why: "no tracked credential file, no retired identity, and no publishing command here",
   },
   {
+    name: "attribution-guard",
+    script: "verify:attribution",
+    why:
+      "no commit in range presents a non-existent contributor — a reserved-domain address " +
+      "or a synthetic maintainer identity in an author, a committer or an attribution trailer",
+  },
+  {
     name: "backup-restore-drill",
     script: "verify:backup",
     why:
