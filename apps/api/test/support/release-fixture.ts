@@ -36,10 +36,14 @@ import type { Db } from "mongodb";
 import { COLLECTION_NAMES } from "../../../../packages/mcp-mongodb/src/tool-names.js";
 
 /** A release whose database shape this fixture can reproduce. */
-export type PublishedRelease = "v0.2.0" | "v0.3.0";
+export type PublishedRelease = "v0.2.0" | "v0.3.0" | "v0.5.0";
 
 /** Every release the fixture knows, oldest first. */
-export const PUBLISHED_RELEASES: readonly PublishedRelease[] = ["v0.2.0", "v0.3.0"];
+export const PUBLISHED_RELEASES: readonly PublishedRelease[] = [
+  "v0.2.0",
+  "v0.3.0",
+  "v0.5.0",
+];
 
 export interface ReleaseShape {
   /** Where the claim comes from, so a reader can check it rather than trust it. */
@@ -73,6 +77,22 @@ export const RELEASE_SHAPES: Record<PublishedRelease, ReleaseShape> = {
     source:
       "docs/release/v0.3.0-release-notes.md — \"Two migrations ship with it — `0002` and " +
       "`0003`\"",
+    appliedMigrations: [
+      "0001-dedupe-micro-event-identity",
+      "0002-dedupe-risk-assessment-identity",
+      "0003-rename-fullscreen-exit-to-focus-loss",
+    ],
+    focusLossField: "focusLossCount",
+    duplicateAssessmentIdentity: false,
+  },
+  "v0.5.0": {
+    // The most recent published release, and therefore the shape an upgrade actually
+    // starts from. Its release notes are explicit: "**No schema migration ships with this
+    // release.**" — so the ledger holds exactly the three migrations `v0.3.0` shipped, and
+    // the only thing this cycle adds to a database is `0004`.
+    source:
+      "docs/release/v0.5.0-release-notes.md — \"No schema migration ships with this " +
+      "release.\"",
     appliedMigrations: [
       "0001-dedupe-micro-event-identity",
       "0002-dedupe-risk-assessment-identity",

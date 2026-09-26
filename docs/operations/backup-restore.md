@@ -26,10 +26,18 @@ The whole `cerberus` database. Every collection is evidence:
 | `reference_documents` | The operator-managed similarity corpus |
 | `threat_scenarios` | Authored scenario matrices |
 | `schema_migrations` | The migration ledger |
+| `operation_claims` | One record per paid-operation attempt: the durable claim that makes a retry of `/scenarios` or `/auditor/query` safe, plus the response to replay |
 
 `schema_migrations` is small and easy to overlook. Restoring without it makes the
 migration runner think the database is fresh, so it will re-apply migrations that
 have already run. Include it.
+
+`operation_claims` is small and easy to overlook for the opposite reason: losing it does
+not lose evidence, it loses a **guarantee**. A restore without the unique index on
+`(routeFamily, keyHash)` accepts two claims for one idempotency key, so a retry after a
+lost response spends a second time and nothing in the request path reports it. A restore
+without the `expiresAt` TTL index leaves the collection unbounded. Both are checked after
+every restore; see [The critical indexes](#the-uniqueness-and-retention-guarantees-which-a-count-cannot-see).
 
 ## What is **not** backed up, and why
 
@@ -128,7 +136,7 @@ MCP adapter first (it owns migrations and indexes), then the API.
 Each of those is a way to lose data with one typo, so each is a stop rather than a
 prompt.
 
-### The uniqueness guarantees, which a count cannot see
+### The uniqueness and retention guarantees, which a count cannot see
 
 A count comparison is blind to indexes, and `mongorestore` exits 0 whether or not it
 restored them. A dump taken with `--noIndexRestore` — or restored that way — comes back
@@ -141,21 +149,36 @@ So the restore verifies the critical indexes too:
 ```
 [restore] verifying the critical indexes
   unique indexes found: micro_events:sessionId+eventId, monitored_sessions:sessionId, …
-  ok   monitored_sessions:sessionId
-  ok   micro_events:sessionId+eventId
-  ok   risk_assessments:riskAssessmentId
-  ok   reference_documents:referenceId
-  ok   threat_scenarios:metadata.matrixId
-  ok   schema_migrations:migrationId
+  TTL indexes found:    operation_claims:expiresAt:0
+  ok   unique monitored_sessions:sessionId
+  ok   unique micro_events:sessionId+eventId
+  ok   unique risk_assessments:riskAssessmentId
+  ok   unique reference_documents:referenceId
+  ok   unique threat_scenarios:metadata.matrixId
+  ok   unique schema_migrations:migrationId
+  ok   unique operation_claims:routeFamily+keyHash
+  ok   ttl    operation_claims:expiresAt:0
 
-[restore] OK - cerberus_restored matches the backup, with its uniqueness guarantees
+[restore] OK - cerberus_restored matches the backup, with its uniqueness and retention guarantees
 ```
+
+Two kinds of index are checked, and they fail differently. A lost **unique** index accepts
+documents the product forbids. A lost **TTL** index changes no answer at all — it just lets
+a collection grow without limit — which is precisely why it is easy to forget and why it
+is checked with the same both-directions rigour rather than trusted. `operation_claims` is
+the collection where that matters most: it holds one record per caller-supplied
+idempotency key.
 
 The list lives in `scripts/release/critical-indexes.json`, and
 `apps/api/test/release/critical-indexes.test.ts` asserts it against a real store in
 **both** directions: every entry must be an index the product creates, and the product
-must not create a unique index the list omits. Without the second direction a new
-uniqueness guarantee could be added and never verified after a restore.
+must not create a unique or TTL index the list omits. Without the second direction a new
+guarantee could be added and never verified after a restore.
+
+The **drill** goes one step further than comparing index lists: after restoring, it
+inserts a second claim for an idempotency key the backup already contained and asserts the
+restored database **refuses** it. An index in `getIndexes()` is a declaration; only an
+insert can tell "the index exists" from "the index refuses the second write".
 
 ## Why the verification step is the important one
 

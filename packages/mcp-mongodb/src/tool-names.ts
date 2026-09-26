@@ -65,6 +65,17 @@ export const COLLECTION_NAMES = {
    * so it self-heals rather than becoming a second source of truth that can drift.
    */
   referenceCorpusMeta: "reference_corpus_meta",
+  /**
+   * One claim document per paid-operation attempt, keyed on
+   * `(routeFamily, sha256(Idempotency-Key))`.
+   *
+   * This is the durable record that makes a retry of `POST /api/v1/scenarios` or
+   * `POST /api/v1/auditor/query` safe: a unique index on the key is the whole of the
+   * mutual exclusion, so two API processes racing one key cannot both spend. Not domain
+   * data — it holds no prompt, no question and no provider output, only a claim, a
+   * fingerprint and the response to replay.
+   */
+  operationClaims: "operation_claims",
 } as const;
 
 /** Default database name. */

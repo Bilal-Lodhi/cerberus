@@ -44,6 +44,7 @@ turn a repairable database into one that will not start.
 | `0001-dedupe-micro-event-identity` | yes | Removes `micro_events` documents that share `(sessionId, eventId)` **and are otherwise identical**, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
 | `0002-dedupe-risk-assessment-identity` | yes | Removes `risk_assessments` documents that share a `riskAssessmentId` **and are otherwise identical** apart from `_generatedAt`, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
 | `0003-rename-fullscreen-exit-to-focus-loss` | yes | Renames `monitored_sessions.fullscreenExitCount` to `focusLossCount`. The counter was incremented by **both** `WINDOW_BLUR` and `FULLSCREEN_EXIT`, so its name described one of the two events that produced it; browser telemetry cannot distinguish them, so it has always measured focus loss. A document holding both fields keeps the **larger**, so a mixed database cannot lose the higher total. **No score moves** — the penalty was gated on the counter being positive, never on which event produced it. |
+| `0004-paid-operation-claim-indexes` | no | Creates the two indexes `operation_claims` depends on: the unique `(routeFamily, keyHash)` index that is the whole of the mutual exclusion for a paid operation, and the `expiresAt` TTL index that bounds the collection. Rewrites nothing — the collection is new, so there is nothing to repair and no way for this migration to refuse, which is what makes it safe on a database of any size. It exists so that a database upgraded with `npm run migrate` alone already enforces the claim, and it creates the indexes from the same specification `MongoStore.ensureIndexes()` uses rather than repeating it. |
 The volatile field differs by collection — `_ingestedAt` for an event, `_generatedAt`
 for an assessment — so `classifyDuplicateGroups` takes the ignored fields as a
 parameter. Passing the wrong one turns a repairable duplicate into a refusal.
@@ -65,6 +66,8 @@ It is also a step in `npm run verify:release`; see
 | Collection | Holds |
 | --- | --- |
 | `schema_migrations` | The migration ledger: which migrations this database has had applied, when, and what each reported. |
+| `operation_claims` | One claim document per paid-operation attempt, keyed on `(routeFamily, sha256(Idempotency-Key))`. Created by migration `0004`, which also creates its two indexes. Not domain data: it holds no prompt, no question and no provider output — only a claim, a request fingerprint, and the response to replay. |
+| `reference_corpus_meta` | One counter document holding the reference-corpus size, so the corpus ceiling can be enforced with an atomic conditional `$inc` rather than a count-then-insert that races. Not domain data. |
 
 The ledger carries a **unique index on `migrationId`**, created by the runner before
 its first write. Two processes starting together both read a pending plan, and without
@@ -72,7 +75,6 @@ the index both would insert a row for the same migration — so the ledger would
 being a faithful account of what the database has been through. A duplicate-key error
 on the insert is treated as "another runner recorded this" rather than as a failure.
 See [operations/upgrade.md](operations/upgrade.md#running-migrations-from-more-than-one-process).
-| `reference_corpus_meta` | One counter document holding the reference-corpus size, so the corpus ceiling can be enforced with an atomic conditional `$inc` rather than a count-then-insert that races. Not domain data. |
 
 ---
 

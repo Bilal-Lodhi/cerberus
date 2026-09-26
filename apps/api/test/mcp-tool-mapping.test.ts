@@ -163,6 +163,11 @@ describe("server identity", () => {
       // can be enforced with an atomic conditional `$inc` rather than a count-then-insert
       // that races. Not domain data.
       referenceCorpusMeta: "reference_corpus_meta",
+      // One claim document per paid-operation attempt, keyed on
+      // (routeFamily, sha256(Idempotency-Key)). Not domain data: it holds no prompt, no
+      // question and no provider output — only a claim, a fingerprint, and the response to
+      // replay. The unique index on that pair is the whole of the mutual exclusion.
+      operationClaims: "operation_claims",
     });
   });
 

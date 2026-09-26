@@ -1,6 +1,6 @@
 {
   "//": [
-    "The uniqueness guarantees a restore must preserve.",
+    "The uniqueness and retention guarantees a restore must preserve.",
     "",
     "A count comparison cannot see these. `mongorestore` exits 0 whether or not it restored",
     "the indexes, and a dump taken with `--noIndexRestore`, or one restored that way, comes",
@@ -9,12 +9,19 @@
     "restore script verifies this list after every restore, and the backup/restore drill",
     "creates exactly this list so the verification has something to find.",
     "",
-    "These are the unique indexes `MongoStore.ensureIndexes()` creates. That is asserted in",
-    "both directions against a real MongoDB by",
+    "`indexes` are the unique indexes `MongoStore.ensureIndexes()` creates. That is asserted",
+    "in both directions against a real MongoDB by",
     "`apps/api/test/release/critical-indexes.test.ts`: every entry here must exist on the",
     "real store, and the store must not create a unique index this list omits. Without the",
     "second direction a new uniqueness guarantee could be added and never verified after a",
-    "restore."
+    "restore.",
+    "",
+    "`ttlIndexes` are the retention indexes, checked the same way in both directions. A",
+    "unique index and a TTL index fail differently: losing the first accepts documents the",
+    "product forbids, and losing the second lets a collection grow without limit. The TTL",
+    "index is the only thing bounding `operation_claims`, which holds one record per",
+    "caller-supplied idempotency key, so losing it is a storage-exhaustion path rather than",
+    "a correctness one — which is exactly why it is easy to forget and must be checked."
   ],
   "indexes": [
     {
@@ -46,6 +53,19 @@
       "collection": "schema_migrations",
       "key": { "migrationId": 1 },
       "why": "what stops two runners recording the same migration twice; without it a restored database could apply a migration twice"
+    },
+    {
+      "collection": "operation_claims",
+      "key": { "routeFamily": 1, "keyHash": 1 },
+      "why": "the mutual exclusion for a paid operation; without it two API processes both execute one idempotency key and both spend, and a retry after a lost response is charged twice"
+    }
+  ],
+  "ttlIndexes": [
+    {
+      "collection": "operation_claims",
+      "key": { "expiresAt": 1 },
+      "expireAfterSeconds": 0,
+      "why": "the only bound on the claim collection, which holds one record per caller-supplied idempotency key; without it the collection grows with traffic and never shrinks"
     }
   ]
 }

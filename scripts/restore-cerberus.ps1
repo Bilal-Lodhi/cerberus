@@ -170,18 +170,25 @@ if ($failures.Count -gt 0) {
     throw "Restore verification failed for: $($failures -join ', '). The restore is NOT usable."
 }
 
-# ── Verify the uniqueness guarantees the counts cannot see ───────────────────
+# ── Verify the uniqueness and retention guarantees the counts cannot see ─────
 #
 # A count comparison is blind to indexes. `mongorestore` exits 0 whether or not it restored
 # them, and a dump taken with `--noIndexRestore` — or restored that way — comes back with
 # every document and none of the constraints. Two rows sharing a `riskAssessmentId` would
 # then be accepted by a database that is supposed to forbid it, and nothing would say so
-# until the next write that should have been rejected.
+# until the next write that should have been rejected. Two paid-operation claims sharing an
+# idempotency key would be worse: the second one means a retry spent a second time.
+#
+# The TTL indexes are checked here for the same reason even though they fail differently: a
+# lost TTL index changes no answer at all, it just lets a collection grow without limit.
+# `operation_claims` holds one record per caller-supplied idempotency key, so it is the
+# collection where that matters most — and the one easiest to forget, because nothing
+# breaks visibly.
 #
 # The list lives in `scripts/release/critical-indexes.json`, shared with the
 # backup/restore drill and asserted against the real store by
 # `apps/api/test/release/critical-indexes.test.ts` — so it cannot name an index the product
-# does not create, and the product cannot add a unique index the list omits.
+# does not create, and the product cannot add one the list omits.
 Write-Host ''
 Write-Host '[restore] verifying the critical indexes'
 
@@ -189,22 +196,32 @@ $criticalPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'rel
 if (-not (Test-Path $criticalPath)) {
     throw "The critical-index list is missing at '$criticalPath', so a restore cannot be checked for its uniqueness guarantees. Restore it, or fix the path."
 }
-$critical = (Get-Content $criticalPath -Raw | ConvertFrom-Json).indexes
+$criticalDocument = Get-Content $criticalPath -Raw | ConvertFrom-Json
+$critical = $criticalDocument.indexes
+$criticalTtl = $criticalDocument.ttlIndexes
+if (-not $criticalTtl) { $criticalTtl = @() }
 
 # A here-string rather than a one-line nested-arrow expression: the one-liner had an
 # unbalanced parenthesis, which mongosh reported as `Unexpected token, expected ","` and
 # which the verification then read as "no unique indexes at all" — a false failure on a
 # perfectly good restore. Readable and balanced beats compact.
+#
+# Each line is prefixed with its kind, so one pass over the server's indexes answers both
+# questions and the parser cannot confuse a TTL index for a unique one.
 $indexScript = @'
 db.getCollectionNames().sort().forEach(function (collection) {
   db.getCollection(collection).getIndexes().forEach(function (index) {
-    if (index.unique) print(collection, Object.keys(index.key).join("+"));
+    var keys = Object.keys(index.key).join("+");
+    if (index.unique) print("unique", collection, keys);
+    if (typeof index.expireAfterSeconds === "number") {
+      print("ttl", collection, keys, index.expireAfterSeconds);
+    }
   });
 });
 '@
 
 
-function Get-UniqueIndexes([string]$database) {
+function Get-ServerIndexes([string]$database, [string]$kind, [int]$tokenCount) {
     $raw = if ($localTools) {
         & mongosh "$Uri/$database" --quiet --eval $indexScript
     }
@@ -218,15 +235,22 @@ function Get-UniqueIndexes([string]$database) {
     $result = @()
     foreach ($line in @($raw)) {
         $parts = "$line".Trim() -split '\s+'
-        if ($parts.Count -eq 2) { $result += "$($parts[0]):$($parts[1])" }
+        if ($parts.Count -eq $tokenCount -and $parts[0] -eq $kind) {
+            # Everything after the kind and the collection, joined with ':' — so a unique
+            # index is `<collection>:<keys>` and a TTL index is
+            # `<collection>:<keys>:<expireAfterSeconds>`.
+            $result += ($parts[1..($parts.Count - 1)] -join ':')
+        }
     }
     return $result
 }
 
-$restoredIndexes = @(Get-UniqueIndexes $TargetDatabase)
+$restoredIndexes = @(Get-ServerIndexes $TargetDatabase 'unique' 3)
+$restoredTtl = @(Get-ServerIndexes $TargetDatabase 'ttl' 4)
 $missingIndexes = @()
 
 Write-Host "  unique indexes found: $(if ($restoredIndexes.Count -gt 0) { $restoredIndexes -join ', ' } else { 'none' })"
+Write-Host "  TTL indexes found:    $(if ($restoredTtl.Count -gt 0) { $restoredTtl -join ', ' } else { 'none' })"
 
 foreach ($entry in $critical) {
     # The key pattern is compared as the driver reports it: field names in order, joined
@@ -235,15 +259,27 @@ foreach ($entry in $critical) {
     $needle = "$($entry.collection):$keys"
     $present = $restoredIndexes -contains $needle
     $mark = if ($present) { 'ok  ' } else { 'FAIL' }
-    Write-Host ("  {0} {1}" -f $mark, $needle)
+    Write-Host ("  {0} unique {1}" -f $mark, $needle)
+    if (-not $present) { $missingIndexes += $needle }
+}
+
+foreach ($entry in $criticalTtl) {
+    $keys = ($entry.key.PSObject.Properties.Name) -join '+'
+    # `$(...)` around each variable rather than `$name:` — PowerShell reads `$keys:` as a
+    # scope qualifier and fails with "':' was not followed by a valid variable name
+    # character", which is a parse error rather than a wrong string.
+    $needle = "$($entry.collection):$($keys):$($entry.expireAfterSeconds)"
+    $present = $restoredTtl -contains $needle
+    $mark = if ($present) { 'ok  ' } else { 'FAIL' }
+    Write-Host ("  {0} ttl    {1}" -f $mark, $needle)
     if (-not $present) { $missingIndexes += $needle }
 }
 
 if ($missingIndexes.Count -gt 0) {
-    throw "The restore is missing these unique indexes: $($missingIndexes -join ', '). Every document came back, but the constraints that keep them unique did not — the restored database would accept duplicates the product forbids. Do not use this restore."
+    throw "The restore is missing these indexes: $($missingIndexes -join ', '). Every document came back, but the constraints and retention bounds that keep them in order did not — a restored database would accept duplicates the product forbids, or grow without limit. Do not use this restore."
 }
 
 Write-Host ''
-Write-Host "[restore] OK - $TargetDatabase matches the backup, with its uniqueness guarantees"
+Write-Host "[restore] OK - $TargetDatabase matches the backup, with its uniqueness and retention guarantees"
 Write-Host "[restore] drop the scratch database when the drill is done:"
 Write-Host "          mongosh `"$Uri`" --eval 'db.getSiblingDB(`"$TargetDatabase`").dropDatabase()'"
