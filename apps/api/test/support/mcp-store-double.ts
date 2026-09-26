@@ -453,18 +453,42 @@ export class McpStoreDouble {
   }
 
   /**
-   * A plain insert, with no unique index on `riskAssessmentId`.
+   * An insert with a **durable identity** on `riskAssessmentId`.
    *
-   * This reproduces the real store rather than the intended behaviour: there is no
-   * idempotency here, so a re-analysis after a restart writes a second row for one
-   * incident. Recorded as open work in `docs/development/failure-semantics.md` §3.9.
+   * Models the real store: the unique index makes the write idempotent, and a second
+   * store of the same id reports `inserted: false` rather than creating a row. The
+   * pre-fix store was a plain insert with no index, so a re-analysis after a restart
+   * wrote a second row for one incident — which the contract suite used to
+   * *characterise* and now verifies is fixed.
+   *
+   * An assessment with no id gets one, matching the real store: there is no identity to
+   * be idempotent on.
    */
-  async storeRiskAssessment(report: StoredDocument): Promise<string> {
+  async storeRiskAssessment(
+    report: StoredDocument,
+  ): Promise<{ documentId: string; riskAssessmentId: string; inserted: boolean }> {
+    const supplied = report["riskAssessmentId"];
+    const riskAssessmentId =
+      typeof supplied === "string" && supplied.length > 0 ? supplied : randomUUID();
+
     const sessionId = String(report["sessionId"] ?? "");
     const list = this.assessments.get(sessionId) ?? [];
-    list.push({ ...report, _generatedAt: new Date() });
+
+    const existing = list.find(
+      (assessment) => assessment["riskAssessmentId"] === riskAssessmentId,
+    );
+    if (existing) {
+      return {
+        documentId: String(existing["_id"] ?? riskAssessmentId),
+        riskAssessmentId,
+        inserted: false,
+      };
+    }
+
+    const documentId = randomUUID();
+    list.push({ ...report, riskAssessmentId, _id: documentId, _generatedAt: new Date() });
     this.assessments.set(sessionId, list);
-    return randomUUID();
+    return { documentId, riskAssessmentId, inserted: true };
   }
 
   /** Newest first by `generatedAt`, which is `{ generatedAt: -1 }`. */

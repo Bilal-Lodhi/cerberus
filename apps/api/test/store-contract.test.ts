@@ -67,7 +67,11 @@ export interface ContractStore {
     options?: { limit?: number; eventType?: string },
   ): Promise<StoredDocument[]>;
   countEventType(sessionId: string, eventType: string): Promise<number>;
-  storeRiskAssessment(report: StoredDocument): Promise<string>;
+  storeRiskAssessment(report: StoredDocument): Promise<{
+    documentId: string;
+    riskAssessmentId: string;
+    inserted: boolean;
+  }>;
   getRiskAssessments(sessionId: string): Promise<StoredDocument[]>;
   getEmployeeRiskHistory(employeeId: string): Promise<StoredDocument[]>;
   storeReferenceDocument(document: StoredDocument): Promise<string>;
@@ -680,14 +684,13 @@ export const CONTRACT_CASES: ContractCase[] = [
     },
   },
   {
-    name: "storeRiskAssessment is not idempotent on riskAssessmentId (known gap)",
+    name: "storeRiskAssessment is idempotent on riskAssessmentId",
     async run(store, ids) {
-      // This characterises a defect rather than endorsing it. There is no unique
-      // index on `riskAssessmentId`, so a re-analysis after a restart writes a
-      // second row for one incident. Recorded in
-      // `docs/development/failure-semantics.md` §3.9. When durable assessment
-      // identity is implemented this assertion inverts — deliberately, so the fix
-      // cannot land silently.
+      // This used to characterise a defect: there was no unique index on
+      // `riskAssessmentId`, so a re-analysis after a restart wrote a second row for one
+      // incident — inflating `riskSummary` on the review surface and double-counting in
+      // the auditor. Migration 0002 removes pre-existing duplicates and the unique index
+      // makes the write idempotent.
       await store.createSession({
         sessionId: ids.sessionId,
         employeeId: ids.employeeId,
@@ -700,15 +703,57 @@ export const CONTRACT_CASES: ContractCase[] = [
         score: 50,
       });
 
-      await store.storeRiskAssessment(report);
-      await store.storeRiskAssessment(report);
+      const first = await store.storeRiskAssessment(report);
+      const second = await store.storeRiskAssessment(report);
+
+      assert.equal(first.inserted, true, "the first store did not insert");
+      assert.equal(
+        second.inserted,
+        false,
+        "storing the same riskAssessmentId twice inserted a second row",
+      );
+      assert.equal(
+        second.riskAssessmentId,
+        fixedId,
+        "the second store reported a different identity",
+      );
 
       const reports = await store.getRiskAssessments(ids.sessionId);
       assert.equal(
         reports.length,
-        2,
-        "assessment identity is now durable — update this characterisation and §3.9",
+        1,
+        "a retried assessment write created a duplicate row",
       );
+    },
+  },
+  {
+    name: "storeRiskAssessment gives an identity to an assessment that has none",
+    async run(store, ids) {
+      // There is nothing to be idempotent on, so a retry stores a second row — the
+      // pre-existing behaviour for that shape. `parseRiskAssessment` always supplies an
+      // id at the provider boundary, so this is a fallback rather than a supported
+      // shape.
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      const anonymous = riskReport(ids.sessionId, {
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        score: 30,
+      });
+      delete anonymous["riskAssessmentId"];
+
+      const first = await store.storeRiskAssessment(anonymous);
+      const second = await store.storeRiskAssessment(anonymous);
+
+      assert.ok(first.riskAssessmentId.length > 0, "no identity was assigned");
+      assert.notEqual(
+        first.riskAssessmentId,
+        second.riskAssessmentId,
+        "two anonymous assessments were given the same identity",
+      );
+      assert.equal((await store.getRiskAssessments(ids.sessionId)).length, 2);
     },
   },
   {

@@ -10,7 +10,8 @@
  * docs/migration.md.
  */
 
-import { MongoClient, Db, Collection, Document } from "mongodb";
+import { randomUUID } from "node:crypto";
+import { MongoClient, Db, Collection, Document, MongoServerError } from "mongodb";
 import {
   COLLECTION_NAMES,
   DEFAULT_DATABASE_NAME,
@@ -47,6 +48,17 @@ export function compact<T extends Record<string, unknown>>(input: T): Partial<T>
     if (value !== undefined) output[key as keyof T] = value as T[keyof T];
   }
   return output;
+}
+
+/**
+ * True when an error is MongoDB's duplicate-key violation (E11000).
+ *
+ * Classified from the driver's error code rather than by matching the message: a
+ * message is localised and version-dependent, and a substring test for "11000" would
+ * also match an unrelated number in an error's text.
+ */
+export function isDuplicateKeyError(error: unknown): boolean {
+  return error instanceof MongoServerError && error.code === 11000;
 }
 
 /** The aggregate counters one ingestion may update on a session document. */
@@ -217,6 +229,19 @@ export class MongoStore {
 
     await riskAssessments.createIndex({ sessionId: 1, generatedAt: -1 });
     await riskAssessments.createIndex({ employeeId: 1 });
+    // Durable identity for a risk assessment, so the one artefact of the paid analysis
+    // path is stored once per incident. Without it, `storeRiskAssessment` was a plain
+    // insert and a re-analysis after a restart wrote a second row for one incident —
+    // which the module header of `guardian.ts` wrongly described as an implemented
+    // dedup layer.
+    //
+    // Migration 0002 removes any pre-existing duplicates first, and runs before this
+    // (see `connect`), because this index cannot be created while they exist.
+    //
+    // `sparse` is deliberately NOT used: a document without a `riskAssessmentId` would
+    // be unconstrained by a sparse index, and `storeRiskAssessment` always writes one,
+    // so a missing id means a hand-written document rather than a supported shape.
+    await riskAssessments.createIndex({ riskAssessmentId: 1 }, { unique: true });
 
     await threatScenarios.createIndex({ "metadata.matrixId": 1 }, { unique: true });
     await threatScenarios.createIndex({ "metadata.generatedAt": -1 });
@@ -451,12 +476,64 @@ export class MongoStore {
 
   // ─── Risk Assessment Operations ────────────────────────────────
 
-  async storeRiskAssessment(report: Document): Promise<string> {
-    const result = await this.collection("riskAssessments").insertOne({
-      ...report,
-      _generatedAt: new Date(),
-    });
-    return result.insertedId.toString();
+  /**
+   * Stores one risk assessment, idempotently on `riskAssessmentId`.
+   *
+   * ── Why this is not a plain insert ────────────────────────────────────
+   *
+   * This is the only durable artefact of the paid analysis path. As a plain insert it
+   * had no identity, so a re-analysis after a restart wrote a **second row for one
+   * incident** — inflating `riskSummary` on the review surface and double-counting in
+   * the auditor. A unique index on `riskAssessmentId` makes the write idempotent, and
+   * migration 0002 removes any pre-existing duplicates so that index can exist.
+   *
+   * ── Why the duplicate-key path is handled rather than pre-checked ─────
+   *
+   * A read-then-insert would race: two concurrent analyses of the same incident would
+   * both see nothing and both insert. The unique index is the arbiter, so the insert is
+   * attempted and the duplicate-key error is the *expected* outcome of a retry. That
+   * is also why this cannot use `$setOnInsert` with an upsert the way
+   * `ingestMicroEvents` does: an upsert would silently succeed and the caller would not
+   * learn whether the evidence was already there.
+   *
+   * An assessment with no `riskAssessmentId` gets one. It has no identity to be
+   * idempotent on, so a retry stores a second row — which is the pre-existing behaviour
+   * for that shape, and `parseRiskAssessment` always supplies one at the provider
+   * boundary.
+   */
+  async storeRiskAssessment(
+    report: Document,
+  ): Promise<{ documentId: string; riskAssessmentId: string; inserted: boolean }> {
+    const supplied = report["riskAssessmentId"];
+    const riskAssessmentId =
+      typeof supplied === "string" && supplied.length > 0 ? supplied : randomUUID();
+
+    try {
+      const result = await this.collection("riskAssessments").insertOne({
+        ...report,
+        riskAssessmentId,
+        _generatedAt: new Date(),
+      });
+      return {
+        documentId: result.insertedId.toString(),
+        riskAssessmentId,
+        inserted: true,
+      };
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
+
+      // A retry, or a concurrent analysis of the same incident. The evidence already
+      // exists, so the existing document's id is returned.
+      const existing = await this.collection("riskAssessments").findOne(
+        { riskAssessmentId },
+        { projection: { _id: 1 } },
+      );
+      return {
+        documentId: existing?.["_id"]?.toString() ?? riskAssessmentId,
+        riskAssessmentId,
+        inserted: false,
+      };
+    }
   }
 
   async getRiskAssessments(sessionId: string): Promise<Document[]> {

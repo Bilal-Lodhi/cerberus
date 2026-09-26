@@ -21,17 +21,18 @@
  * full contract.
  *
  * Deduplication layers (all preserved from the original implementation):
- *   1. code-hash equality — skip re-analysis when the workspace is unchanged
- *   2. micro-event fingerprint ring (last 128) — suppress replayed batches
- *   3. behavioural counter blend — repeated violations amplify the score
+ *   1. durable assessment identity — `risk_assessments` carries a unique index on
+ *      `riskAssessmentId`, so re-analysing one incident stores one row
+ *   2. code-hash equality — skip re-analysis when the workspace is unchanged
+ *   3. micro-event fingerprint ring (last 128) — suppress replayed batches
+ *   4. behavioural counter blend — repeated violations amplify the score
  *
- * A fourth layer was previously described here as "identical risk-assessment id
- * from the AI provider". It was never implemented: nothing in the ingest path
- * compares `riskAssessmentId`, and `risk_assessments` has no unique index on it,
- * so a retry after a restart can write a second assessment row for one incident.
- * The claim is removed rather than left standing, and the durable idempotency it
- * described is tracked as open work in
- * `docs/development/failure-semantics.md` §3.9.
+ * Layer 1 was described here before it existed: nothing compared `riskAssessmentId`
+ * and there was no unique index on it, so a retry after a restart wrote a second
+ * assessment row for one incident. The claim was removed when that was found, and is
+ * restored now that the durable identity is real — migration 0002 removes any
+ * pre-existing duplicates and `MongoStore.storeRiskAssessment` is idempotent on the
+ * id. Layers 2, 3 and 4 are unchanged.
  */
 
 import { Hono } from "hono";

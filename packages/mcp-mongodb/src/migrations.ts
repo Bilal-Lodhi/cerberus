@@ -128,6 +128,16 @@ const EVENT_IDENTITY = ["sessionId", "eventId"] as const;
 /** Fields that legitimately differ between two copies of the same event. */
 const IGNORED_WHEN_COMPARING = ["_id", "_ingestedAt"] as const;
 
+/**
+ * Fields that legitimately differ between two copies of the same risk assessment.
+ *
+ * `_generatedAt` is when the copy *arrived*, not part of the assessment — the same
+ * distinction `_ingestedAt` draws for an event. Without this, a retry that wrote a
+ * second copy of one assessment would be classified as a *conflict* rather than a
+ * duplicate, and the migration would refuse on exactly the case it exists to repair.
+ */
+const IGNORED_FOR_ASSESSMENTS = ["_id", "_generatedAt"] as const;
+
 /** How many conflicting pairs to name in an error before truncating. */
 const MAX_REPORTED_CONFLICTS = 10;
 
@@ -151,16 +161,21 @@ export interface DuplicateClassification {
  * Pure, so the decision is testable without a database — and the decision is the
  * part worth testing, because it is the part that can destroy data.
  *
- * A group is removable only when **every** copy is identical apart from `_id` and
- * `_ingestedAt`. Copies that disagree are not duplicates: they are a data
+ * A group is removable only when **every** copy is identical apart from the fields in
+ * `ignoredFields`. Copies that disagree are not duplicates: they are a data
  * integrity problem with more than one possible resolution, and picking one would
  * destroy whichever version the operator wanted.
  *
  * The earliest `_id` is kept, chosen by sorted order rather than by the server's
  * return order, so the outcome does not depend on how the documents came back.
+ *
+ * `ignoredFields` is a parameter because the volatile field differs by collection:
+ * `_ingestedAt` for a micro-event, `_generatedAt` for a risk assessment. Passing the
+ * wrong one turns a repairable duplicate into a refusal.
  */
 export function classifyDuplicateGroups(
   groups: DuplicateGroup[],
+  ignoredFields: readonly string[] = IGNORED_WHEN_COMPARING,
 ): DuplicateClassification {
   const removableIds: unknown[] = [];
   const conflictKeys: string[] = [];
@@ -173,9 +188,9 @@ export function classifyDuplicateGroups(
     );
 
     const [first, ...rest] = sorted;
-    const firstShape = comparableShape(first);
+    const firstShape = comparableShape(first, ignoredFields);
 
-    if (rest.some((doc) => comparableShape(doc) !== firstShape)) {
+    if (rest.some((doc) => comparableShape(doc, ignoredFields) !== firstShape)) {
       conflictKeys.push(group.key);
       continue;
     }
@@ -274,9 +289,12 @@ const dedupeMicroEventIdentity: Migration = {
  * field is included, so a copy with a different payload is *not* treated as a
  * duplicate.
  */
-function comparableShape(doc: Record<string, unknown>): string {
+function comparableShape(
+  doc: Record<string, unknown>,
+  ignoredFields: readonly string[] = IGNORED_WHEN_COMPARING,
+): string {
   const entries = Object.entries(doc)
-    .filter(([key]) => !(IGNORED_WHEN_COMPARING as readonly string[]).includes(key))
+    .filter(([key]) => !ignoredFields.includes(key))
     .sort(([a], [b]) => a.localeCompare(b));
 
   return JSON.stringify(entries, (_key, value) => {
@@ -292,6 +310,110 @@ function comparableShape(doc: Record<string, unknown>): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 0002 — durable risk-assessment identity
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Removes duplicate `risk_assessments` documents that share a `riskAssessmentId`, so
+ * the unique identity index can be created.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────
+ *
+ * The risk assessment is the only durable artefact of the paid analysis path, and it
+ * had **no durable identity**: `storeRiskAssessment` was a plain insert with no unique
+ * index, so a re-analysis after a restart wrote a second row for one incident. The
+ * module header of `guardian.ts` described a dedup layer on the provider's assessment
+ * id that was never implemented.
+ *
+ * Adding the unique index without this migration would fail on any database that
+ * already holds such a duplicate — and the failure would be an opaque duplicate-key
+ * error at startup rather than a repair. Same ordering constraint as migration 0001:
+ * migrations run before indexes.
+ *
+ * ── What it will not do ───────────────────────────────────────────────
+ *
+ * Two copies that disagree on anything but `_id` and `_generatedAt` are not duplicates
+ * — they are a data-integrity problem with more than one possible resolution. The
+ * migration refuses and deletes nothing, naming the ids.
+ *
+ * Documents with no `riskAssessmentId` are skipped: they have no identity to
+ * deduplicate on, and the unique index does not constrain them.
+ */
+const dedupeRiskAssessmentIdentity: Migration = {
+  id: "0002-dedupe-risk-assessment-identity",
+  description:
+    "Remove duplicate risk_assessments documents that share a riskAssessmentId, so the unique identity index can be created.",
+  rewritesData: true,
+
+  async up({ db, log }) {
+    const collection = db.collection("risk_assessments");
+
+    const groups = await collection
+      .aggregate<{
+        _id: unknown;
+        count: number;
+        docs: Array<Record<string, unknown>>;
+      }>([
+        // Only documents that actually carry an identity. A missing, null or empty
+        // `riskAssessmentId` has nothing to deduplicate on, and the unique index does
+        // not constrain it — so such documents are skipped rather than grouped
+        // together under one null key.
+        { $match: { riskAssessmentId: { $exists: true, $type: "string", $ne: "" } } },
+        {
+          $group: {
+            _id: "$riskAssessmentId",
+            count: { $sum: 1 },
+            docs: { $push: "$$ROOT" },
+          },
+        },
+        { $match: { count: { $gt: 1 } } },
+      ])
+      .toArray();
+
+    if (groups.length === 0) {
+      log("no duplicate risk-assessment identities found");
+      return;
+    }
+
+    log(`${groups.length} duplicated risk-assessment identity/identities found`);
+
+    const { removableIds, conflictKeys } = classifyDuplicateGroups(
+      groups.map((group) => ({
+        key: String(group._id),
+        docs: group.docs,
+      })),
+      // The volatile field is `_generatedAt`, not `_ingestedAt`: a retry writes the
+      // same payload with a different arrival stamp, and that is a duplicate.
+      IGNORED_FOR_ASSESSMENTS,
+    );
+
+    // Fail before mutating: a conflict means this migration cannot complete, and a
+    // half-applied migration is worse than an unapplied one.
+    if (conflictKeys.length > 0) {
+      const shown = conflictKeys.slice(0, MAX_REPORTED_CONFLICTS);
+      const more = conflictKeys.length - shown.length;
+      throw new MigrationConflictError(
+        `${conflictKeys.length} riskAssessmentId value(s) have copies that are NOT ` +
+          `identical, so they are not duplicates and removing either version would ` +
+          `lose data. Resolve them before re-running this migration. ` +
+          `Ids: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}. ` +
+          `Nothing has been deleted.`,
+      );
+    }
+
+    if (removableIds.length === 0) {
+      log("no removable duplicates found");
+      return;
+    }
+
+    const result = await collection.deleteMany({
+      _id: { $in: removableIds as ObjectId[] },
+    });
+    log(`removed ${result.deletedCount} duplicate document(s)`);
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // Registry
 // ═══════════════════════════════════════════════════════════════════
 
@@ -302,7 +424,10 @@ function comparableShape(doc: Record<string, unknown>): string {
  * and the runner will refuse to proceed if the ledger names an id that is not
  * here.
  */
-export const MIGRATIONS: readonly Migration[] = [dedupeMicroEventIdentity];
+export const MIGRATIONS: readonly Migration[] = [
+  dedupeMicroEventIdentity,
+  dedupeRiskAssessmentIdentity,
+];
 
 // ═══════════════════════════════════════════════════════════════════
 // Runner
