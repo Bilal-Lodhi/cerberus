@@ -1,0 +1,123 @@
+name: Release verification
+
+# A manual, non-publishing drill.
+#
+# The release-critical checks are one command — `npm run verify:release` — and this
+# workflow runs exactly that, so the thing CI exercises is the thing an operator runs.
+# It exists as a separate workflow rather than as a job on every pull request because the
+# real-database suite and the container build are slow, and because a release drill is a
+# decision someone makes rather than something that happens on every push.
+#
+# What it deliberately does NOT do:
+#   - publish anything. No `npm publish`, no image push, no `gh release create`, no tag
+#     creation. `scripts/release/secret-guards.mjs` fails the run if a publishing command
+#     ever appears under `scripts/release/`.
+#   - require a paid AI call. The provider boundary is stubbed exactly as the test suite
+#     stubs it, so no OpenAI credential is needed and nothing is spent.
+#   - require a repository secret. The only credential-shaped value here is the
+#     disposable database's own connection string, which is a loopback address inside the
+#     runner.
+#   - upload secret-bearing artifacts. The only artifact is the harness's own log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_console:
+        description: "Skip the Flutter steps (analyze, format, test)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Release verification harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CERBERUS_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up Flutter
+        if: ${{ !inputs.skip_console }}
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install console dependencies
+        if: ${{ !inputs.skip_console }}
+        working-directory: apps/console
+        run: flutter pub get
+
+      # A service container that is not ready would make the real-database suite *skip*
+      # rather than fail, and the harness reports a skip as a skip — but a drill whose
+      # integration step silently skipped is a drill that verified less than it claims.
+      # This makes the precondition explicit and fatal.
+      - name: Confirm the database is reachable
+        run: |
+          node --input-type=module -e "
+            import { MongoClient } from 'mongodb';
+            const client = new MongoClient(process.env.CERBERUS_TEST_MONGODB_URI);
+            await client.connect();
+            const ok = (await client.db('admin').command({ ping: 1 })).ok;
+            await client.close();
+            if (ok !== 1) { console.error('MongoDB did not answer a ping'); process.exit(1); }
+            console.log('MongoDB is reachable');
+          "
+
+      - name: Run the harness
+        run: |
+          set -o pipefail
+          npm run verify:release 2>&1 | tee /tmp/release-verification.log
+
+      # A drill that skipped the real-database step would be green for the wrong reason.
+      # The harness counts skips separately and says so; this asserts that none happened,
+      # because the database above is the only precondition any step has.
+      - name: Assert nothing was skipped
+        run: |
+          if grep -qE '^  SKIPPED' /tmp/release-verification.log; then
+            echo "::error::a release-verification step was skipped despite every precondition being met"
+            grep -E '^  SKIPPED' /tmp/release-verification.log
+            exit 1
+          fi
+          echo "OK: no step was skipped."
+
+      # The log holds no credential: the connection string is a loopback address, and
+      # every configured secret is registered with the logger's redactor. Kept short
+      # because a failed drill is read from the job output, not from a download.
+      - name: Upload the harness log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-verification-log
+          path: /tmp/release-verification.log
+          retention-days: 7

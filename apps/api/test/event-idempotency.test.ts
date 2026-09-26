@@ -49,6 +49,14 @@ interface IngestBody {
   processedCount: number;
   acceptedCount?: number;
   duplicateCount?: number;
+  /**
+   * Whether the store answered for the events write.
+   *
+   * Part of the response since the ingest-ordering work: the counts above are omitted
+   * when it is `false`, because a number the server knows is unverified is worse than no
+   * number. The local interface was missing it, which the test-tree typecheck found.
+   */
+  telemetryPersisted?: boolean;
 }
 
 describe("durable event idempotency", () => {

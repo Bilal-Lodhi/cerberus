@@ -328,6 +328,12 @@ build, typecheck and test commands (`npm run build`, `npm run typecheck`,
 `npm test`) and the expectations for a change. For anything security-relevant,
 follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
+Maintainers: `npm run verify:release` runs every release-critical check in one
+command — build, typecheck, the test tree's typecheck, both test runs, the docs
+checker, the version and configuration censuses, the secret guards, and the Flutter
+analyze/format/test trio. It **never publishes anything**. See
+[docs/release/verification-harness.md](docs/release/verification-harness.md).
+
 ## Roadmap
 
 Everything below is **not implemented**. It is listed so that the gap between

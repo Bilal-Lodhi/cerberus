@@ -52,6 +52,19 @@ jobs:
       - name: Documentation links and anchors
         run: npm run check:docs
 
+      # The two censuses are deterministic and cheap, and they catch drift that no other
+      # job can see: a version declaration that disagrees with `package.json`, or an
+      # environment variable that the code reads and the documentation does not describe.
+      - name: Version census
+        run: npm run verify:version
+
+      - name: Configuration census
+        run: npm run verify:config
+
+      # The test tree, which `npm run typecheck` deliberately excludes.
+      - name: Typecheck the test tree
+        run: npm run typecheck:tests
+
       - name: Verify compiled entrypoints exist
         run: |
           test -f apps/api/dist/index.js
@@ -357,10 +370,16 @@ jobs:
       # source or configuration.
       #
       # The historical names are referenced on purpose in the migration
-      # documentation, in negative tests that assert those names are gone, and
-      # in this workflow (which necessarily contains the pattern itself). Those
-      # locations are excluded here rather than deleted: the migration history
-      # is legitimate documentation, not leakage.
+      # documentation, in negative tests that assert those names are gone, in
+      # this workflow (which necessarily contains the pattern itself), and in
+      # `scripts/release/secret-guards.mjs` (which re-implements this guard for the
+      # release harness, and therefore contains the same pattern). Those locations
+      # are excluded here rather than deleted: the migration history is
+      # legitimate documentation, not leakage.
+      #
+      # Excluding the release harness does not drop the check: the "Secret guards"
+      # step below runs `npm run verify:secrets`, which is that file. One
+      # implementation, executed in CI, rather than two copies of the pattern.
       - name: Reject unrelated deployment identity
         run: |
           set -euo pipefail
@@ -371,6 +390,7 @@ jobs:
             ':(exclude)docs/**'
             ':(exclude)**/test/**'
             ':(exclude)**/tests/**'
+            ':(exclude)scripts/release/**'
           )
 
           # Sanity-check the scan set so a wrong pathspec cannot silently
@@ -388,6 +408,15 @@ jobs:
           fi
 
           echo "OK: no retired deployment identifier outside documentation and tests."
+
+      # The release harness's own guards, run here so the retired-identity check keeps a
+      # single implementation. This step is what covers `scripts/release/**`, which the
+      # step above excludes because `secret-guards.mjs` necessarily contains the pattern
+      # it looks for.
+      #
+      # Cheap and deterministic: no network, no database, no paid call.
+      - name: Secret guards (release harness)
+        run: npm run verify:secrets
 
   # ───────────────────────────────────────────────────────────────────
   # Dependency advisories (advisory, non-blocking)

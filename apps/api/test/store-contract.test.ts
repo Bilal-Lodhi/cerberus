@@ -75,7 +75,11 @@ export interface ContractStore {
   }>;
   getRiskAssessments(sessionId: string): Promise<StoredDocument[]>;
   getEmployeeRiskHistory(employeeId: string): Promise<StoredDocument[]>;
-  storeReferenceDocument(document: StoredDocument): Promise<string>;
+  storeReferenceDocument(document: StoredDocument): Promise<{
+    referenceId: string;
+    created: boolean;
+    count: number;
+  }>;
   listReferenceDocuments(limit: number): Promise<StoredDocument[]>;
   deleteReferenceDocument(referenceId: string): Promise<boolean>;
   ping(): Promise<boolean>;

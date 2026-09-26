@@ -1,0 +1,43 @@
+{
+  "//": [
+    "Commands the release harness must never contain.",
+    "",
+    "This lives in a data file rather than in `secret-guards.mjs` for one reason: the",
+    "guard scans `scripts/release/**` for these commands, and a pattern written inside the",
+    "guard is a match for itself. The first version of the guard reported its own label",
+    "table and its own documentation as violations.",
+    "",
+    "A JSON file is also not scanned, which is safe rather than convenient: nothing in it",
+    "can execute, so a command named here cannot run.",
+    "",
+    "Each pattern allows up to a short run of punctuation between the words, because the",
+    "realistic form is `execFileSync(\"git\", [\"push\"])` — which a literal `git push`",
+    "pattern does not match. The first version of this guard missed exactly that."
+  ],
+  "commands": [
+    {
+      "label": "npm publish",
+      "pattern": "\\bnpm\\b[^\\n]{0,40}?\\bpublish\\b"
+    },
+    {
+      "label": "npm run publish",
+      "pattern": "\\bnpm\\b[^\\n]{0,40}?\\brun\\b[^\\n]{0,40}?\\bpublish\\b"
+    },
+    {
+      "label": "git push",
+      "pattern": "\\bgit\\b[^\\n]{0,40}?\\bpush\\b"
+    },
+    {
+      "label": "docker push",
+      "pattern": "\\bdocker\\b[^\\n]{0,40}?\\bpush\\b"
+    },
+    {
+      "label": "gh release create",
+      "pattern": "\\bgh\\b[^\\n]{0,60}?\\brelease\\b[^\\n]{0,40}?\\bcreate\\b"
+    },
+    {
+      "label": "gh release upload",
+      "pattern": "\\bgh\\b[^\\n]{0,60}?\\brelease\\b[^\\n]{0,40}?\\bupload\\b"
+    }
+  ]
+}

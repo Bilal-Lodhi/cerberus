@@ -63,7 +63,7 @@ interface DetailBody {
 
 function keystroke(
   sessionId: string,
-  eventId = randomUUID(),
+  eventId: string = randomUUID(),
   deltaMs = 120,
 ): Record<string, unknown> {
   return {

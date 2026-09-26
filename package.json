@@ -17,6 +17,7 @@
     "build:api": "npm run build --workspace @cerberus/api",
     "build:mcp": "npm run build --workspace @cerberus/mcp-mongodb",
     "typecheck": "npm run typecheck --workspace @cerberus/api && npm run typecheck --workspace @cerberus/mcp-mongodb",
+    "typecheck:tests": "npm run typecheck:tests --workspace @cerberus/api",
     "test": "npm run test --workspace @cerberus/api && npm run test --workspace @cerberus/mcp-mongodb",
     "migrate": "npm run migrate --workspace @cerberus/mcp-mongodb",
     "migrate:dry-run": "npm run migrate:dry-run --workspace @cerberus/mcp-mongodb",
@@ -26,6 +27,13 @@
     "backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup-cerberus.ps1",
     "restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-cerberus.ps1",
     "bench": "npm run build:api && node scripts/bench/run-bench.mjs",
-    "check:docs": "node scripts/check-docs.mjs"
+    "check:docs": "node scripts/check-docs.mjs",
+    "console:format": "cd apps/console && dart format --output=none --set-exit-if-changed .",
+    "console:analyze": "cd apps/console && flutter analyze",
+    "console:test": "cd apps/console && flutter test",
+    "verify:version": "node scripts/release/version-census.mjs",
+    "verify:config": "node scripts/release/config-census.mjs",
+    "verify:secrets": "node scripts/release/secret-guards.mjs",
+    "verify:release": "node scripts/release/verify-release.mjs"
   }
 }
