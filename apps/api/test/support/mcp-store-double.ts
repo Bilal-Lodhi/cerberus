@@ -47,12 +47,14 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  ReferenceCorpusLimitError,
   buildSessionCountsUpdate,
   compact,
   type SessionCountsUpdate,
 } from "../../../../packages/mcp-mongodb/src/mongo-client.js";
 import {
   ToolArgumentError,
+  ReferenceCorpusLimitToolError,
   createToolRegistry,
   type ToolHandler,
 } from "../../../../packages/mcp-mongodb/src/tools.js";
@@ -508,16 +510,57 @@ export class McpStoreDouble {
     return all.sort((a, b) => timeOf(b["generatedAt"]) - timeOf(a["generatedAt"]));
   }
 
-  /** Upserts on `referenceId`, preserving `createdAt` across an update. */
-  async storeReferenceDocument(document: StoredDocument): Promise<string> {
+  /**
+   * The corpus size.
+   *
+   * The real store keeps a counter document so the ceiling can be enforced atomically;
+   * this double derives it, because a single-threaded double cannot interleave two
+   * claims and a derived count is the same number. The *contract* the ceiling needs —
+   * exactly `limit` creates succeed under concurrency — is asserted against a real
+   * MongoDB, where the interleaving is real.
+   */
+  async referenceDocumentCount(): Promise<number> {
+    return this.referenceDocuments.size;
+  }
+
+  /** Recomputes and stores the corpus size. A no-op here; see above. */
+  async reconcileReferenceDocumentCount(): Promise<number> {
+    return this.referenceDocuments.size;
+  }
+
+  /**
+   * Upserts on `referenceId`, preserving `createdAt` across an update, and enforcing the
+   * corpus ceiling for a genuinely new document.
+   *
+   * An update never claims a slot: it does not grow the corpus.
+   */
+  async storeReferenceDocument(
+    document: StoredDocument,
+    options: { limit?: number } = {},
+  ): Promise<{ referenceId: string; created: boolean; count: number }> {
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
     const referenceId = String(document["referenceId"]);
     const existing = this.referenceDocuments.get(referenceId);
+
+    if (existing) {
+      this.referenceDocuments.set(referenceId, {
+        ...compact(document),
+        updatedAt: new Date(),
+        createdAt: existing["createdAt"] ?? new Date(),
+      });
+      return { referenceId, created: false, count: this.referenceDocuments.size };
+    }
+
+    if (this.referenceDocuments.size >= limit) {
+      throw new ReferenceCorpusLimitError(limit, this.referenceDocuments.size);
+    }
+
     this.referenceDocuments.set(referenceId, {
       ...compact(document),
       updatedAt: new Date(),
-      createdAt: existing?.["createdAt"] ?? new Date(),
+      createdAt: new Date(),
     });
-    return referenceId;
+    return { referenceId, created: true, count: this.referenceDocuments.size };
   }
 
   /** Newest first by `updatedAt`, capped at `limit`. */
@@ -592,12 +635,20 @@ export class McpStoreDouble {
         });
       } catch (error) {
         const isArgumentError = error instanceof ToolArgumentError;
+        // A full corpus is a conflict, not a failure. Mirrors `http-adapter.ts`: the
+        // double exists to be the same interface, and a route that handles the adapter's
+        // 409 must see a 409 here or the test passes against a double the adapter does not
+        // match.
+        const isLimitError = error instanceof ReferenceCorpusLimitToolError;
         return Response.json(
           {
             success: false,
             error: error instanceof Error ? error.message : "Internal MCP tool error",
+            ...(isLimitError
+              ? { code: error.code, limit: error.limit, count: error.count }
+              : {}),
           },
-          { status: isArgumentError ? 400 : 500 },
+          { status: isArgumentError ? 400 : isLimitError ? 409 : 500 },
         );
       }
     };

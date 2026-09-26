@@ -18,6 +18,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { MongoStore } from "./mongo-client.js";
 import { DEFAULT_MAX_BODY_BYTES, parseBody } from "./body.js";
 import {
+  ReferenceCorpusLimitToolError,
   ToolArgumentError,
   createToolRegistry,
   type ToolHandler,
@@ -239,11 +240,20 @@ async function handleRequest(
       });
     } catch (error) {
       const isArgumentError = error instanceof ToolArgumentError;
+      // A full corpus is a conflict, not a failure: the request was well-formed and the
+      // server understood it, but it cannot be satisfied in the corpus's current state.
+      // Mapping it to 400 or 500 would make it indistinguishable from a bad argument or
+      // an outage, and the API would surface it as "the corpus is unavailable".
+      const isLimitError = error instanceof ReferenceCorpusLimitToolError;
       const message =
         error instanceof Error ? error.message : "Internal MCP tool error";
-      sendJson(req, res, isArgumentError ? 400 : 500, {
+
+      sendJson(req, res, isArgumentError ? 400 : isLimitError ? 409 : 500, {
         success: false,
         error: message,
+        ...(isLimitError
+          ? { code: error.code, limit: error.limit, count: error.count }
+          : {}),
       });
     }
     return;

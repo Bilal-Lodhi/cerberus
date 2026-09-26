@@ -24,6 +24,7 @@ export interface MongoCollections {
   microEvents: string;
   riskAssessments: string;
   referenceDocuments: string;
+  referenceCorpusMeta: string;
 }
 
 export interface MongoConfig {
@@ -33,6 +34,27 @@ export interface MongoConfig {
 }
 
 export const DEFAULT_COLLECTIONS: MongoCollections = { ...COLLECTION_NAMES };
+
+/**
+ * Thrown when a new reference document would take the corpus past its ceiling.
+ *
+ * The corpus is read in full on every risk analysis, so its size is a bound on the work
+ * one analysis does as well as on storage. Before this existed the ceiling was a *read*
+ * ceiling only: a 201st document was stored and then never returned by a list, so it was
+ * invisible rather than refused.
+ */
+export class ReferenceCorpusLimitError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly count: number,
+  ) {
+    super(
+      `The reference corpus is full: ${count} of ${limit} documents. ` +
+        `Remove a document before adding another.`,
+    );
+    this.name = "ReferenceCorpusLimitError";
+  }
+}
 
 /**
  * Drops keys whose value is `undefined`.
@@ -148,6 +170,26 @@ export class MongoStore {
     await this.runMigrations();
 
     await this.ensureIndexes();
+
+    // Reconcile the corpus counter at startup, where nothing can be in flight.
+    //
+    // This is the one place the counter may be *lowered*, and it is the only safe one: a
+    // claim that incremented the counter but did not insert its document — a process that
+    // died between the two — would otherwise leak that reservation for the life of the
+    // database, permanently shrinking the corpus by one. With no in-flight claims there
+    // is nothing to discard.
+    //
+    // A failure here must not stop the process: the counter is an optimisation for
+    // atomicity, and the claim path raises it when it has fallen behind. A store that
+    // cannot reconcile still enforces the ceiling correctly, only less efficiently.
+    try {
+      await this.reconcileReferenceDocumentCount();
+    } catch (error) {
+      console.warn(
+        `[mongo] reference-corpus counter could not be reconciled at startup: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -553,23 +595,176 @@ export class MongoStore {
   // ─── Reference Corpus Operations ───────────────────────────────
 
   /**
-   * Upserts one operator-managed reference document.
+   * The `_id` of the corpus counter document.
    *
-   * Idempotent on `referenceId`, so re-submitting the same document updates it
-   * rather than creating a duplicate that would double-count in similarity
-   * scoring.
+   * A fixed id so there is exactly one, and so a conditional `$inc` on it is the single
+   * arbiter of the ceiling.
    */
-  async storeReferenceDocument(document: Document): Promise<string> {
+  private static readonly CORPUS_COUNTER_ID = "reference_documents";
+
+  /**
+   * The corpus size, from the counter.
+   *
+   * Reads the counter rather than counting the collection, and reconciles it first when
+   * it is absent — so a database that predates the counter, or one whose documents were
+   * written outside this store, is measured correctly rather than reported as empty.
+   */
+  async referenceDocumentCount(): Promise<number> {
+    const counters = this.collection("referenceCorpusMeta");
+    const existing = await counters.findOne({ _id: MongoStore.CORPUS_COUNTER_ID as never });
+    if (existing && typeof existing["count"] === "number") {
+      return existing["count"];
+    }
+    return this.reconcileReferenceDocumentCount();
+  }
+
+  /**
+   * Recomputes the corpus counter from the collection and writes it back.
+   *
+   * Sets the counter to the **exact** document count, which is only safe when no claim is
+   * outstanding — a claim that has incremented the counter but not yet inserted its
+   * document would be discarded, handing the same slot out twice. So this is called at
+   * `connect()` (where nothing is in flight) and by an operator, and never from the claim
+   * path. The claim path uses {@link raiseReferenceDocumentCount}, which cannot lower the
+   * counter.
+   */
+  async reconcileReferenceDocumentCount(): Promise<number> {
+    const count = await this.collection("referenceDocuments").countDocuments({});
+    await this.collection("referenceCorpusMeta").updateOne(
+      { _id: MongoStore.CORPUS_COUNTER_ID as never },
+      { $set: { count, updatedAt: new Date() } },
+      { upsert: true },
+    );
+    return count;
+  }
+
+  /**
+   * Raises the corpus counter to at least the real document count. **Never lowers it.**
+   *
+   * The counter is a count of *reservations*, not of documents: a claim increments it and
+   * the insert completes it, so between the two the counter is legitimately ahead of the
+   * collection. Lowering it to the document count in that window would discard the
+   * reservation and let the same slot be claimed twice — which is exactly the bug this
+   * method exists to avoid.
+   *
+   * Raising it is always safe and is the direction that matters: a counter *behind*
+   * reality (after a restore, or a write that bypassed this store) would let the corpus
+   * grow past its ceiling. `$max` fixes that without ever losing a claim.
+   */
+  private async raiseReferenceDocumentCount(): Promise<number> {
+    const actual = await this.collection("referenceDocuments").countDocuments({});
+    await this.collection("referenceCorpusMeta").updateOne(
+      { _id: MongoStore.CORPUS_COUNTER_ID as never },
+      {
+        // `$max` alone is enough on an insert: MongoDB treats a missing field as lower
+        // than any number, so the upserted document takes `actual`. Adding a
+        // `$setOnInsert` for the same field is rejected as a path conflict.
+        $max: { count: actual },
+        $set: { updatedAt: new Date() },
+      },
+      { upsert: true },
+    );
+    return this.referenceDocumentCount();
+  }
+
+  /**
+   * Claims one slot in the corpus, atomically.
+   *
+   * The conditional `$inc` is the whole mechanism: MongoDB applies a single-document
+   * update atomically, so of N concurrent callers only those that find `count < limit`
+   * can increment, and exactly `limit` slots exist. A count-then-insert would let two
+   * callers at one below the limit both read the same count and both insert.
+   *
+   * The upward reconcile before the claim is what makes a counter that has fallen behind
+   * reality self-healing, and it is safe to run concurrently because `$max` can only
+   * raise. The reconcile *after* a refusal exists for the same reason and runs only when
+   * the claim already failed, so it cannot lose a slot that is still in flight.
+   */
+  private async claimReferenceDocumentSlot(limit: number): Promise<number> {
+    await this.raiseReferenceDocumentCount();
+
+    const counters = this.collection("referenceCorpusMeta");
+    const filter = {
+      _id: MongoStore.CORPUS_COUNTER_ID as never,
+      count: { $lt: limit },
+    };
+
+    let claim = await counters.updateOne(filter, { $inc: { count: 1 } });
+    if (claim.matchedCount === 0) {
+      const reconciled = await this.raiseReferenceDocumentCount();
+      if (reconciled >= limit) throw new ReferenceCorpusLimitError(limit, reconciled);
+
+      claim = await counters.updateOne(filter, { $inc: { count: 1 } });
+      if (claim.matchedCount === 0) {
+        // Reconciled to below the limit and still refused: another caller took the last
+        // slot between the reconcile and the retry.
+        throw new ReferenceCorpusLimitError(limit, await this.referenceDocumentCount());
+      }
+    }
+
+    return this.referenceDocumentCount();
+  }
+
+  /** Releases a claimed slot. Best-effort: a floor of zero keeps it sane. */
+  private async releaseReferenceDocumentSlot(): Promise<void> {
+    await this.collection("referenceCorpusMeta").updateOne(
+      { _id: MongoStore.CORPUS_COUNTER_ID as never, count: { $gt: 0 } },
+      { $inc: { count: -1 } },
+    );
+  }
+
+  /**
+   * Upserts one operator-managed reference document, enforcing the corpus ceiling.
+   *
+   * Idempotent on `referenceId`, so re-submitting the same document **updates** it
+   * rather than creating a duplicate that would double-count in similarity scoring — and
+   * an update is always allowed, because it does not grow the corpus. Only a genuinely
+   * new document claims a slot.
+   *
+   * The ceiling used to be a *read* ceiling: `listReferenceDocuments` returns at most
+   * `MAX_REFERENCE_DOCUMENTS`, so a 201st document was stored and then never returned —
+   * invisible rather than refused, and silently excluded from every similarity
+   * comparison. It is now a store-side rejection with a stable error.
+   */
+  async storeReferenceDocument(
+    document: Document,
+    options: { limit?: number } = {},
+  ): Promise<{ referenceId: string; created: boolean; count: number }> {
+    const limit = options.limit ?? Number.POSITIVE_INFINITY;
+    const referenceId = document["referenceId"];
     const now = new Date();
-    await this.collection("referenceDocuments").updateOne(
-      { referenceId: document["referenceId"] },
+    const collection = this.collection("referenceDocuments");
+
+    // An update of an existing document is always allowed, and never claims a slot.
+    const updated = await collection.updateOne(
+      { referenceId },
       {
         $set: { ...compact(document), updatedAt: now },
         $setOnInsert: { createdAt: now },
       },
-      { upsert: true },
     );
-    return document["referenceId"] as string;
+    if (updated.matchedCount > 0) {
+      return {
+        referenceId: referenceId as string,
+        created: false,
+        count: await this.referenceDocumentCount(),
+      };
+    }
+
+    // A new document: claim a slot before writing it, so the ceiling cannot be exceeded.
+    const countAfterClaim = await this.claimReferenceDocumentSlot(limit);
+
+    try {
+      await collection.insertOne({ ...compact(document), createdAt: now, updatedAt: now });
+    } catch (error) {
+      // The slot was claimed but the document was not written, so give the slot back
+      // rather than leaking it — otherwise a failed create would permanently shrink the
+      // corpus.
+      await this.releaseReferenceDocumentSlot();
+      throw error;
+    }
+
+    return { referenceId: referenceId as string, created: true, count: countAfterClaim };
   }
 
   /** Lists reference documents, newest first. */
@@ -594,11 +789,20 @@ export class MongoStore {
       .toArray();
   }
 
+  /**
+   * Removes one reference document and releases its slot.
+   *
+   * The slot is released **only when a document was actually removed**, so a delete for
+   * an unknown id cannot shrink the counter and hand out a slot twice.
+   */
   async deleteReferenceDocument(referenceId: string): Promise<boolean> {
     const result = await this.collection("referenceDocuments").deleteOne({
       referenceId,
     });
-    return result.deletedCount > 0;
+    if (result.deletedCount === 0) return false;
+
+    await this.releaseReferenceDocumentSlot();
+    return true;
   }
 
   // ─── Health Check ──────────────────────────────────────────────

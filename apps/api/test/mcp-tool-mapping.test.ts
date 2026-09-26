@@ -13,6 +13,10 @@ import {
   MCP_TOOL_NAMES as API_TOOL_NAMES,
 } from "../src/services/mcp-tool-names.js";
 import {
+  MAX_REFERENCE_DOCUMENTS as API_MAX_REFERENCE_DOCUMENTS,
+  REFERENCE_CORPUS_LIMIT_CODE as API_REFERENCE_CORPUS_LIMIT_CODE,
+} from "../src/routes/reference.js";
+import {
   ALL_MCP_TOOL_NAMES,
   COLLECTION_NAMES,
   DEFAULT_DATABASE_NAME,
@@ -20,7 +24,9 @@ import {
   SESSION_STATUSES,
 } from "../../../packages/mcp-mongodb/src/tool-names.js";
 import {
+  MAX_REFERENCE_DOCUMENTS as MCP_MAX_REFERENCE_DOCUMENTS,
   TOOL_DEFINITIONS,
+  ReferenceCorpusLimitToolError,
   ToolArgumentError,
   createToolRegistry,
 } from "../../../packages/mcp-mongodb/src/tools.js";
@@ -153,7 +159,30 @@ describe("server identity", () => {
       // The migration ledger. Not domain data: it records which migrations this
       // database has had applied, and is written only by runMigrations().
       schemaMigrations: "schema_migrations",
+      // One counter document holding the reference-corpus size, so the corpus ceiling
+      // can be enforced with an atomic conditional `$inc` rather than a count-then-insert
+      // that races. Not domain data.
+      referenceCorpusMeta: "reference_corpus_meta",
     });
+  });
+
+  test("the API's corpus ceiling matches the adapter's", () => {
+    // The two constants are declared separately because `apps/api` does not depend on the
+    // package at runtime. If they drifted, the API would advertise a limit the adapter
+    // does not enforce — and a document the API accepted would be refused downstream.
+    assert.equal(
+      API_MAX_REFERENCE_DOCUMENTS,
+      MCP_MAX_REFERENCE_DOCUMENTS,
+      "the API and the adapter disagree about the reference-corpus ceiling",
+    );
+  });
+
+  test("the API's corpus-limit code matches the adapter's", () => {
+    // Same reason: the code is a public contract, and the API returns it verbatim.
+    assert.equal(
+      API_REFERENCE_CORPUS_LIMIT_CODE,
+      new ReferenceCorpusLimitToolError(1, 1).code,
+    );
   });
 });
 

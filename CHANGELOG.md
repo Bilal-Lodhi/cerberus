@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The reference-corpus ceiling is now enforced at the store.** It was a **read**
+  ceiling only: `listReferenceDocuments` returns at most `MAX_REFERENCE_DOCUMENTS`, so a
+  201st document was accepted, stored, and then neither listed nor compared against. The
+  operator saw a successful add; detection saw nothing. A create past the ceiling is now
+  refused with `409 REFERENCE_CORPUS_LIMIT_REACHED`, and the API and the console agree on
+  the number (`mcp-tool-mapping.test.ts` asserts the API's constant equals the adapter's,
+  and the console's own test asserts its copy is 200).
+
+  It is enforced with an **atomic conditional `$inc`** on a single counter document
+  (`reference_corpus_meta`), not with a count-then-insert: two concurrent creates at one
+  below the limit would both read the same count and both insert, reaching 201. The
+  counter is raised from the real document count before each claim, so one left behind by
+  a restore or a write that bypassed the API self-heals rather than letting the corpus
+  grow past its ceiling; and it is *never lowered* during a claim, because between a claim
+  and its insert it is legitimately ahead of the collection — lowering it there would
+  discard the reservation and hand the same slot out twice. It is reconciled exactly once,
+  at `connect()`, where nothing can be in flight, which is what reclaims a reservation
+  leaked by a process that died mid-claim.
+
+  **Updating an existing document is always allowed, at any size** — an update does not
+  grow the corpus, so the ceiling must not block correcting a document in a full corpus.
+  Deleting a document releases its slot; deleting an unknown id does not.
+
+- **The MCP adapter's error `code` reaches the API.** `callMcpTool` used to drain a
+  non-2xx body and reduce it to `"HTTP 409"`, so a specific refusal was indistinguishable
+  from an outage — which is why a full corpus surfaced as `503
+  REFERENCE_STORE_UNAVAILABLE`, telling the operator to retry something that would never
+  succeed. `McpCallResult` now carries `code`, parsed best-effort from the adapter's
+  error body. A new `ReferenceCorpusLimitToolError` maps to `409` in the adapter, and the
+  shared test double mirrors that mapping — a gap the new tests caught.
+
 - **Durable risk-assessment identity, so the paid analysis path stores one row per
   incident.** `risk_assessments` gained a unique index on `riskAssessmentId` and
   `MongoStore.storeRiskAssessment` is now idempotent on it: a second store of the same

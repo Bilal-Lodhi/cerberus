@@ -21,6 +21,19 @@ export interface McpCallResult<T> {
   data: T | null;
   status: number | null;
   error?: string;
+  /**
+   * The adapter's own `code`, when it returned one.
+   *
+   * The adapter answers a refused operation with `{success: false, code, error}`, and a
+   * route needs that `code` to return the same stable value to its caller rather than
+   * flattening every adapter failure into a 503. Before this, a non-2xx response was
+   * drained and reduced to `"HTTP 409"`, so a specific refusal — the reference corpus
+   * being full, for instance — was indistinguishable from the store being unreachable.
+   *
+   * Best-effort: a body that does not parse, or carries no `code`, leaves this
+   * undefined and the caller falls back to the status.
+   */
+  code?: string;
 }
 
 /**
@@ -64,9 +77,28 @@ export async function callMcpTool<T = unknown>(
     );
 
     if (!res.ok) {
-      // Drain the body so the connection can be reused.
-      await res.text().catch(() => "");
-      return { ok: false, data: null, status: res.status, error: `HTTP ${res.status}` };
+      // Read the body rather than draining it blindly: the adapter's `code` is what
+      // lets a route return a specific refusal instead of a generic unavailability.
+      // Reading it also drains the response, so the connection can still be reused.
+      const raw = await res.text().catch(() => "");
+      let code: string | undefined;
+      try {
+        const parsed = JSON.parse(raw) as { code?: unknown };
+        if (typeof parsed?.code === "string" && parsed.code.length > 0) {
+          code = parsed.code;
+        }
+      } catch {
+        // A body that is not JSON leaves `code` undefined, which is the documented
+        // best-effort behaviour.
+      }
+
+      return {
+        ok: false,
+        data: null,
+        status: res.status,
+        error: code ? `HTTP ${res.status} (${code})` : `HTTP ${res.status}`,
+        ...(code ? { code } : {}),
+      };
     }
 
     const data = (await res.json()) as T;

@@ -198,6 +198,37 @@ void main() {
 
   // ── Validation (mirrors the API's own limits) ───────────────────────────────
 
+  test('the corpus ceiling mirrors the API, which enforces it server-side', () {
+    // The API rejects a create past `MAX_REFERENCE_DOCUMENTS` with
+    // `REFERENCE_CORPUS_LIMIT_REACHED`; this is the client's pre-flight copy, so the
+    // operator is told before filling in a form. A drift would let the console offer an
+    // add the server refuses — or refuse one it would accept.
+    expect(maxReferenceDocuments, 200);
+  });
+
+  test('a server-side full-corpus refusal is shown to the operator', () async {
+    // The pre-flight check cannot know about a corpus another operator filled in the
+    // meantime, so the server's own refusal has to reach the operator with its reason.
+    final harness = build(
+      handler: (_) async => json({
+        'success': false,
+        'error': 'The reference corpus is full (200 documents). '
+            'Remove a document before adding another.',
+        'code': 'REFERENCE_CORPUS_LIMIT_REACHED',
+        'limit': 200,
+      }, 409),
+    );
+
+    final added = await harness.corpus.add(
+      label: 'one too many',
+      content: 'ledger text',
+    );
+
+    expect(added, isFalse);
+    expect(harness.corpus.error, contains('full'));
+    expect(harness.corpus.error, contains('200'));
+  });
+
   test('an over-long label is rejected without sending a request', () async {
     final harness = build(
       handler: (_) async =>

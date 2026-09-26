@@ -92,15 +92,33 @@ Limits, enforced by the API and mirrored in the console:
 | `tags` | 20 tags, each 50 characters |
 | Documents listed and compared | 200 |
 
-**The 200-document figure is a read ceiling, not a store rejection.** It bounds what
-the list endpoint returns and what the similarity loader reads. A 201st document is
-accepted by `POST` and stored, but is then neither listed nor compared against — so it
-is invisible to the operator and contributes nothing to detection.
+**The 200-document figure is a hard ceiling, enforced at the store.** It bounds what the
+list endpoint returns, what the similarity loader reads, and — since the ceiling work —
+what `POST` will accept. A create past it is refused with `409` and
+`REFERENCE_CORPUS_LIMIT_REACHED`, so a document can no longer be stored and then silently
+do nothing.
 
-The console handles that honestly: it disables the add control at 200 and says the
-corpus is at capacity, rather than letting an operator store a document that will
-silently do nothing. The API itself does not reject the write, which is a rough edge
-worth knowing if you script against it — keep the corpus at or below 200.
+That was the previous behaviour, and it was the worst of the three possible ones: a 201st
+document was accepted, stored, and then neither listed nor compared against. The operator
+saw a successful add; detection saw nothing. The console disabled its add control at 200,
+but the API did not reject the write, so a script against the endpoint could put the
+corpus into that state.
+
+The console still validates first — a field-level message beats a rejected request — and
+now also surfaces the server's own refusal, which is the one case the client cannot
+predict: another operator filling the corpus between the panel loading and the add.
+
+**Updating an existing document is always allowed, at any size.** An update does not grow
+the corpus, so the ceiling must not block it — otherwise an operator could not correct a
+document once the corpus was full. Only a genuinely new `referenceId` claims a slot, and
+deleting a document releases one.
+
+The ceiling is enforced with an atomic conditional `$inc` on a single counter document
+(`reference_corpus_meta`), not with a count-then-insert. A count-then-insert would race:
+two concurrent creates at one below the limit would both read the same count and both
+insert, and the corpus would reach 201. The counter is raised from the real document count
+before each claim, so a counter left behind by a restore or a write that bypassed the API
+self-heals rather than letting the corpus grow past its ceiling.
 
 The list response carries a **preview**, not full content: the corpus is read in full
 on every risk analysis, and echoing it back through the list endpoint would make that

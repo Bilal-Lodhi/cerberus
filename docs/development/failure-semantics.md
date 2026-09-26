@@ -365,6 +365,7 @@ database with a pending migration is either not yet serving or already migrated.
 | Assessment storage | **Written before any side effect, reported, and idempotent on `riskAssessmentId`.** A failed write means no status change and no notification, so a lock always has recorded evidence, and a retry cannot write a second row for one incident. |
 | Notification | **Best effort, and last.** Not durable, not retried, not ordered, no dedup key. It cannot affect the durable state, and it is no longer sent for an assessment that was not stored. |
 | Scenario authoring | **Honest reporting.** The response states whether persistence succeeded. |
+| Corpus write | **Refused past the ceiling, reported as a refusal.** An atomic conditional `$inc` on a counter document is the arbiter, so concurrent creates cannot exceed `MAX_REFERENCE_DOCUMENTS`; a full corpus is `409`, not an outage. An update of an existing document is always allowed. |
 | Deletion | **Reported when the store does not answer** (`503`, nothing changed). A partial deletion — the session document removed but its events or assessments not — is still reported as complete, because the MCP tool reports only the session's `deletedCount`. |
 
 ## 6. What this cycle will change
