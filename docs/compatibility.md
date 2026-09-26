@@ -80,8 +80,9 @@ it is recorded below. The record is in
 | `GET /api/v1/guardian/sessions` rows | each row gains `ephemeralStateAvailable: boolean`, matching the field the detail surface already reports | added |
 | `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `statusSource: "durable" \| "process-local"` | added |
 | `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `reconciled: boolean` | added |
+| `update_session_terminal_content` | optional `expectedStatuses` compare-and-set predicate and `onlyIfAbsent` gate; response gains `updated` | added |
 
-Three changes are **observable** rather than additive, and each is a correction to a statement
+Four changes are **observable** rather than additive, and each is a correction to a statement
 that was false:
 
 - **The live list now includes sessions this process did not deploy or ingest.** It was
@@ -97,6 +98,14 @@ that was false:
   that a session another process scored no longer reads as `0` here. `peakRiskScore` is a peak,
   so the maximum is its documented meaning, and the other two follow it because they always
   have.
+- **A `terminate` refused for a session that does not exist writes nothing.** The workspace used
+  to be preserved *before* the transition, so a `404` terminate had already written content for
+  a session that does not exist. Only the **write** moved; the workspace is still read while the
+  session is live.
+
+`update_session_terminal_content` also reports `updated`. `success` keeps its meaning — the call
+was handled — so a caller reading only `success` is unaffected, and without either gate the write
+stays unconditional, so an external MCP client that supplies neither sees no change.
 
 No field name, type or status vocabulary changes, so an existing client needs no change: it
 sees more rows, a corrected risk score, and new fields it can ignore. A client that needs to

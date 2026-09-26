@@ -92,6 +92,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scored no longer reads as `0`. `peakRiskScore` is a peak, so the maximum is its documented
   meaning, and the other two follow it because they always have. See `docs/compatibility.md`
   §1b.
+- **The process whose terminal transition applied owns `terminalContent`.**
+  `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
+  and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating
+  the same session therefore both wrote, and the last writer won — with whichever process
+  happened to hold the **staler** reconstruction of the workspace. The field is one fact ("the
+  workspace as monitoring ended") and it had no single owner.
+
+  Only the **write** moved. The workspace is still read while the session is live; the status
+  transition — already predicate-checked — is now the atomic claim; and the content is written
+  afterwards, gated on the status the transition produced. A terminate that *did* apply writes
+  with `expectedStatuses: ["terminated"]`. A terminate that found the session already terminated
+  did not claim it, so it may only **repair** through `onlyIfAbsent` — the case where the winning
+  process died between its transition and its write — and never overwrites a workspace another
+  process preserved.
+
+  Two consequences: a `terminate` refused for a session that does not exist now writes **nothing**
+  (it used to write content first), and `applied` on the content write reports whether the write
+  happened rather than merely that the request was well-formed.
+
+  `update_session_terminal_content` gains optional `expectedStatuses` and `onlyIfAbsent`, and
+  reports `updated`. With neither gate the write stays unconditional, so an external MCP client
+  that supplies neither sees no change. See `docs/compatibility.md` §1b.
 - **A live read repairs this process's cache toward the document, and only toward it.**
   `SessionTransitionCache.reconcileStatus` is deliberately not `apply`: `apply` stamps the
   cached activity instant to the transition instant, which is right for a transition and wrong

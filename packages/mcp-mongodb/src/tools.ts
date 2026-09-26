@@ -85,12 +85,26 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
 
   [MCP_TOOL_NAMES.UPDATE_SESSION_TERMINAL_CONTENT]: {
     name: MCP_TOOL_NAMES.UPDATE_SESSION_TERMINAL_CONTENT,
-    description: "Persist the current terminal workspace content for a session.",
+    description:
+      "Persist the terminal workspace content for a session. Both gates are optional: " +
+      "`expectedStatuses` makes the write a compare-and-set on the session's lifecycle " +
+      "status, so the process whose terminal transition actually applied owns the field, and " +
+      "`onlyIfAbsent` narrows it to a repair of a terminated session that holds no content " +
+      "yet. With neither, the write is unconditional, as before.",
     inputSchema: {
       type: "object",
       properties: {
         sessionId: { type: "string" },
         terminalContent: { type: "string" },
+        expectedStatuses: {
+          type: "array",
+          items: { type: "string" },
+          description: "Write only while the stored status is one of these.",
+        },
+        onlyIfAbsent: {
+          type: "boolean",
+          description: "Write only when the session holds no terminal content yet.",
+        },
       },
       required: ["sessionId", "terminalContent"],
     },
@@ -355,6 +369,43 @@ function requireObject(body: Record<string, unknown>, key: string): Record<strin
   return value as Record<string, unknown>;
 }
 
+/**
+ * Reads the optional `expectedStatuses` compare-and-set predicate.
+ *
+ * Shared by `set_session_status` and `update_session_terminal_content`, so the two cannot
+ * disagree about what a predicate is or which statuses one may name. Every entry is checked
+ * against the store's own vocabulary, so a caller cannot predicate on a status the store can
+ * never hold — which would match nothing and read as "the session changed under me" for
+ * every attempt.
+ */
+function readExpectedStatuses(
+  body: Record<string, unknown>,
+): readonly string[] | undefined {
+  const raw = body["expectedStatuses"];
+  if (raw === undefined || raw === null) return undefined;
+
+  if (!Array.isArray(raw)) {
+    throw new ToolArgumentError(
+      "Parameter 'expectedStatuses' must be an array of session statuses.",
+    );
+  }
+
+  return raw.map((entry) => {
+    if (typeof entry !== "string") {
+      throw new ToolArgumentError(
+        "Parameter 'expectedStatuses' must contain only strings.",
+      );
+    }
+    if (!(SESSION_STATUSES as readonly string[]).includes(entry)) {
+      throw new ToolArgumentError(
+        `Invalid expected status '${entry}'. Must be one of: ` +
+          `${SESSION_STATUSES.join(", ")}`,
+      );
+    }
+    return entry;
+  });
+}
+
 /** Reads a required string and enforces a maximum length. */
 function requireBoundedString(
   body: Record<string, unknown>,
@@ -426,8 +477,23 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
     [MCP_TOOL_NAMES.UPDATE_SESSION_TERMINAL_CONTENT]: async (body) => {
       const sessionId = requireString(body, "sessionId");
       const terminalContent = requireString(body, "terminalContent");
-      await store.updateSession(sessionId, { terminalContent });
-      return { success: true };
+
+      // Both gates are optional, so a direct MCP client calling this with neither keeps the
+      // previous unconditional behaviour — the published capability is unchanged. The API's
+      // terminate path supplies both, which is what makes the transition that applied the
+      // owner of the field.
+      const expectedStatuses = readExpectedStatuses(body);
+      const onlyIfAbsent = body["onlyIfAbsent"] === true;
+
+      const updated = await store.updateSessionTerminalContent(sessionId, terminalContent, {
+        ...(expectedStatuses ? { expectedStatuses } : {}),
+        ...(onlyIfAbsent ? { onlyIfAbsent } : {}),
+      });
+
+      // `updated` is reported rather than inferred from `success`, so a caller can tell a
+      // real write from a no-op. `success` keeps its meaning — the call was handled — so a
+      // caller reading only `success` is unaffected.
+      return { success: true, updated };
     },
 
     [MCP_TOOL_NAMES.DELETE_SESSION]: async (body) => {
@@ -529,30 +595,9 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       // Optional compare-and-set predicate. An absent value keeps the previous
       // unconditional behaviour; a supplied one is validated against the same
       // vocabulary as `status`, so a caller cannot predicate on a status that could
-      // never have been stored.
-      const rawExpected = body["expectedStatuses"];
-      let expectedStatuses: string[] | undefined;
-      if (rawExpected !== undefined && rawExpected !== null) {
-        if (!Array.isArray(rawExpected)) {
-          throw new ToolArgumentError(
-            "Parameter 'expectedStatuses' must be an array of session statuses.",
-          );
-        }
-        expectedStatuses = rawExpected.map((entry) => {
-          if (typeof entry !== "string") {
-            throw new ToolArgumentError(
-              "Parameter 'expectedStatuses' must contain only strings.",
-            );
-          }
-          if (!(SESSION_STATUSES as readonly string[]).includes(entry)) {
-            throw new ToolArgumentError(
-              `Invalid expected status '${entry}'. Must be one of: ` +
-                `${SESSION_STATUSES.join(", ")}`,
-            );
-          }
-          return entry;
-        });
-      }
+      // never have been stored. Shared with `update_session_terminal_content`, so the
+      // two cannot disagree about what a predicate is.
+      const expectedStatuses = readExpectedStatuses(body);
 
       const updated = await store.setSessionStatus(sessionId, status, {
         ...(expectedStatuses ? { expectedStatuses } : {}),

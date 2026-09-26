@@ -52,6 +52,11 @@ export interface ContractStore {
   createSession(session: StoredDocument): Promise<string>;
   getSession(sessionId: string): Promise<StoredDocument | null>;
   updateSession(sessionId: string, update: StoredDocument): Promise<void>;
+  updateSessionTerminalContent(
+    sessionId: string,
+    terminalContent: string,
+    options?: { expectedStatuses?: readonly string[]; onlyIfAbsent?: boolean },
+  ): Promise<boolean>;
   deleteSession(sessionId: string): Promise<SessionDeletionReport>;
   listSessions(): Promise<StoredDocument[]>;
   updateSessionCounts(sessionId: string, counts: SessionCountsUpdate): Promise<void>;
@@ -900,6 +905,125 @@ export const CONTRACT_CASES: ContractCase[] = [
     },
   },
 
+  // ── updateSessionTerminalContent: the ownership gates ────────────
+  {
+    name: "updateSessionTerminalContent writes unconditionally when given no gate",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+
+      // The published capability's behaviour, which must not change: a direct MCP client
+      // calling the tool with no predicate still writes.
+      const updated = await store.updateSessionTerminalContent(ids.sessionId, "FIRST");
+      assert.equal(updated, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["terminalContent"], "FIRST");
+    },
+  },
+  {
+    name: "updateSessionTerminalContent refuses a status the document does not hold",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      // `createSession` leaves the session `active`, so a predicate on `terminated` matches
+      // nothing — which is exactly how a losing concurrent terminate must behave.
+      const updated = await store.updateSessionTerminalContent(ids.sessionId, "LOSER", {
+        expectedStatuses: ["terminated"],
+      });
+
+      assert.equal(updated, false, "the predicate did not gate the write");
+      assert.equal(
+        (await store.getSession(ids.sessionId))?.["terminalContent"],
+        undefined,
+        "a gated write that matched nothing still wrote",
+      );
+    },
+  },
+  {
+    name: "updateSessionTerminalContent applies the write when the status matches",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.setSessionStatus(ids.sessionId, "terminated");
+
+      const updated = await store.updateSessionTerminalContent(ids.sessionId, "WINNER", {
+        expectedStatuses: ["terminated"],
+      });
+
+      assert.equal(updated, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["terminalContent"], "WINNER");
+    },
+  },
+  {
+    name: "onlyIfAbsent repairs a session with no content and never overwrites one with content",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.setSessionStatus(ids.sessionId, "terminated");
+
+      // The repair: terminated, and holding nothing, because the process that won the
+      // transition died before it wrote.
+      const repaired = await store.updateSessionTerminalContent(ids.sessionId, "REPAIR", {
+        expectedStatuses: ["terminated"],
+        onlyIfAbsent: true,
+      });
+      assert.equal(repaired, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["terminalContent"], "REPAIR");
+
+      // The second call finds content, so it must not overwrite it. This is the stale
+      // write-back the ownership rule exists to prevent.
+      const overwritten = await store.updateSessionTerminalContent(ids.sessionId, "STALE", {
+        expectedStatuses: ["terminated"],
+        onlyIfAbsent: true,
+      });
+      assert.equal(overwritten, false);
+      assert.equal(
+        (await store.getSession(ids.sessionId))?.["terminalContent"],
+        "REPAIR",
+        "a stale workspace overwrote the preserved one",
+      );
+    },
+  },
+  {
+    name: "onlyIfAbsent treats an empty string as no content",
+    async run(store, ids) {
+      await store.createSession({
+        sessionId: ids.sessionId,
+        employeeId: ids.employeeId,
+        auditId: ids.auditId,
+      });
+      await store.updateSession(ids.sessionId, { terminalContent: "" });
+      await store.setSessionStatus(ids.sessionId, "terminated");
+
+      const updated = await store.updateSessionTerminalContent(ids.sessionId, "FILLED", {
+        onlyIfAbsent: true,
+      });
+      assert.equal(updated, true);
+      assert.equal((await store.getSession(ids.sessionId))?.["terminalContent"], "FILLED");
+    },
+  },
+  {
+    name: "updateSessionTerminalContent on an unknown session reports no write",
+    async run(store, ids) {
+      const unknown = "no-such-" + ids.sessionId;
+      const updated = await store.updateSessionTerminalContent(unknown, "GHOST");
+
+      assert.equal(updated, false);
+      assert.equal(await store.getSession(unknown), null, "the write created a document");
+    },
+  },
+
   // ── Deletion ─────────────────────────────────────────────────────
   {
     name: "deleteSession cascades to events and assessments, and reports every component",
@@ -1084,6 +1208,7 @@ describe("store double fidelity", () => {
     "createSession",
     "getSession",
     "updateSession",
+    "updateSessionTerminalContent",
     "deleteSession",
     "listSessions",
     "updateSessionCounts",
