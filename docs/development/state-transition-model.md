@@ -5,9 +5,14 @@ it writes, and what it does when a step fails.
 
 This document is a map written from the source, not from intent. It exists
 because the phase goal is a **single canonical transition boundary**, and you
-cannot design one until you know how many there currently are. There are five,
-they order their writes three different ways, and one of them can move a
-terminated session back to `locked`.
+cannot design one until you know how many there currently are.
+
+> **Status: the boundary now exists.** §2 and §3.2 are the **historical record** —
+> what the five independent paths did and how they disagreed — and are kept because
+> they are the specification the boundary was built to satisfy. §3.1's defect and
+> every divergence in §3.2 except the last are **fixed**; §4 states what the boundary
+> owns and §5 records what remains open. The enforced model is the table in §3, read
+> as "what the boundary permits" rather than "what the code happened to do".
 
 Companion documents:
 
@@ -17,6 +22,7 @@ Companion documents:
   guarantees when a step fails.
 - [test-double-contract.md](test-double-contract.md) — why the existing suite did
   not catch the divergence recorded below.
+- [api-errors.md](../api-errors.md) — the codes a refused transition returns.
 
 ## 1. Status vocabulary
 
@@ -47,6 +53,10 @@ anything unrecognised onto `active`.
 fourth persisted value is not merely discouraged — it is refused at the adapter.
 
 ## 2. The five mutation paths
+
+> **Historical.** This section describes the five independent paths as they were before
+> the boundary. It is the specification the boundary was built to satisfy; the enforced
+> behaviour is §3 and §4.
 
 `sessionStore` and `activeSessions` are the two in-memory maps created by
 `createGuardianRouter()` and shared with the review router (see
@@ -174,38 +184,44 @@ both are empty after a restart.
 
 ## 3. The transition table
 
-`→` is a legal transition as the code actually behaves. `⊘` is a transition the
-code refuses. `✗` marks a transition the code performs that the model says it must
-not.
+**This is now the enforced table.** It is implemented once, in
+`apps/api/src/services/session-transition.ts`, and every allowed transition, every
+refused one, a repeated transition and the terminal state are asserted through the
+real routes in `apps/api/test/session-transition.test.ts`.
+
+`→` is a legal transition. `⊘` is a transition the boundary refuses. `✗` marks a
+transition that was performed before the boundary existed and is now refused — the
+column records history, not current behaviour.
 
 | From | To | Initiator | Legal? | Evidence |
 | --- | --- | --- | --- | --- |
 | *(absent)* | `active` | deploy | yes | T1 |
 | *(absent)* | `active` | ingest | yes | T2 |
 | `active` | `locked` | ingest auto-lock | yes | T3 |
-| `locked` | `active` | ingest auto-clear | yes | T4, requires a live cache entry |
-| `active` | `active` | reactivate | yes | T5, idempotent |
+| `locked` | `locked` | ingest auto-lock | yes — legal no-op | T3, idempotent |
+| `locked` | `active` | ingest auto-clear | yes | T4 |
+| `active` | `active` | ingest auto-clear | yes — legal no-op | T4 |
+| `active` | `active` | reactivate | yes — legal no-op | T5, idempotent |
 | `locked` | `active` | reactivate | yes | T5 |
 | `active` | `terminated` | terminate | yes | T6 |
 | `locked` | `terminated` | terminate | yes | T6 |
-| `terminated` | `terminated` | terminate | yes | T6, idempotent |
+| `terminated` | `terminated` | terminate | yes — legal no-op | T6, idempotent |
 | `terminated` | `active` | reactivate | **⊘ refused** | `409 SESSION_TERMINATED` |
-| `terminated` | `locked` | **ingest auto-lock** | **✗ performed** | see §3.1 |
-| `terminated` | *(counters advanced)* | **ingest** | **✗ performed** | see §3.1 |
-| `flagged` / `investigating` / `cleared` | any | — | unreachable | never persisted |
+| `terminated` | `active` | ingest auto-clear | **⊘ refused** | `409 SESSION_TERMINATED` |
+| `terminated` | `locked` | ingest auto-lock | **⊘ refused** | was ✗ performed; see §3.1 |
+| `terminated` | *(counters advanced)* | ingest | **⊘ refused** | was ✗ performed; see §3.1 |
+| `flagged` / `investigating` / `cleared` | any | — | **⊘ refused** as `INVALID_SESSION_TRANSITION` | never persisted, so a document holding one is a data-integrity problem |
 
-### 3.1 Confirmed defect: ingest resurrects a terminated session
+A legal no-op is not a refusal: the session was already in the target state, so
+nothing is written and the result reports `applied: false`. That is what makes a
+retried `terminate` a `200` rather than an error.
 
-`POST /ingest` checks exactly one precondition on the session's state — whether
-its monitoring window has expired:
+### 3.1 Confirmed defect: ingest resurrects a terminated session — **fixed**
 
-```ts
-if (sessionLiveness(sessionId, durableSession) === "expired") { /* 409 */ }
-```
-
-It never checks the status. A `terminated` session that has not yet exceeded
-`SESSION_TTL_SECONDS` therefore passes that gate, and the rest of the path runs
-normally:
+`POST /ingest` checked exactly one precondition on the session's state — whether
+its monitoring window had expired — and never checked the status. A `terminated`
+session that had not yet exceeded `SESSION_TTL_SECONDS` therefore passed that gate,
+and the rest of the path ran normally:
 
 - `ingest_micro_events` stores the batch — `micro_events` has no referential check
   against the session's status;
@@ -215,7 +231,8 @@ normally:
   `set_session_status(sessionId, "locked")`** — because `lockSession` has no
   precondition either.
 
-Observed against the in-process double, on a session terminated moments earlier:
+Observed against the in-process double, on a session terminated moments earlier,
+**before the fix**:
 
 ```
 durable status after terminate:      "terminated"
@@ -224,94 +241,127 @@ durable status after that ingest:    "locked"
 micro_events stored for the session: 2
 ```
 
-So a terminated session is not terminal. Telemetry continues to accumulate
-against it, and a high-risk batch moves it to `locked` — a state the operator
-never chose, on a session they explicitly stopped. `reactivate` refuses exactly
+So a terminated session was not terminal. Telemetry continued to accumulate
+against it, and a high-risk batch moved it to `locked` — a state the operator
+never chose, on a session they explicitly stopped. `reactivate` refused exactly
 this transition (`terminated → active`) with `409 SESSION_TERMINATED`, so the two
-paths disagree about whether `terminated` is reversible.
+paths disagreed about whether `terminated` was reversible.
 
-**Why this is P1.** It is a correctness violation of the one irreversible
+**Why this was P1.** It is a correctness violation of the one irreversible
 lifecycle guarantee the system documents
 (`apps/api/src/services/session-liveness.ts`, [maturity-plan.md](maturity-plan.md),
 the threat model), reachable by any caller
 holding the operator key, and it silently un-does an explicit operator action.
 
 **Why the suite missed it.** `set_session_status` in three of the four MCP doubles
-returns `{success: true, updated: true}` without persisting anything, and the
-fourth (`session-lifecycle.test.ts`) persists it but is never driven through
+returned `{success: true, updated: true}` without persisting anything, and the
+fourth (`session-lifecycle.test.ts`) persisted it but was never driven through
 terminate-then-ingest. See [test-double-contract.md](test-double-contract.md).
+
+**The fix.** Ingest refuses a terminated session with `409 SESSION_TERMINATED`
+before any write, gating on the durable document it has already read, through the
+boundary's own `acceptsTelemetry` rule. The auto-lock path is the second line of
+defence: `autoLock` is not in the transition table for a terminated session, so even
+if telemetry were admitted the lock could not fire. Regression tests live in
+`apps/api/test/session-transition.test.ts` under "a terminated session is terminal".
 
 ### 3.2 Other divergences in the table
 
-| # | Divergence | Consequence |
+Every divergence below except **D5** and **D6** is closed by the transition boundary.
+They are kept as the record of what the boundary was built to fix, and as the list a
+future path must not reintroduce.
+
+| # | Divergence | State |
 | --- | --- | --- |
-| D1 | T3/T4 order writes cache-first; T5 orders them durable-first; T6/T7 are cache-first with a delete | A partial failure leaves a different lie depending on which route failed. There is no rule to state, so there is nothing to document as a guarantee. |
-| D2 | T3, T4 and T6 ignore the durable write's result | `200 success: true` is returned for a status change that did not durably happen. |
-| D3 | T4's precondition reads the cache | After a restart, a durably `locked` session can never be auto-cleared. |
-| D4 | T6 has no precondition and no terminal guard | `terminate` on an already-`terminated` session re-stamps `endedAt`; combined with D2 it can report success for a no-op. |
-| D5 | T2 leaves `activeSessions` unpopulated | One session id has two response shapes. |
-| D6 | T1 reports success for a deploy against a `terminated` session | `$setOnInsert` cannot fire, so the caller's intent is silently ignored. |
-| D7 | `set_session_status` has no compare-and-set | Every status transition is last-writer-wins; terminate racing auto-lock is decided by arrival order and nothing detects it. **The primitive now exists** — `set_session_status` accepts an optional `expectedStatuses` predicate, verified against a real MongoDB — but no route uses it yet; the boundary adopts it. |
-| D8 | No transition validates the *current* durable status | Every precondition in the table is either absent or read from a cache. |
+| D1 | T3/T4 order writes cache-first; T5 orders them durable-first; T6/T7 are cache-first with a delete | **Closed.** Every action now reads durable → validates → writes durably → repairs caches, in that order, from one implementation. |
+| D2 | T3, T4 and T6 ignore the durable write's result | **Closed.** The result decides the outcome: a write that did not match is `SESSION_CONFLICT` or `SESSION_STORE_UNAVAILABLE`, never `200 success: true`. |
+| D3 | T4's precondition reads the cache | **Closed.** The precondition is the durable status, read on every transition. A durably `locked` session can be auto-cleared after a restart. |
+| D4 | T6 has no precondition and no terminal guard | **Closed.** `terminate` is in the table for every durable status and is idempotent, so a repeat is a legal no-op rather than an unvalidated write. |
+| D5 | T2 leaves `activeSessions` unpopulated | **Open.** A session created by ingest has no live-registry entry until something creates one — which the boundary now does on its first transition. It remains a shape difference, recorded in §5. |
+| D6 | T1 reports success for a deploy against a `terminated` session | **Open.** `$setOnInsert` cannot fire, so the caller's intent is silently ignored. Recorded in §5. |
+| D7 | `set_session_status` has no compare-and-set | **Closed.** The tool accepts an optional `expectedStatuses` predicate, and the boundary passes the statuses it read. Verified against a real MongoDB. |
+| D8 | No transition validates the *current* durable status | **Closed.** Every action validates against the table before writing, and a status outside the durable vocabulary is `INVALID_SESSION_TRANSITION`. |
 
-## 4. What the boundary must do
+## 4. What the boundary owns
 
-Derived from §2 and §3, not from a template. The canonical boundary
-(`apps/api/src/services/session-transition.ts`, planned) is responsible for:
+**Built.** `apps/api/src/services/session-transition.ts`, with the vocabulary in
+`apps/api/src/services/session-status.ts`. Derived from §2 and §3 rather than from a
+template, it is responsible for:
 
-1. **Load the durable current state** and treat it as the authority. A cache is
+1. **Loading the durable current state** and treating it as the authority. A cache is
    read only to decide whether the cache needs repairing, never to decide whether
    a transition is legal.
-2. **Validate the requested transition** against the table in §3, returning a
+2. **Validating the requested transition** against the table in §3, returning a
    stable outcome rather than performing it. Domain actions, not `setStatus`:
-   `terminateSession`, `autoLockSession`, `autoClearSession`, `reactivateSession`,
-   `updateTerminalContent`.
-3. **Apply the durable write with an atomic predicate** on the expected current
-   status, so a concurrent transition is detected rather than overwritten
-   (addresses D7). The predicate exists: `set_session_status` accepts an optional
-   `expectedStatuses` list, and the contract suite verifies it against a real
-   MongoDB. No route passes it yet.
-4. **Return a canonical result** that distinguishes *applied*, *already in that
+   `terminate`, `autoLock`, `autoClear`, `reactivate`, `updateTerminalContent`.
+3. **Applying the durable write with an atomic predicate** on the status it read, so a
+   concurrent transition is detected rather than overwritten. `set_session_status`
+   accepts an optional `expectedStatuses` list, and the contract suite verifies it
+   against a real MongoDB.
+4. **Returning a canonical result** that distinguishes *applied*, *already in that
    state* (a legal no-op), *refused by the transition table*, and *conflict with a
    concurrent transition*.
-5. **Repair both caches from the durable result**, not from the caller's intent, so
+5. **Repairing both caches from the durable result**, not from the caller's intent, so
    a failed durable write cannot leave a cache asserting a status MongoDB does not
-   hold (addresses D1, D2).
-6. **Expose stable error codes** — `INVALID_SESSION_TRANSITION`,
-   `SESSION_TERMINAL`, `SESSION_CONFLICT` — without internal detail.
+   hold. A refusal that read the durable status also reconciles the cache to what it
+   read, so a divergence is corrected rather than reported.
+6. **Exposing stable error codes** — `INVALID_SESSION_TRANSITION`,
+   `SESSION_TERMINATED`, `SESSION_CONFLICT`, `SESSION_NOT_FOUND`,
+   `SESSION_STORE_UNAVAILABLE` — without internal detail. See
+   [api-errors.md](../api-errors.md) §4.
 
 Explicitly **not** the boundary's job: telemetry validation, counter arithmetic,
 AI analysis, notifications, or persistence of anything other than session
 lifecycle state. Centralising unrelated logic into one service would trade five
 small divergences for one large coupling.
 
-### 4.1 Status changes this cycle will require
+The cache is reached through a `SessionTransitionCache` interface rather than by
+importing the two maps, so the service does not import a route module — which would be
+a layering inversion and a runtime import cycle. `routes/guardian.ts` implements it.
+
+### 4.1 What adoption changed
+
+| Path | Before | After |
+| --- | --- | --- |
+| `terminate` | cache mutated first, durable result used only to compute `found`; a failed write returned `200 success: true` | durable-first, result-inspected; `503` when the store did not answer, `409 SESSION_CONFLICT` when the status moved |
+| `reactivate` | durable-first, but the registry rebuild lived in the route and the write's result was ignored | boundary-owned; the rebuild is part of the cache adapter |
+| `auto-lock` / `auto-clear` | cache-first, result ignored, precondition read from the cache | boundary-owned; precondition is the durable status |
+| ingest | checked TTL only | also refuses a terminated session, through the boundary's own rule |
+| `GET /guardian/sessions` | TTL was the only filter on the in-memory path; the recovery path guarded the registry but still listed terminated sessions | all three paths exclude a non-monitored session |
+
+### 4.2 Status changes this cycle will require
 
 | Change | Kind | Migration |
 | --- | --- | --- |
-| `terminated` becomes a precondition on ingest | behaviour fix, no schema change | none |
-| Status writes gain a compare-and-set predicate | behaviour fix, no schema change | none |
+| `terminated` becomes a precondition on ingest | **done** — behaviour fix, no schema change | none |
+| Status writes gain a compare-and-set predicate | **done** — behaviour fix, no schema change | none |
 | `cleared` loses its membership of the persisted vocabulary, or gains a producer | vocabulary decision | none if no document holds it; a status rewrite if one does |
 | `focusLossCount` replaces `fullscreenExitCount` as the truthful name | **field rename** — see [session-state-model.md](session-state-model.md) §5.7 | a migration if the durable field is renamed |
 
-Only the last is a schema change, and it is decided separately in
-[failure-semantics.md](failure-semantics.md) §6 and the WINDOW_BLUR work.
+Only the last is a schema change, and it is decided separately with the WINDOW_BLUR
+work.
 
-## 5. Open questions this document does not answer
-
-Recorded rather than guessed:
+## 5. What remains open
 
 1. **Is `cleared` a status the system should be able to reach?** Nothing produces
    it. Either a producer is added (an operator action that clears a session
    without a low score) or it is removed from the vocabulary. Removing a value from
    a published response type is a compatibility change, so this needs a decision
    recorded in [compatibility.md](../compatibility.md).
-2. **Should `terminated` block ingest with its own error code, or reuse
-   `SESSION_TERMINATED`?** `SESSION_TERMINATED` is currently documented as the
-   reactivation refusal. Reusing it for ingest gives one meaning to one code;
-   minting a second code distinguishes two operator actions. This is decided in the
-   central-boundary work, and the outcome is recorded in the error-model document
-   (`docs/api-errors.md`, not yet written) and in
-   [compatibility.md](../compatibility.md).
-3. **Should a deploy against an existing session id be a conflict rather than a
+2. **Should a deploy against an existing session id be a conflict rather than a
    silent no-op?** `$setOnInsert` makes it a no-op today (D6).
+3. **Should a session created by ingest get a live-registry entry?** It does not
+   today (D5), so one session id has two response shapes depending on how it was
+   created. The boundary now creates the entry on its first transition, which narrows
+   the window but does not remove the difference.
+4. **`GET /api/v1/guardian/sessions/:sessionId` has no durable fallback.** It reads
+   the two maps only, so immediately after a restart it answers `404` for a session
+   that exists until the live list is called, which is the path that rebuilds the
+   registry. The review route is durable and unaffected.
+
+### 5.1 Answered
+
+- **Should `terminated` block ingest with its own error code, or reuse
+  `SESSION_TERMINATED`?** Reused. One code, one meaning — the session has ended — and
+  a client handles the same condition once. Recorded in
+  [api-errors.md](../api-errors.md) §4.
