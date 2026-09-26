@@ -35,6 +35,7 @@
     "verify:console-smoke": "node scripts/release/console-smoke.mjs",
     "verify:version": "node scripts/release/version-census.mjs",
     "verify:config": "node scripts/release/config-census.mjs",
+    "verify:idempotency": "node scripts/release/idempotency-guard.mjs",
     "verify:secrets": "node scripts/release/secret-guards.mjs",
     "verify:packages": "node scripts/release/private-packages.mjs",
     "verify:attribution": "node scripts/release/attribution-guard.mjs",

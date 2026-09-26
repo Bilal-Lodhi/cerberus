@@ -26,6 +26,20 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **`npm run verify:idempotency` — the database-free half of the idempotency gates, and a new
+  step in `npm run verify:release`.** The stronger check is `critical-indexes.test.ts`, which
+  asserts the claim indexes against a **real MongoDB** — and that is exactly why this one
+  exists: it needs a database, so a contributor without MongoDB sees it skip, and the guarantee
+  is unverified at the moment someone is deciding whether to publish. This guard is
+  deterministic, needs no network and no database, and asserts what is checkable from the tree
+  alone: that the critical-index list still names the claim's unique index **and** its
+  retention index (a restore that lost the first accepts two claims for one key — a retry
+  spends twice with nothing reporting it; a restore that lost the second leaves the collection
+  unbounded); that the shared index specification still matches that list; that the three claim
+  tool names are declared **identically** in the MCP package and in the API's own copy, which
+  are separate declarations because the API does not depend on the package at runtime; and that
+  the suites which prove the mechanism still exist and are still inside the API's test globs,
+  because a test file that is never run is not a gate.
 - **`apps/api/test/paid-operation-recovery.test.ts` — failure injection on the claim.** The
   states a healthy system never reaches: a provider quota error and a provider transport
   failure (both retryable, both re-executing on retry); **a provider success whose completion

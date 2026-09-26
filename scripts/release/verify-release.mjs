@@ -118,6 +118,16 @@ const STEPS = [
     why: "every environment variable read is documented, and every one documented is read",
   },
   {
+    name: "idempotency-guard",
+    script: "verify:idempotency",
+    why:
+      "the paid-operation claim's unique and retention indexes are named where a restore " +
+      "checks them, the shared index specification still matches that list, the two tool-name " +
+      "declarations agree, and the suites that prove the mechanism are still in the test glob " +
+      "— all without a database, so the guarantee is checkable where the real-MongoDB half " +
+      "would merely skip",
+  },
+  {
     name: "secret-guards",
     script: "verify:secrets",
     why: "no tracked credential file, no retired identity, and no publishing command here",

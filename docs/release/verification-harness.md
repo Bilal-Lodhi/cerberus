@@ -45,6 +45,7 @@ command.
 | `docs` | Every relative link and heading anchor resolves | `npm run check:docs` |
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
+| `idempotency-guard` | The paid-operation claim's unique and retention indexes are named where a restore checks them, the shared index specification still matches that list, the two tool-name declarations agree, and the suites that prove the mechanism are still in the test glob — **all without a database** | `npm run verify:idempotency` |
 | `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
 | `private-packages` | Every workspace package is unpublishable by construction | `npm run verify:packages` |
 | `attribution-guard` | No commit in range presents a non-existent contributor | `npm run verify:attribution` |
