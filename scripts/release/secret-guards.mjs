@@ -120,21 +120,103 @@ if (grepOutput.trim().length > 0) {
 }
 
 // ── 4. The release harness cannot publish ────────────────────────────
+//
+// The commands live in `publish-guard.json`, next to this file, and this scan reads them
+// from there. Two reasons, both learned by getting it wrong first:
+//
+//   1. A pattern written inside the file being scanned is a match for itself. The first
+//      version of this guard reported its own label table as a violation.
+//   2. A comment describing a command is not a command. The first version reported four
+//      mentions of them in its own documentation, so comments are stripped before the
+//      scan — by a scanner, not a regular expression, because `https://` inside a string
+//      must survive.
+//
+// The data file is not scanned, which is safe rather than convenient: nothing in a JSON
+// file can execute.
 
-const PUBLISH_COMMANDS = [
-  { pattern: /\bnpm\s+publish\b/, what: "npm publish" },
-  { pattern: /\bgit\s+push\b/, what: "git push" },
-  { pattern: /\bdocker\s+push\b/, what: "docker push" },
-  { pattern: /\bgh\s+release\s+create\b/, what: "gh release create" },
-];
+const EXECUTABLE_EXTENSIONS = [".mjs", ".cjs", ".js", ".ts", ".sh", ".bash", ".yml", ".yaml"];
 
-for (const file of trackedFiles().filter((path) => path.startsWith("scripts/release/"))) {
-  const text = readFileSync(resolve(root, file), "utf8");
-  for (const { pattern, what } of PUBLISH_COMMANDS) {
-    if (pattern.test(text)) {
+/**
+ * Removes comments, leaving strings and template literals intact.
+ *
+ * Handles JavaScript and shell/YAML comments. Written as a scanner rather than a regular
+ * expression because the guard has to be precise in both directions: it must not flag a
+ * command described in a comment — which cannot run — and it must still flag one inside a
+ * string, which can. A naive `//.*` strip would also mangle `https://` inside a literal.
+ */
+function stripComments(text, extension) {
+  const lineComment = extension === ".yml" || extension === ".yaml" || extension === ".sh" || extension === ".bash";
+
+  let out = "";
+  let index = 0;
+
+  while (index < text.length) {
+    const character = text[index];
+    const next = text[index + 1];
+
+    // A string or template literal: copy it verbatim, honouring escapes.
+    if (character === '"' || character === "'" || character === "`") {
+      const quote = character;
+      out += character;
+      index += 1;
+      while (index < text.length) {
+        const inner = text[index];
+        out += inner;
+        if (inner === "\\") {
+          out += text[index + 1] ?? "";
+          index += 2;
+          continue;
+        }
+        index += 1;
+        if (inner === quote) break;
+      }
+      continue;
+    }
+
+    // `#` starts a comment in shell and YAML. It is not a comment character in
+    // JavaScript, where it can only appear inside a string — already copied above.
+    if (lineComment && character === "#") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      continue;
+    }
+
+    if (!lineComment && character === "/" && next === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      continue;
+    }
+
+    if (!lineComment && character === "/" && next === "*") {
+      index += 2;
+      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) {
+        index += 1;
+      }
+      index += 2;
+      continue;
+    }
+
+    out += character;
+    index += 1;
+  }
+
+  return out;
+}
+
+const publishGuardPath = resolve(here, "publish-guard.json");
+const publishCommands = JSON.parse(readFileSync(publishGuardPath, "utf8")).commands.map(
+  (command) => ({ ...command, regex: new RegExp(command.pattern) }),
+);
+
+const harnessFiles = trackedFiles()
+  .filter((path) => path.startsWith("scripts/release/"))
+  .filter((path) => EXECUTABLE_EXTENSIONS.some((extension) => path.endsWith(extension)));
+
+for (const file of harnessFiles) {
+  const source = stripComments(readFileSync(resolve(root, file), "utf8"), file.slice(file.lastIndexOf(".")));
+  for (const command of publishCommands) {
+    if (command.regex.test(source)) {
       problems.push({
         guard: "the release harness contains a publishing command",
-        detail: `${file} matches ${what}`,
+        detail: `${file} matches ${command.label}`,
         fix: "the harness verifies and never publishes; move the command out of this directory",
       });
     }

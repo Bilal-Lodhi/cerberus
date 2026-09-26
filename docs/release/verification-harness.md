@@ -69,9 +69,26 @@ that nothing was skipped, because it provides the only precondition any step has
 
 ## It never publishes
 
-No file under `scripts/release/` may contain `npm publish`, `git push`, `docker push` or
-`gh release create`. The `secret-guards` step fails if one appears, so the harness cannot
-grow a publishing step without the guard failing first.
+No executable file under `scripts/release/` may contain a publishing command. The list
+lives in `scripts/release/publish-guard.json` and covers `npm publish`, `npm run publish`,
+`git push`, `docker push`, `gh release create` and `gh release upload`; the
+`secret-guards` step fails if one appears, so the harness cannot grow a publishing step
+without the guard failing first.
+
+Two details are worth knowing, because getting them wrong is how the guard was first
+written:
+
+- **Comments are stripped before the scan.** A command described in a comment cannot run,
+  and the first version reported four mentions of these commands in its own documentation.
+  The stripper is a scanner rather than a regular expression, so a `https://` inside a
+  string survives.
+- **The patterns live in a JSON data file, not in the guard.** A pattern written inside the
+  file being scanned is a match for itself — the first version reported its own label table.
+  A JSON file is also not scanned, which is safe rather than convenient: nothing in it can
+  execute.
+- **Each pattern allows a short run of punctuation between the words.** The realistic form
+  is `execFileSync("git", ["push"])`, which a literal `git push` pattern does not match. The
+  first version missed exactly that.
 
 Release publication is a separate, human decision. See
 [release-checklist.md](release-checklist.md) and
