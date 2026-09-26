@@ -19,6 +19,7 @@
     "typecheck": "npm run typecheck --workspace @cerberus/api && npm run typecheck --workspace @cerberus/mcp-mongodb",
     "typecheck:tests": "npm run typecheck:tests --workspace @cerberus/api",
     "test": "npm run test --workspace @cerberus/api && npm run test --workspace @cerberus/mcp-mongodb",
+    "test:migrations": "npm run test:migrations --workspace @cerberus/api",
     "migrate": "npm run migrate --workspace @cerberus/mcp-mongodb",
     "migrate:dry-run": "npm run migrate:dry-run --workspace @cerberus/mcp-mongodb",
     "dev": "node scripts/dev-services.js",

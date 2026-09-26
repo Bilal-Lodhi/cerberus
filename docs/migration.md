@@ -48,6 +48,18 @@ The volatile field differs by collection — `_ingestedAt` for an event, `_gener
 for an assessment — so `classifyDuplicateGroups` takes the ignored fields as a
 parameter. Passing the wrong one turns a repairable duplicate into a refusal.
 
+### The upgrade gate
+
+`npm run test:migrations` proves the upgrade path end to end against a real MongoDB: it
+seeds a database in a **published release's** shape, runs the documented sequence — dry
+run, migrate, validate, re-run — and asserts the result. The historical shape of `v0.2.0`
+and `v0.3.0` is described once in `apps/api/test/support/release-fixture.ts`, derived from
+the published release notes rather than from the code, so it cannot drift from the state it
+claims to represent.
+
+It is also a step in `npm run verify:release`; see
+[release/verification-harness.md](release/verification-harness.md#the-upgrade-gate).
+
 ### Collections
 
 | Collection | Holds |

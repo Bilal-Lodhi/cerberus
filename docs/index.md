@@ -53,7 +53,7 @@ that must be re-run rather than assumed.
 | Document | Audience | What it covers |
 | --- | --- | --- |
 | [release/release-checklist.md](release/release-checklist.md) | Maintainers | The gates that were verified before `v0.1.0` was published, and the evidence recorded for each. |
-| [release/verification-harness.md](release/verification-harness.md) | Maintainers | `npm run verify:release`: the twelve steps it runs, how to run one on its own, why a skip is not a pass, why it can never publish, and what the version and config censuses found the first time they ran. |
+| [release/verification-harness.md](release/verification-harness.md) | Maintainers | `npm run verify:release`: the thirteen steps it runs, how to run one on its own, why a skip is not a pass, why it can never publish, the upgrade gate that migrates a published release's database, and what the version and config censuses found the first time they ran. |
 | [release/v0.1.0-release-notes.md](release/v0.1.0-release-notes.md) | Everyone | The published `v0.1.0` release notes, including the limitations stated at publication. |
 | [release/v0.2.0-release-notes.md](release/v0.2.0-release-notes.md) | Everyone | The published `v0.2.0` release notes: what it contained, its breaking changes, the upgrade path, and — stated plainly — what it does not claim. |
 | [release/v0.2.0-checklist.md](release/v0.2.0-checklist.md) | Maintainers | **Executed.** The gates run for `v0.2.0`, with the result of each recorded. |

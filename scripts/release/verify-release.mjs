@@ -82,6 +82,18 @@ const STEPS = [
         : "CERBERUS_TEST_MONGODB_URI is not set, so the real-database halves would skip",
   },
   {
+    name: "migrations-previous-release",
+    script: "test:migrations",
+    why:
+      "a published release's database is upgraded by this build — dry run, migrate, " +
+      "validate, re-run — against a real MongoDB",
+    env: { CERBERUS_TEST_MONGODB_URI: process.env["CERBERUS_TEST_MONGODB_URI"] ?? "" },
+    gate: () =>
+      (process.env["CERBERUS_TEST_MONGODB_URI"] ?? "").trim().length > 0
+        ? null
+        : "CERBERUS_TEST_MONGODB_URI is not set, so the upgrade gate cannot run",
+  },
+  {
     name: "docs",
     script: "check:docs",
     why: "every relative link and heading anchor resolves",

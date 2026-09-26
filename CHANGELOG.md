@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The upgrade gate: a published release's database, migrated by this build.**
+  `npm run test:migrations` seeds a database in the shape `v0.2.0` or `v0.3.0` left it and
+  walks the documented upgrade against a **real MongoDB** — dry run, migrate, validate,
+  re-run. It asserts that the dry run changes nothing, that the duplicate
+  `riskAssessmentId` is removed, that the counter is renamed keeping the larger of two
+  values, that the ledger records every migration, that the unique index can be built
+  afterwards (the ordering only a real database can prove), that a second run is a no-op,
+  and that the upgraded data is readable under its new field name.
+- **`apps/api/test/support/release-fixture.ts`** — the historical shape of each published
+  release, described **once** and derived from the release notes rather than from the code.
+  `docs/development/failure-semantics.md` records that a hand-built migration test drifts
+  from the state it claims to represent and keeps passing against a shape no deployment ever
+  had; this is the answer to that.
 - **`npm run verify:release` — the release verification harness.** One non-publishing entry
   point that runs every release-critical check in order and reports each one's outcome:
   build, typecheck, the test tree's typecheck, both test runs, the docs checker, the version
