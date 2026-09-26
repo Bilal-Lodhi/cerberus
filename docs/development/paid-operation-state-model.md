@@ -701,25 +701,38 @@ done?".
 | The `400 INVALID_IDEMPOTENCY_KEY` response | **Implemented** | `scenarios-idempotency.test.ts`, `auditor-idempotency.test.ts` |
 | `/scenarios` durable claim and replay | **Implemented** | `scenarios-idempotency.test.ts` (19 cases: replay, conflict, pending, stale reclaim, failure, redaction, correlation identity) |
 | `/auditor/query` durable claim and replay | **Implemented** | `auditor-idempotency.test.ts` (13 cases) |
-| Two-process race and replay against real MongoDB | **Design** | `test/integration/multi-process-idempotency.test.ts` |
+| Two-process race and replay against real MongoDB | **Implemented** | `test/integration/multi-process-idempotency.test.ts` (12 cases, two API processes and one real MongoDB) |
 | Retention bound, TTL index and `CERBERUS_IDEMPOTENCY_TTL_SECONDS` | **Implemented** | `operation-claims.ts` (`expireAfterSeconds: 0`), migration `0004`, `config.ts` (bounded, fail-closed), `config.test.ts`, `critical-indexes.test.ts` |
 | Migration from a `v0.5.0` database | **Implemented** | `release-fixture.ts` (`v0.5.0` shape), `migration-from-previous-release.test.ts` |
 | Backup/restore covers the collection and both indexes | **Implemented** | `backup-restore-drill.mjs` (11 checks, including a refused duplicate claim after restore), `restore-cerberus.ps1` |
 | Release harness and CI coverage | **Design** | `verify-release.mjs`, `.github/workflows/ci.yml` |
 
-**Both paid routes are protected.** `operation_claims` exists with both indexes, migration
-`0004` creates them, `CERBERUS_IDEMPOTENCY_TTL_SECONDS` bounds retention, the claim protocol
-is in `MongoStore` behind three MCP tools, and **both** `POST /api/v1/scenarios` and
-`POST /api/v1/auditor/query` read the header, claim, replay, conflict and record their
-outcomes. A retry of either route with a key no longer spends twice.
+**Both paid routes are protected, and the race is proven by two processes.** `operation_claims`
+exists with both indexes, migration `0004` creates them, `CERBERUS_IDEMPOTENCY_TTL_SECONDS`
+bounds retention, the claim protocol is in `MongoStore` behind three MCP tools, **both**
+`POST /api/v1/scenarios` and `POST /api/v1/auditor/query` read the header, claim, replay,
+conflict and record their outcomes, and `test/integration/multi-process-idempotency.test.ts`
+runs two API processes against one real MongoDB to assert that **exactly one** of two racing
+claimants executes.
 
-Two rows remain **Design**, and both are about *proving* rather than *building*:
+That suite is the only place the central invariant is asserted rather than argued. Two apps in
+one Node process share no idempotency state: every claim goes `callMcpTool` → the fetch seam →
+the real tool registry → the real `MongoStore` → the real driver, so the mutual exclusion
+under test is genuinely the unique index. A process-local mutex could not pass it.
 
-1. **The race between two real API processes.** The store contract cases prove every
-   predicate against a real MongoDB, but a single-threaded suite cannot put two claimants in
-   flight at once. The two-process harness is the next pull request.
-2. **Release-harness and CI coverage** for the new suites. They run in `npm test`, which CI
-   already runs, but the harness does not name them as a gate yet.
+The assertions are stated as the invariant under **any** interleaving rather than as a guess
+about the winner. The loser's answer depends on timing — a `409` while the winner is still
+working, or a `201` carrying `Idempotency-Replayed` if the winner already finished — so the
+suite asserts "exactly one fresh execution and one provider-call budget of two", not a
+particular pair of statuses. An earlier version asserted `[201, 409]` and was flaky; it passed
+whenever the second claim arrived during the first execution and failed whenever it arrived
+after. It was run four consecutive times after the correction.
+
+One row remains **Design**, and it is about *naming* rather than *building*:
+
+1. **Release-harness and CI coverage.** These suites run inside `npm test`, which CI runs and
+   which the harness's `test` and `test-integration` steps both invoke, so they are gated
+   already. What is not yet done is making the harness *say so* — see the next pull request.
 
 **One behaviour changed rather than being added**, and it is recorded here because it is the
 kind of change that should not be discovered from a diff: a failed `list_sessions` on the

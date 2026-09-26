@@ -13,6 +13,23 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **`apps/api/test/integration/multi-process-idempotency.test.ts` — two API processes, one real
+  MongoDB, one idempotency key.** The only place the central invariant is asserted rather than
+  argued: **exactly one** of two racing claimants executes. Twelve cases cover both paid
+  routes: a race produces one provider execution and one claim record; the loser receives
+  either a `409` or a replay, never a second execution; a completed operation retried on the
+  *other* process replays and spends nothing; a restart replays, because the claim is a
+  document rather than process memory; a different body conflicts across processes; a stale
+  claim belonging to a different request cannot be reclaimed while an aged one can; two
+  processes reclaiming one aged claim produce exactly one execution; and one key across two
+  routes creates two separate claims with no raw key stored.
+  Two apps in one Node process share **no** idempotency state — every claim goes through the
+  fetch seam, the real tool registry, the real `MongoStore` and the real driver — so the
+  mutual exclusion under test is genuinely the unique index, and a process-local mutex could
+  not pass it. The assertions state the invariant under any interleaving rather than a guess
+  about the winner: an earlier `[201, 409]` assertion was flaky, passing only when the second
+  claim arrived during the first execution. The suite was run four consecutive times after the
+  correction.
 - **Durable idempotency for `POST /api/v1/auditor/query`.** The second paid route now reads
   the optional `Idempotency-Key` header, claims the operation before the first paid call,
   replays a completed answer, conflicts on the same key with a different question, answers
