@@ -492,7 +492,7 @@ engineering rationale recorded here:
 | C | Status cannot silently diverge on supported paths | **Done** — the durable document is the authority, the write is predicate-checked, the result is inspected, the caches are repaired from the durable outcome, and a refusal reconciles a stale cache |
 | D | Terminal-content ownership coherent | Open — three candidate sources for one concept, though the boundary now gives the durable write one owner and an existence check |
 | E | Focus-loss/fullscreen semantics truthful | Open — `WINDOW_BLUR` increments the fullscreen counter |
-| F | Corpus hard ceiling consistent between store, read and console | Open — a read ceiling, not a store rejection |
+| F | Corpus hard ceiling consistent between store, read and console | **Done** — a store-side rejection with `REFERENCE_CORPUS_LIMIT_REACHED`, enforced with an atomic conditional `$inc`, verified at 199/200/201 and under concurrency against a real MongoDB. The API and adapter constants are asserted equal, and the console's copy is asserted to be 200 |
 | G | Review-fetch amplification reduced or justified with measurement | Partly — **ingest and reactivate are fixed** (`get_session_review` now takes `eventsLimit` / `includeAssessments`, and both pass `0` / `false`); the per-session fetch on the list path still needs measurement |
 | H | State mutations concurrency-tested | **Done** — four deterministic concurrency cases: terminate racing auto-lock, two terminates racing, two ingests racing, and a duplicate event across two concurrent batches |
 | I | Route-level retry/idempotency contracts documented | Open |

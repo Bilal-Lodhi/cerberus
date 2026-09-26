@@ -9,6 +9,7 @@
  */
 
 import type { MongoStore } from "./mongo-client.js";
+import { ReferenceCorpusLimitError } from "./mongo-client.js";
 import {
   MCP_TOOL_NAMES,
   SESSION_STATUSES,
@@ -312,6 +313,28 @@ export class ToolArgumentError extends Error {
   }
 }
 
+/**
+ * Thrown when the reference corpus is full. Surfaces as HTTP **409** with a stable code.
+ *
+ * A distinct type because the adapter maps `ToolArgumentError` to 400 and everything else
+ * to 500, and "the corpus is full" is neither: the request was well-formed and the server
+ * understood it, but it conflicts with the corpus's current state.
+ */
+export class ReferenceCorpusLimitToolError extends Error {
+  readonly code = "REFERENCE_CORPUS_LIMIT_REACHED";
+
+  constructor(
+    readonly limit: number,
+    readonly count: number,
+  ) {
+    super(
+      `The reference corpus is full: ${count} of ${limit} documents. ` +
+        `Remove a document before adding another.`,
+    );
+    this.name = "ReferenceCorpusLimitToolError";
+  }
+}
+
 function requireString(body: Record<string, unknown>, key: string): string {
   const value = body[key];
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -544,8 +567,30 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       const content = requireBoundedString(body, "content", MAX_REFERENCE_CONTENT_CHARS);
       const tags = readBoundedTags(body, "tags");
 
-      await store.storeReferenceDocument({ referenceId, label, content, tags });
-      return { success: true, referenceId };
+      try {
+        const result = await store.storeReferenceDocument(
+          { referenceId, label, content, tags },
+          { limit: MAX_REFERENCE_DOCUMENTS },
+        );
+        return {
+          success: true,
+          referenceId: result.referenceId,
+          // Additive: `false` means this updated an existing document, which is always
+          // allowed because it does not grow the corpus.
+          created: result.created,
+          count: result.count,
+          limit: MAX_REFERENCE_DOCUMENTS,
+        };
+      } catch (error) {
+        if (error instanceof ReferenceCorpusLimitError) {
+          // A specific, actionable refusal rather than an unavailability. The adapter
+          // maps a `ToolArgumentError` to 400 and anything else to 500, so the ceiling
+          // needs its own type for the route to answer 409 with a stable code instead of
+          // 503 "the corpus is unavailable".
+          throw new ReferenceCorpusLimitToolError(error.limit, error.count);
+        }
+        throw error;
+      }
     },
 
     [MCP_TOOL_NAMES.LIST_REFERENCE_DOCUMENTS]: async (body) => {

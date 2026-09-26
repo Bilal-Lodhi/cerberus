@@ -41,6 +41,15 @@ export const MAX_REFERENCE_PREVIEW_CHARS = 200;
 /** Upper bound on how many documents one list call returns. */
 export const MAX_REFERENCE_DOCUMENTS = 200;
 
+/**
+ * The stable code the persistence layer returns when the corpus is full.
+ *
+ * Declared here rather than imported from the MCP package, matching how
+ * `mcp-tool-names.ts` mirrors the tool names: `apps/api` does not depend on the package
+ * at runtime, and `reference-corpus.test.ts` asserts the two spellings agree.
+ */
+export const REFERENCE_CORPUS_LIMIT_CODE = "REFERENCE_CORPUS_LIMIT_REACHED";
+
 /** Reads a bounded, required string field. */
 function readBoundedString(
   source: Record<string, unknown>,
@@ -160,6 +169,27 @@ export function createReferenceRouter(config: AppConfig): Hono {
     );
 
     if (!stored.ok) {
+      // A full corpus is a specific, actionable refusal. Reporting it as
+      // `REFERENCE_STORE_UNAVAILABLE` — which is what happened before the adapter's code
+      // was surfaced — told the operator to retry something that would never succeed.
+      if (stored.code === REFERENCE_CORPUS_LIMIT_CODE) {
+        console.warn(
+          `[reference] [${requestId}] corpus is full — refused referenceId=${referenceId}`,
+        );
+        return c.json(
+          {
+            success: false,
+            error:
+              `The reference corpus is full (${MAX_REFERENCE_DOCUMENTS} documents). ` +
+              "Remove a document before adding another.",
+            code: REFERENCE_CORPUS_LIMIT_CODE,
+            limit: MAX_REFERENCE_DOCUMENTS,
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
       console.error(`[reference] [${requestId}] store failed: ${stored.error}`);
       return c.json(
         {

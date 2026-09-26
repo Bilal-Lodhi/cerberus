@@ -53,6 +53,7 @@ parameter. Passing the wrong one turns a repairable duplicate into a refusal.
 | Collection | Holds |
 | --- | --- |
 | `schema_migrations` | The migration ledger: which migrations this database has had applied, when, and what each reported. |
+| `reference_corpus_meta` | One counter document holding the reference-corpus size, so the corpus ceiling can be enforced with an atomic conditional `$inc` rather than a count-then-insert that races. Not domain data. |
 
 ---
 

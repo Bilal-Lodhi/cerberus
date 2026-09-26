@@ -53,6 +53,18 @@ export const COLLECTION_NAMES = {
    * when. Written only by `runMigrations()`.
    */
   schemaMigrations: "schema_migrations",
+  /**
+   * One counter document holding the reference-corpus size.
+   *
+   * Exists so the corpus ceiling can be enforced **atomically**. A count-then-insert
+   * races: two concurrent creates at one below the limit would both read the same
+   * count and both insert. A conditional `$inc` on a single document is atomic, so the
+   * counter is the arbiter and exactly `MAX_REFERENCE_DOCUMENTS` creates can succeed.
+   *
+   * The counter is reconciled from the collection whenever it disagrees with reality,
+   * so it self-heals rather than becoming a second source of truth that can drift.
+   */
+  referenceCorpusMeta: "reference_corpus_meta",
 } as const;
 
 /** Default database name. */

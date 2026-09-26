@@ -139,6 +139,7 @@ artefact is not lost, and the response does not pretend it was stored.
 | Code | HTTP | Meaning | Client action |
 | --- | --- | --- | --- |
 | `INVALID_REFERENCE_DOCUMENT` | 400 | A field is missing, empty, the wrong type, or over its bound | Fix the document. The message names the field and the bound. |
+| `REFERENCE_CORPUS_LIMIT_REACHED` | 409 | The corpus is at `MAX_REFERENCE_DOCUMENTS` (200) and this would be a **new** document. An update of an existing `referenceId` is always allowed. | Remove a document first. Retrying will not help. The response carries `limit`. |
 | `REFERENCE_STORE_UNAVAILABLE` | 503 | The corpus store did not answer. **Similarity matching degrades to no matches rather than failing an analysis.** | Retry. |
 
 A failed corpus read during risk analysis does **not** fail the analysis: it returns an
