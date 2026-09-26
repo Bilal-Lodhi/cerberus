@@ -66,18 +66,60 @@ the handle surviving a subsequent request.** Nothing else depends on it.
 
 ### 2.3 Notification delivery is best-effort per process
 
-Nothing durable records that a notification was sent. Two replicas can therefore each send one for
-the same incident, and one replica can send none if it dies.
+There is no durable outbox and no delivery guarantee. What follows is what was **measured from
+the code**, what was **reduced**, and what is **still possible** — stated precisely rather than
+as a blanket "duplicates can happen".
 
-There is no deduplication, and this document does not imply one. A durable outbox would be the
-mechanism, and it is not built — see
-[threat-model.md](../security/threat-model.md) §8b.
+#### Reduced: one alert per stored assessment
 
-### 2.4 The two paid routes are not idempotent
+`store_risk_assessment` is an insert with a unique index on `riskAssessmentId`, so a second
+write of one id reports `inserted: false` and changes nothing. That response used to be
+discarded — the route read only `stored.ok` — so a second analysis producing an id already in
+the database locked the session and **sent a second alert** for an incident that had already
+been alerted on.
 
-A retry after a lost response executes the provider call again, on any replica. The exposure per
-route, and the design that would close it, are in
-[idempotency-model.md](../development/idempotency-model.md).
+The route now reads it and suppresses the alert when the evidence was already durable. This is a
+durable, atomic, cross-replica dedupe that needed **no new collection, index or migration**: the
+unique index already existed and was already the arbiter. The status transition still runs,
+because it is a compare-and-set and idempotent, and skipping it could leave a session unlocked
+when the durable evidence says it should be locked.
+
+So: **an alert is now at-most-once per stored `riskAssessmentId`, whoever produced it.**
+
+#### Still possible: two alerts for one *incident*
+
+Two API processes analysing one session concurrently each mint their **own**
+`riskAssessmentId`. The id comes from the model — it is parsed from the provider's response, or
+replaced with a local `randomUUID()` when the model omits one — so two independent analyses of
+one incident produce two ids, both rows are new, and both processes notify.
+
+**This cannot be fixed with a marker keyed on `riskAssessmentId`, because that id is not an
+incident identity.** A durable dedupe here would need a durable *incident* identity, and none
+exists: the natural candidate, the session's workspace content, is reconstructed in memory and
+differs between replicas. Building a marker on a key that is not stable would trade a duplicate
+alert for a **lost** alert, which is worse.
+
+Also unchanged: a replica that dies mid-send may deliver nothing, and nothing records that a
+notification was attempted.
+
+#### Why no outbox
+
+A durable outbox is the mechanism that would close both, and it is not built. It is not built
+because the smallest correct version is not small: it needs a durable incident identity first,
+and that is a product decision about what an "incident" is rather than an engineering task. An
+outbox keyed on an unstable identity would be a queue that either double-delivers or drops. See
+[threat-model.md](../security/threat-model.md) §8b and
+`apps/api/test/notification-dedupe.test.ts` for the suite that asserts the reduced behaviour and
+the surviving gap.
+
+### 2.4 The two paid routes are idempotent when a key is supplied
+
+Both accept an optional `Idempotency-Key`. With one, a retry after a lost response replays the
+first response and does not call the provider; the same key with a different request is `409`.
+Without one, a retry executes the provider call again on any replica. The mechanism, its
+retention window and its remaining crash window are in
+[development/paid-operation-state-model.md](../development/paid-operation-state-model.md).
+
 
 ## 3. Rotating the shared secrets across replicas
 

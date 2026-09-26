@@ -250,6 +250,26 @@ function benchConfig() {
     // has its own tests; a throughput figure with it on would measure bucket
     // arithmetic.
     rateLimit: { enabled: false, aiRequestsPerMinute: 10 },
+    // ── The two fields below are why this benchmark was broken ──────────
+    //
+    // `createApp` reads `config.log.level` unconditionally, so a config literal without a
+    // `log` object threw `Cannot read properties of undefined` before a single case ran.
+    // That was true from `v0.4.0` onward — the operability cycle added structured logging to
+    // `AppConfig` and this literal was not updated — so `npm run bench`, the command the
+    // performance baseline documents as reproducible, crashed on every revision it named.
+    //
+    // `error` rather than `info`, because the intent stated at the top of this file is to
+    // silence the application's per-request logging for the duration: one `http.request` line
+    // per sample buries the results table. `console.log` being silenced does not stop the
+    // logger, which writes to the stream directly — so the level is the control.
+    //
+    // `apps/api/test/bench-config.test.ts` now asserts this literal covers every key
+    // `makeConfig()` produces, so the next field added to `AppConfig` fails a test instead of
+    // silently breaking the benchmark.
+    log: { level: "error", format: "json" },
+    // Read by the paid routes' idempotency handling. Present so this literal matches the
+    // config shape the application expects; a `v0.4.0` build ignores it.
+    idempotency: { ttlSeconds: 86_400 },
   };
 }
 
@@ -440,6 +460,32 @@ await run(
 await run(
   await measure("GET /api/v1/sessions/:id", iterations(500), async () => {
     await app.request("/api/v1/sessions/bench-ingest", { headers: HEADERS });
+  }),
+);
+
+// ── 7b. The reconciled live surfaces ──
+//
+// ── Why these two cases exist ────────────────────────────────────────
+//
+// The `v0.5.0` cycle made the live list and the live detail reconcile against durable truth on
+// every request: the list issues one batched durable query per request, and the detail reads
+// the session document. That is real work added to two hot paths, and until these cases
+// existed nothing in this file measured it — the nine original cases cover the *review*
+// surfaces and ingestion, not the live ones.
+//
+// They are measured with the same harness, the same stub and the same dataset as everything
+// else, and they run unchanged against a `v0.4.0` build, which is what makes the before/after
+// comparison in `docs/development/performance-baseline.md` a comparison rather than two
+// unrelated numbers.
+await run(
+  await measure("GET /guardian/sessions (live list)", iterations(1000), async () => {
+    await app.request("/api/v1/guardian/sessions", { headers: HEADERS });
+  }),
+);
+
+await run(
+  await measure("GET /guardian/sessions/:id (live detail)", iterations(1000), async () => {
+    await app.request("/api/v1/guardian/sessions/bench-ingest", { headers: HEADERS });
   }),
 );
 

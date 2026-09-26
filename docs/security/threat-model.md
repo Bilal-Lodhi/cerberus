@@ -330,13 +330,21 @@ consequences are in [operations/multi-replica.md](../operations/multi-replica.md
   write on every request's hot path is in
   [operations/multi-replica.md](../operations/multi-replica.md) §2.1; per-caller limiting stays a
   reverse-proxy concern because it needs caller identity the baseline does not have.
-- **Idempotency reduces duplicates, not replay or authorization risk.** And on the two paid routes
-  it does not exist at all: the duplicate-spend exposure is **re-accepted with its cost measured**
-  in [development/idempotency-model.md](../development/idempotency-model.md).
+- **Idempotency reduces duplicates, not replay or authorization risk.** A key stops a *retry*
+  from executing twice; it grants no authority the shared operator key did not already grant,
+  and a caller who sends a new key gets a new operation. It is not an exactly-once guarantee —
+  the crash window and the retention bound are stated in
+  [development/paid-operation-state-model.md](../development/paid-operation-state-model.md) §11.
 - **A request id is observability only.** It is never an identity, an authorization input, or a
-  deduplication key, on one replica or many.
-- **Notification delivery remains best-effort and undeduplicated.** Two replicas can each notify
-  for the same incident.
+  deduplication key, on one replica or many. The same is true of the paid-operation claim: its
+  identity is a digest of a caller-supplied key, which identifies a request rather than a person.
+- **Notification delivery remains best-effort.** An alert is now at-most-once per stored
+  `riskAssessmentId`, because a second write of one id reports `inserted: false` and its alert is
+  suppressed — a durable, atomic dedupe that needed no new collection. What remains possible is
+  two alerts for one **incident**: two replicas analysing one session mint different assessment
+  ids, because the id is model-supplied rather than derived from the incident. No durable outbox
+  exists, and the reason it would need a durable incident identity first is in
+  [operations/multi-replica.md](../operations/multi-replica.md) §2.3.
 - **No endpoint agent, and no new monitored data.** Telemetry still originates only from the
   browser console, and the advisory posture is unchanged: a risk score is a signal for a human
   reviewer, never a finding of intent.
