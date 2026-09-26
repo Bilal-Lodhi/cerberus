@@ -13,6 +13,26 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Fixed
 
+- **A second alert could be sent for an incident whose evidence was already durable.**
+  `store_risk_assessment` is an insert with a unique index on `riskAssessmentId`, so a second
+  write of one id reports `inserted: false` and changes nothing — but the route read only
+  `stored.ok` and **discarded `inserted`**, so it locked the session and sent a second
+  notification for an incident that had already been alerted on. It now reads it and suppresses
+  the alert, logging `guardian.notification.suppressed`. This is a durable, atomic,
+  cross-replica dedupe that needed **no new collection, index or migration**: the unique index
+  already existed and was already the arbiter. The status transition still runs — it is a
+  compare-and-set and idempotent, and skipping it could leave a session unlocked when the
+  durable evidence says it should be locked. Verified with five cases that count the **outbound
+  HTTP requests**, not a log line or a response field.
+- **Three documentation claims were false, and are corrected rather than softened.**
+  `failure-semantics.md` said "a re-analysis writes one row per incident" — the unique index is a
+  guarantee about an **id**, and the id is model-supplied (or a local `randomUUID()` when the
+  model omits one), so two independent analyses of one incident produce two ids and two rows.
+  The same file described the notification as awaited *before* the durable evidence is written,
+  which was true when written and is not now. `multi-replica.md` said notification delivery is
+  simply "undeduplicated"; it now records what was reduced, what remains possible, and why a
+  durable outbox would need a durable incident identity first. The threat model's §8b boundary
+  list is corrected the same way.
 - **A completion write that failed left the claim `pending`, so a retry would spend a second
   time.** When the provider succeeded and the completion write did not reach the store, the
   route logged the lost completion and returned — leaving the record `pending` until its lease
@@ -26,6 +46,14 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **`apps/api/test/notification-dedupe.test.ts` — the notification-duplication review, asserted.**
+  Five cases that count the **outbound HTTP requests** with both channels configured for real: a
+  first high-risk incident reaches both channels; a second analysis whose assessment was already
+  stored notifies **zero** times; the status transition still happens when the alert is
+  suppressed, because leaving a session unlocked would be a worse failure than a duplicate alert;
+  a genuinely new incident is **not** suppressed, because a dedupe that drops a real alert is
+  worse than the duplicate it prevents; and no alert is sent for an assessment whose write
+  failed.
 - **`apps/api/test/paid-operation-recovery.test.ts` — failure injection on the claim.** The
   states a healthy system never reaches: a provider quota error and a provider transport
   failure (both retryable, both re-executing on retry); **a provider success whose completion

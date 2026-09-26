@@ -777,7 +777,7 @@ export function createGuardianRouter(
           // which meant a process death in that window left a durably `locked` session
           // with a delivered alert and **no recorded justification** — a lock whose
           // evidence was never written.
-          const stored = await callMcpTool(
+          const stored = await callMcpTool<{ inserted?: unknown }>(
             config,
             MCP_TOOL_NAMES.STORE_RISK_ASSESSMENT,
             { report: riskPayload },
@@ -790,6 +790,32 @@ export function createGuardianRouter(
           // for one whose write had failed.
           session.lastRiskPayloadStored = stored.ok;
           assessmentPersisted = stored.ok;
+
+          // ── Was this incident's evidence already durable? ────────────────
+          //
+          // `store_risk_assessment` is an insert with a **unique index on
+          // `riskAssessmentId`**, so a second write of the same id reports
+          // `inserted: false` and changes nothing. That response used to be discarded —
+          // only `stored.ok` was read — so a second analysis that produced an id already
+          // in the database proceeded to lock the session and **send a second
+          // notification** for an incident that had already been alerted on.
+          //
+          // Reading it costs nothing and buys a real, durable, race-safe dedupe: the
+          // unique index decides, atomically, across replicas and across restarts, and no
+          // new collection, index or migration is involved.
+          //
+          // ── What this does and does not fix ──
+          //
+          // **Fixed:** two notifications for one durable `riskAssessmentId`, whoever
+          // produced them. The alert is now at-most-once per stored assessment.
+          //
+          // **Not fixed, and deliberately:** two API processes analysing one session
+          // concurrently mint **different** ids — the id comes from the model, or from a
+          // local `randomUUID()` when the model omits one — so both rows are new and both
+          // notify. That needs a durable *incident* identity, which does not exist today.
+          // See docs/operations/multi-replica.md §2.3.
+          const alreadyStored =
+            stored.ok && stored.data?.["inserted"] === false;
 
           if (stored.ok) {
             // ── The durable peak, written now that there is evidence for it ──
@@ -838,7 +864,22 @@ export function createGuardianRouter(
             // Both are best-effort and swallow their own failures, so a notification
             // outage cannot affect the durable state that now exists. They run after
             // the lock so an alert describes a state that is already recorded.
-            if (shouldLock) {
+            //
+            // Skipped when this incident's evidence was already durable: the alert is
+            // at-most-once per stored `riskAssessmentId`, and the unique index is what
+            // decides. The status transition above still runs — it is a compare-and-set and
+            // idempotent, and skipping it could leave a session unlocked when the durable
+            // evidence says it should be locked.
+            if (shouldLock && alreadyStored) {
+              logger.info(LOG_EVENTS.GUARDIAN_NOTIFICATION_SUPPRESSED, {
+                sessionId,
+                dependency: "notification",
+                classification: "duplicate-incident",
+                // The id, not the payload: it is the durable key the dedupe turns on, and
+                // it is already the identity of a stored document.
+                riskAssessmentId: riskPayload.riskAssessmentId,
+              });
+            } else if (shouldLock) {
               await Promise.all([
                 notifySlack(notifySlackWebhook, riskPayload),
                 sendEmail(sendgridKey, emailFrom, emailTo, riskPayload),
