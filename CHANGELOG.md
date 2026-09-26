@@ -13,6 +13,26 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Fixed
 
+- **A second alert could be sent for an incident whose evidence was already durable.**
+  `store_risk_assessment` is an insert with a unique index on `riskAssessmentId`, so a second
+  write of one id reports `inserted: false` and changes nothing — but the route read only
+  `stored.ok` and **discarded `inserted`**, so it locked the session and sent a second
+  notification for an incident that had already been alerted on. It now reads it and suppresses
+  the alert, logging `guardian.notification.suppressed`. This is a durable, atomic,
+  cross-replica dedupe that needed **no new collection, index or migration**: the unique index
+  already existed and was already the arbiter. The status transition still runs — it is a
+  compare-and-set and idempotent, and skipping it could leave a session unlocked when the
+  durable evidence says it should be locked. Verified with five cases that count the **outbound
+  HTTP requests**, not a log line or a response field.
+- **Three documentation claims were false, and are corrected rather than softened.**
+  `failure-semantics.md` said "a re-analysis writes one row per incident" — the unique index is a
+  guarantee about an **id**, and the id is model-supplied (or a local `randomUUID()` when the
+  model omits one), so two independent analyses of one incident produce two ids and two rows.
+  The same file described the notification as awaited *before* the durable evidence is written,
+  which was true when written and is not now. `multi-replica.md` said notification delivery is
+  simply "undeduplicated"; it now records what was reduced, what remains possible, and why a
+  durable outbox would need a durable incident identity first. The threat model's §8b boundary
+  list is corrected the same way.
 - **A completion write that failed left the claim `pending`, so a retry would spend a second
   time.** When the provider succeeded and the completion write did not reach the store, the
   route logged the lost completion and returned — leaving the record `pending` until its lease
@@ -23,6 +43,19 @@ deployment. This is an experimental research system and is not production ready.
   re-executing. When the store refuses that failure write too, the record does stay `pending`
   — the residual window §3.11 documents — and that half is asserted explicitly rather than
   described.
+
+### Fixed
+
+- **`npm run bench` had been broken since `v0.4.0`, through four releases.** `benchConfig()`
+  never gained the `log` field that `createApp` reads unconditionally, so the command
+  `docs/development/performance-baseline.md` calls the reproducible way to produce the baseline
+  threw `Cannot read properties of undefined` **before a single case ran**. Nothing noticed
+  because no test ran it and no gate named it — so the document went on describing a baseline
+  nobody could reproduce, and every figure in it silently stopped being comparable. That is a
+  worse failure than a slow path. `benchConfig()` now carries `log` and `idempotency`, and
+  `apps/api/test/bench-config.test.ts` asserts the literal covers **every** top-level key
+  `makeConfig()` produces — in both directions, plus a third case asserting the extraction is
+  not empty so the check cannot pass vacuously.
 
 ### Added
 
@@ -40,6 +73,29 @@ deployment. This is an experimental research system and is not production ready.
   are separate declarations because the API does not depend on the package at runtime; and that
   the suites which prove the mechanism still exist and are still inside the API's test globs,
   because a test file that is never run is not a gate.
+- **The reconciliation latency before/after baseline, and the two benchmark cases that make it
+  possible.** `docs/development/performance-baseline.md` gains a measured comparison of
+  `v0.4.0` against `main` on one machine, back to back, with the **same benchmark code** run
+  against both builds. The benchmark had no case for the reconciled live surfaces — the nine
+  existing ones cover the *review* surfaces and ingestion — so
+  `GET /guardian/sessions (live list)` and `GET /guardian/sessions/:id (live detail)` were
+  added, and they run unchanged against a `v0.4.0` build.
+  The result: the **live detail went from 0.09 ms to 3.49 ms at p50** — 38×, and 6.80 ms at
+  p95 — because it now reads the durable session document instead of answering from process
+  memory. That is the measured **cost of the correctness the `v0.5.0` cycle bought**: the old
+  number was fast because a session another replica had terminated was reported `active`. The
+  live list moved **+16 % p50 / +20 % p95**. Every other case is inside run-to-run noise, two
+  of them negative, and the document says so rather than reading a 9 % movement as a change.
+  What the comparison does **not** establish is stated too: no TCP, no TLS, no MongoDB, no
+  model latency, no concurrency, and no comparison with any figure taken on another machine.
+- **`apps/api/test/notification-dedupe.test.ts` — the notification-duplication review, asserted.**
+  Five cases that count the **outbound HTTP requests** with both channels configured for real: a
+  first high-risk incident reaches both channels; a second analysis whose assessment was already
+  stored notifies **zero** times; the status transition still happens when the alert is
+  suppressed, because leaving a session unlocked would be a worse failure than a duplicate alert;
+  a genuinely new incident is **not** suppressed, because a dedupe that drops a real alert is
+  worse than the duplicate it prevents; and no alert is sent for an assessment whose write
+  failed.
 - **`apps/api/test/paid-operation-recovery.test.ts` — failure injection on the claim.** The
   states a healthy system never reaches: a provider quota error and a provider transport
   failure (both retryable, both re-executing on retry); **a provider success whose completion

@@ -189,9 +189,13 @@ The client sees a timeout and retries the same batch.
 - Analysis: dedup layer 2 (code hash) suppresses re-analysis **when the code is
   unchanged and the process did not restart**. After a restart
   `lastAnalyzedCodeHash` is `""`, so the retry re-pays.
-- Assessment: **fixed.** `risk_assessments` carries a unique index on
-  `riskAssessmentId` and `storeRiskAssessment` is idempotent on it, so a re-analysis
-  writes one row per incident. See §3.9.
+- Assessment: **fixed, for a repeated id.** `risk_assessments` carries a unique index on
+  `riskAssessmentId` and `storeRiskAssessment` is idempotent on it, so a second write of one id
+  changes nothing. **That is a guarantee about an id, not about an incident**: the id is
+  model-supplied, or a local `randomUUID()` when the model omits one, so two independent
+  analyses of one incident produce two ids and therefore two rows. This paragraph used to say
+  "a re-analysis writes one row per incident" without that qualification, which was false in
+  the ordinary case. See §3.9 and [../operations/multi-replica.md](../operations/multi-replica.md) §2.3.
 
 ### 3.7 Retry arrives after an ambiguous response
 
@@ -202,8 +206,8 @@ Covered by §3.6. The net guarantee is:
 | An event is stored at most once | **yes** — unique `(sessionId, eventId)` |
 | Counters are not inflated by a retry | **yes** — only newly-inserted events are applied |
 | A retry does not re-spend on analysis | **only within one process and only if the workspace is unchanged** |
-| A retry does not duplicate the assessment | **yes** — unique `riskAssessmentId`, with the duplicate-key path handled rather than pre-checked |
-| A retry does not re-notify | **no** — the notification has no dedup key |
+| A retry does not duplicate the assessment | **only when the id repeats.** The unique index on `riskAssessmentId` refuses a second row — but that id is **model-supplied**, or a local `randomUUID()` when the model omits one, so two independent analyses of one incident produce two ids and two rows. This row used to say "yes" without that qualification; the index is a guarantee about an id, not about an incident |
+| A retry does not re-notify | **only when the id repeats.** A second analysis that stores an id already in the database is now recognised (`inserted: false`) and its alert suppressed, so an alert is at-most-once per stored `riskAssessmentId`. Two replicas analysing one session mint different ids and **both** alert. See [../operations/multi-replica.md](../operations/multi-replica.md) §2.3 |
 
 ### 3.8 Optional notification fails
 
@@ -211,11 +215,11 @@ Covered by §3.6. The net guarantee is:
 therefore never rejects on their behalf, and a notification outage cannot fail the
 ingest. This is correct and is the documented contract.
 
-The inversion is that the notification is **awaited before the durable evidence is
-written**, so a healthy notification can be delivered for an assessment that is
-then never persisted (§3.4). The notification cannot corrupt durable telemetry
-state — it is fire-and-forget with respect to correctness — but it can describe a
-state that does not durably exist.
+**This section used to say the notification is awaited *before* the durable evidence is
+written. That was true when it was written and is no longer.** The order is now: persist the
+assessment, then the status transition, then the side effects — so a notification describes a
+state that is already recorded, and no notification is sent at all for an assessment whose write
+failed. §5 below is the current account, and it is the one to read.
 
 ### 3.9 Documented-but-absent dedup layer — **now implemented**
 

@@ -322,6 +322,16 @@ export const LOG_EVENTS = {
   SESSION_TRANSITION_REPAIRED: "session.transition.repaired",
   /** A best-effort outbound notification. */
   NOTIFICATION: "notification.outbound",
+  /**
+   * A high-risk notification was **suppressed** because this incident's evidence was already
+   * durable.
+   *
+   * `store_risk_assessment` carries a unique index on `riskAssessmentId`, so a second write of
+   * one id reports `inserted: false`. That is a durable, atomic, cross-replica signal that
+   * this incident has already been through the path — and a second alert for it is a
+   * duplicate. See `docs/operations/multi-replica.md` §2.3.
+   */
+  GUARDIAN_NOTIFICATION_SUPPRESSED: "guardian.notification.suppressed",
   /** A provider attempt inside the retry loop. */
   PROVIDER_ATTEMPT: "provider.attempt",
   /** A paid provider call that completed. */
