@@ -14,8 +14,9 @@
  * ── How it reads the two sides ────────────────────────────────────────
  *
  *   READ        every `readEnv("X")`, `readInt("X", …)`, `readBoolStrict("X", …)`,
- *               `readEnum("X", …)`, `readPositiveInt`, `readRatio`, `readFloat` call and
- *               every `process.env["X"]` / `process.env.X` in the scanned trees.
+ *               `readEnum("X", …)`, `readPositiveInt`, `readBoundedPositiveInt`, `readRatio`,
+ *               `readFloat` call and every `process.env["X"]` / `process.env.X` in the
+ *               scanned trees.
  *   DOCUMENTED  every backticked, upper-case identifier in `docs/configuration.md` and in
  *               `.env.example`.
  *
@@ -121,6 +122,7 @@ const READ_HELPERS = [
   "readBool",
   "readBoolStrict",
   "readPositiveInt",
+  "readBoundedPositiveInt",
   "readFloat",
   "readRatio",
   "readEnum",

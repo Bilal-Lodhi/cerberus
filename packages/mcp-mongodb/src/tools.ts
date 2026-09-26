@@ -11,6 +11,13 @@
 import type { MongoStore } from "./mongo-client.js";
 import { ReferenceCorpusLimitError } from "./mongo-client.js";
 import {
+  OPERATION_FAILURE_CATEGORIES,
+  PAID_ROUTE_FAMILIES,
+  type OperationFailureCategory,
+  type PaidOperationResult,
+  type PaidRouteFamily,
+} from "./operation-claims.js";
+import {
   MCP_TOOL_NAMES,
   SESSION_STATUSES,
   type McpToolName,
@@ -285,6 +292,88 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
     },
   },
 
+  [MCP_TOOL_NAMES.CLAIM_PAID_OPERATION]: {
+    name: MCP_TOOL_NAMES.CLAIM_PAID_OPERATION,
+    description:
+      "Claim a paid operation, or report what an existing claim says. The unique index on " +
+      "(routeFamily, keyHash) is the mutual exclusion: two callers racing one key both " +
+      "attempt the insert and exactly one is allowed to proceed. Answers with one of " +
+      "`claimed`, `reclaimed`, `replay`, `pending` or `conflict`. A caller must not " +
+      "spend money unless it was answered `claimed` or `reclaimed`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        routeFamily: { type: "string", enum: [...PAID_ROUTE_FAMILIES] },
+        keyHash: { type: "string", description: "sha256 of the caller's Idempotency-Key" },
+        fingerprint: { type: "string", description: "sha256 of the canonical request" },
+        fingerprintVersion: { type: "number" },
+        leaseMs: {
+          type: "number",
+          description:
+            "How long a pending claim blocks a retry. Derived from the provider timeout, " +
+            "not configured independently — see deriveLeaseMs.",
+        },
+        ttlMs: { type: "number", description: "How long the record exists at all." },
+      },
+      required: ["routeFamily", "keyHash", "fingerprint", "fingerprintVersion", "leaseMs", "ttlMs"],
+    },
+  },
+
+  [MCP_TOOL_NAMES.COMPLETE_PAID_OPERATION]: {
+    name: MCP_TOOL_NAMES.COMPLETE_PAID_OPERATION,
+    description:
+      "Record a completed paid operation and the response to replay. Conditional on the " +
+      "claimId, so a process whose lease expired cannot overwrite a record a reclaimer now " +
+      "owns. `completed: false` means the claim is no longer this caller's — which means a " +
+      "second execution exists, and must be reported rather than swallowed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        routeFamily: { type: "string", enum: [...PAID_ROUTE_FAMILIES] },
+        keyHash: { type: "string" },
+        claimId: { type: "string" },
+        result: {
+          type: "object",
+          description: "The response to replay: { status, body }.",
+        },
+        resultOmitted: {
+          type: "string",
+          description:
+            "Present only when the real result was too large to retain; `result` then " +
+            "carries a small truthful substitute.",
+        },
+        ttlMs: { type: "number" },
+      },
+      required: ["routeFamily", "keyHash", "claimId", "result", "ttlMs"],
+    },
+  },
+
+  [MCP_TOOL_NAMES.FAIL_PAID_OPERATION]: {
+    name: MCP_TOOL_NAMES.FAIL_PAID_OPERATION,
+    description:
+      "Record a failed paid operation. A retryable category (provider-unavailable, " +
+      "provider-rejected) lets a same-key retry re-execute. A non-retryable category " +
+      "(result-persist-failed, result-too-large) means Cerberus observed the provider " +
+      "succeed, so a same-key retry replays the recorded failure instead — and therefore " +
+      "requires `result`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        routeFamily: { type: "string", enum: [...PAID_ROUTE_FAMILIES] },
+        keyHash: { type: "string" },
+        claimId: { type: "string" },
+        errorCategory: { type: "string", enum: [...OPERATION_FAILURE_CATEGORIES] },
+        result: {
+          type: "object",
+          description:
+            "The response to replay. Required when the category is not retryable.",
+        },
+        ttlMs: { type: "number" },
+      },
+      required: ["routeFamily", "keyHash", "claimId", "errorCategory", "ttlMs"],
+    },
+  },
+
   [MCP_TOOL_NAMES.HEALTH_CHECK]: {
     name: MCP_TOOL_NAMES.HEALTH_CHECK,
     description: "Verify MongoDB connectivity and report store status.",
@@ -461,6 +550,73 @@ function readBoundedTags(body: Record<string, unknown>, key: string): string[] {
     }
     return trimmed;
   });
+}
+
+/** Reads a required finite number. Surfaces as HTTP 400 rather than becoming `NaN`. */
+function requireFiniteNumber(body: Record<string, unknown>, key: string): number {
+  const value = body[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new ToolArgumentError(`Parameter '${key}' must be a finite number.`);
+  }
+  return value;
+}
+
+/**
+ * Reads the route family, checked against the vocabulary.
+ *
+ * Validated rather than accepted as any string: the family is half of the unique index, so
+ * an unvalidated value would let a caller create a key namespace the API can never address
+ * — a record that is unreachable and never expires into a conflict.
+ */
+function readRouteFamily(body: Record<string, unknown>): PaidRouteFamily {
+  const value = body["routeFamily"];
+  if (typeof value !== "string" || !(PAID_ROUTE_FAMILIES as readonly string[]).includes(value)) {
+    throw new ToolArgumentError(
+      `Parameter 'routeFamily' must be one of: ${PAID_ROUTE_FAMILIES.join(", ")}`,
+    );
+  }
+  return value as PaidRouteFamily;
+}
+
+/** Reads the failure category, checked against the vocabulary. */
+function readFailureCategory(body: Record<string, unknown>): OperationFailureCategory {
+  const value = body["errorCategory"];
+  if (
+    typeof value !== "string" ||
+    !(OPERATION_FAILURE_CATEGORIES as readonly string[]).includes(value)
+  ) {
+    throw new ToolArgumentError(
+      `Parameter 'errorCategory' must be one of: ${OPERATION_FAILURE_CATEGORIES.join(", ")}`,
+    );
+  }
+  return value as OperationFailureCategory;
+}
+
+/**
+ * Reads a `{ status, body }` response to replay.
+ *
+ * The status is checked to be an HTTP status rather than trusted: a record whose replay
+ * status was `NaN` or `0` would answer a retry with a status no client can interpret, which
+ * is worse than refusing to write the record in the first place.
+ */
+function readReplayableResult(
+  body: Record<string, unknown>,
+  key: string,
+): PaidOperationResult {
+  const value = body[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ToolArgumentError(`Parameter '${key}' must be an object.`);
+  }
+
+  const record = value as Record<string, unknown>;
+  const status = record["status"];
+  if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    throw new ToolArgumentError(
+      `Parameter '${key}.status' must be an integer HTTP status between 100 and 599.`,
+    );
+  }
+
+  return { status, body: record["body"] };
 }
 
 export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolHandler> {
@@ -724,6 +880,76 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       const referenceId = requireBoundedString(body, "referenceId", MAX_REFERENCE_LABEL_CHARS);
       const deleted = await store.deleteReferenceDocument(referenceId);
       return { success: true, deleted };
+    },
+
+    [MCP_TOOL_NAMES.CLAIM_PAID_OPERATION]: async (body) => {
+      const routeFamily = readRouteFamily(body);
+      const keyHash = requireString(body, "keyHash");
+      const fingerprint = requireString(body, "fingerprint");
+      const fingerprintVersion = requireFiniteNumber(body, "fingerprintVersion");
+      const leaseMs = requireFiniteNumber(body, "leaseMs");
+      const ttlMs = requireFiniteNumber(body, "ttlMs");
+
+      const outcome = await store.claimPaidOperation({
+        routeFamily,
+        keyHash,
+        fingerprint,
+        fingerprintVersion,
+        leaseMs,
+        ttlMs,
+      });
+
+      // Reported verbatim rather than flattened into `success`. The caller's decision —
+      // spend or do not spend — turns entirely on which outcome this was, so a shape that
+      // lost the distinction would be a shape that could be misread into a second charge.
+      return { success: true, ...outcome };
+    },
+
+    [MCP_TOOL_NAMES.COMPLETE_PAID_OPERATION]: async (body) => {
+      const routeFamily = readRouteFamily(body);
+      const keyHash = requireString(body, "keyHash");
+      const claimId = requireString(body, "claimId");
+      const result = readReplayableResult(body, "result");
+      const ttlMs = requireFiniteNumber(body, "ttlMs");
+
+      const completed = await store.completePaidOperation({
+        routeFamily,
+        keyHash,
+        claimId,
+        result,
+        ttlMs,
+        ...(typeof body["resultOmitted"] === "string"
+          ? { resultOmitted: body["resultOmitted"] }
+          : {}),
+      });
+
+      // `completed: false` is not an error, and it is not "already done": it means this
+      // claim is no longer ours, which means a second execution exists. Reporting it as a
+      // plain `success` would hide the one state the mechanism cannot rule out.
+      return { success: true, completed };
+    },
+
+    [MCP_TOOL_NAMES.FAIL_PAID_OPERATION]: async (body) => {
+      const routeFamily = readRouteFamily(body);
+      const keyHash = requireString(body, "keyHash");
+      const claimId = requireString(body, "claimId");
+      const errorCategory = readFailureCategory(body);
+      const ttlMs = requireFiniteNumber(body, "ttlMs");
+      const result =
+        body["result"] === undefined || body["result"] === null
+          ? undefined
+          : readReplayableResult(body, "result");
+
+      const recorded = await store.failPaidOperation({
+        routeFamily,
+        keyHash,
+        claimId,
+        errorCategory,
+        ttlMs,
+        ...(result ? { result } : {}),
+      });
+
+      return { success: true, recorded };
     },
 
     [MCP_TOOL_NAMES.HEALTH_CHECK]: async () => {

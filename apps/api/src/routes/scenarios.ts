@@ -23,6 +23,23 @@ import { getAIProvider } from "../ai/provider.js";
 import { LOG_EVENTS, logger } from "../observability/logger.js";
 import { currentRequestId } from "../observability/request-context.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
+import {
+  IDEMPOTENCY_KEY_HEADER,
+  readIdempotencyKey,
+} from "../services/idempotency-key.js";
+import {
+  FINGERPRINT_VERSION,
+  fingerprintScenariosRequest,
+} from "../services/request-fingerprint.js";
+import {
+  beginPaidOperation,
+  classifyProviderFailure,
+  completePaidOperation,
+  failPaidOperation,
+  stripRequestIdentity,
+  withCurrentRequestId,
+  type PaidOperationContext,
+} from "../services/paid-operation.js";
 import { toISOStringLocal } from "../utils/time.js";
 
 const MCP_GROUNDING_TIMEOUT_MS = 5_000;
@@ -259,6 +276,24 @@ export function createScenariosRouter(config: AppConfig): Hono {
     const severityMix = normalizeSeverityMix(body.severityMix);
     const trimmedPrompt = body.prompt.trim();
 
+    // ── Idempotency key: validated before anything is claimed ───────
+    //
+    // Read after every validation that spends nothing, and before the pre-filter, so a
+    // caller with a malformed key learns immediately and **no record is created** for a
+    // request that was never going to run. A rejected key must not consume an operation.
+    const idempotencyKey = readIdempotencyKey(c.req.header(IDEMPOTENCY_KEY_HEADER));
+    if (idempotencyKey.status === "rejected") {
+      return c.json(
+        {
+          success: false,
+          error: idempotencyKey.reason,
+          code: "INVALID_IDEMPOTENCY_KEY",
+          correlationId: requestId,
+        },
+        400,
+      );
+    }
+
     // ── Stage 1: deterministic pre-filter ─────────────────────────
     const preFilter = runPreFilter(trimmedPrompt);
     logger.debug(LOG_EVENTS.SCENARIOS_PREFILTER, {
@@ -279,6 +314,85 @@ export function createScenariosRouter(config: AppConfig): Hono {
         },
         422,
       );
+    }
+
+    // ── Idempotency: claim the operation before any money is spent ──
+    //
+    // The claim sits here, after every free check and immediately before the first paid
+    // call. Money is spent only on `execute`; every other decision is answered without
+    // reaching the provider.
+    let operation: PaidOperationContext | undefined;
+    if (idempotencyKey.status === "accepted") {
+      const decision = await beginPaidOperation(config, {
+        routeFamily: "scenarios",
+        keyHash: idempotencyKey.keyHash,
+        // The fingerprint covers the values this route actually sends, after its own
+        // normalisation — not the raw body. See request-fingerprint.ts.
+        fingerprint: fingerprintScenariosRequest({
+          prompt: trimmedPrompt,
+          roleContext: body.roleContext,
+          vectorCount,
+          severityMix,
+        }),
+        fingerprintVersion: FINGERPRINT_VERSION,
+        keyId: idempotencyKey.keyId,
+      });
+
+      if (decision.kind === "conflict") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This Idempotency-Key was already used for a different request. Use a new key " +
+              "for a different request.",
+            code: "IDEMPOTENCY_CONFLICT",
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      if (decision.kind === "pending") {
+        c.header("Retry-After", String(decision.retryAfterSeconds));
+        return c.json(
+          {
+            success: false,
+            error:
+              "An operation with this Idempotency-Key is already in progress. Retry " +
+              "shortly, or use a new key to start a separate operation.",
+            code: "IDEMPOTENCY_IN_PROGRESS",
+            retryAfterSeconds: decision.retryAfterSeconds,
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      if (decision.kind === "unavailable") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "The idempotency store is unavailable, so this request was not started and " +
+              "nothing was spent. Retry shortly.",
+            code: "IDEMPOTENCY_STATE_UNAVAILABLE",
+            retryable: true,
+            correlationId: requestId,
+          },
+          503,
+        );
+      }
+
+      if (decision.kind === "replay") {
+        // The original business result, under this request's identity.
+        c.header("Idempotency-Replayed", "true");
+        return c.json(
+          withCurrentRequestId(decision.body, requestId) as never,
+          decision.status as never,
+        );
+      }
+
+      operation = decision.context;
     }
 
     // ── Stage 2: AI semantic classifier ───────────────────────────
@@ -328,21 +442,31 @@ export function createScenariosRouter(config: AppConfig): Hono {
           detectedDomain: verdict.detectedDomain || null,
           dependency: "provider",
         });
-        return c.json(
-          {
-            success: false,
-            error:
-              `${verdict.reason}\n\nCerberus authors insider-threat and data-exfiltration ` +
-              "scenarios. Describe the monitored systems, regulatory mandates or threat " +
-              "vectors you want covered.",
-            correlationId: requestId,
-            classificationConfidence: verdict.confidence,
-            detectedDomain: verdict.detectedDomain || null,
-            contentFlags: verdict.contentFlags,
-            pipeline: { startedAt, preFilter, classifier: classifierDiag },
-          },
-          422,
-        );
+        const rejectionBody = {
+          success: false,
+          error:
+            `${verdict.reason}\n\nCerberus authors insider-threat and data-exfiltration ` +
+            "scenarios. Describe the monitored systems, regulatory mandates or threat " +
+            "vectors you want covered.",
+          correlationId: requestId,
+          classificationConfidence: verdict.confidence,
+          detectedDomain: verdict.detectedDomain || null,
+          contentFlags: verdict.contentFlags,
+          pipeline: { startedAt, preFilter, classifier: classifierDiag },
+        };
+
+        // A rejection is a **legitimate outcome**, not a failure: the classifier ran, it
+        // answered, and the answer is "no". Recording it as completed means a retry replays
+        // the rejection instead of paying for the classifier again — which is the whole
+        // point, and the reason a deterministic-looking rejection still needs a record.
+        if (operation) {
+          await completePaidOperation(config, operation, {
+            status: 422,
+            body: stripRequestIdentity(rejectionBody),
+          });
+        }
+
+        return c.json(rejectionBody, 422);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Classifier failure";
@@ -355,6 +479,13 @@ export function createScenariosRouter(config: AppConfig): Hono {
         consequence: "refused-fail-closed",
         error: message,
       });
+
+      // The classifier produced nothing, so the operation failed retryably: a same-key
+      // retry re-executes rather than replaying a failure that may not recur.
+      if (operation) {
+        await failPaidOperation(config, operation, classifyProviderFailure(message));
+      }
+
       return c.json(
         {
           success: false,
@@ -410,17 +541,28 @@ export function createScenariosRouter(config: AppConfig): Hono {
         persisted: persisted.ok,
         dependency: "provider",
       });
-      return c.json(
-        {
-          success: true,
-          matrix,
-          mcpCorrelationId,
-          persisted: persisted.ok,
-          generationRequestId,
-          pipeline: { startedAt, preFilter, classifier: classifierDiag },
-        },
-        201,
-      );
+
+      const successBody = {
+        success: true,
+        matrix,
+        mcpCorrelationId,
+        persisted: persisted.ok,
+        generationRequestId,
+        pipeline: { startedAt, preFilter, classifier: classifierDiag },
+      };
+
+      // The operation succeeded, so the record is completed with the response to replay.
+      // `pipeline.startedAt`, `mcpCorrelationId` and `generationRequestId` describe the
+      // *operation* and are part of the business result — replaying them is the point.
+      // Only the request-specific correlation identity is stripped.
+      if (operation) {
+        await completePaidOperation(config, operation, {
+          status: 201,
+          body: stripRequestIdentity(successBody),
+        });
+      }
+
+      return c.json(successBody, 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown agent error";
 
@@ -430,6 +572,13 @@ export function createScenariosRouter(config: AppConfig): Hono {
           classification: "cancelled",
           dependency: "provider",
         });
+
+        // A cancellation produced nothing, so the operation failed retryably: a same-key
+        // retry re-executes rather than replaying an outcome the caller caused.
+        if (operation) {
+          await failPaidOperation(config, operation, "cancelled");
+        }
+
         return c.json(
           {
             success: false,
@@ -457,6 +606,13 @@ export function createScenariosRouter(config: AppConfig): Hono {
         dependency: "provider",
         error: message,
       });
+
+      // The second paid call failed, so the operation failed retryably. The classifier's
+      // spend is **not** recovered: its verdict is not persisted, so a reclaim re-runs both
+      // stages. That cost is stated in the state model rather than implied.
+      if (operation) {
+        await failPaidOperation(config, operation, classifyProviderFailure(message));
+      }
 
       return c.json(
         {

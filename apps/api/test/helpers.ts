@@ -8,6 +8,7 @@
  */
 
 import type { AppConfig } from "../src/config.js";
+import { DEFAULT_IDEMPOTENCY_TTL_SECONDS } from "../src/services/idempotency-limits.js";
 
 export const TEST_API_KEY = "test-operator-key-0123456789abcdef";
 export const TEST_MCP_TOKEN = "test-mcp-token-0123456789abcdef";
@@ -49,6 +50,10 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // behaviour they are about. rate-limit.test.ts enables it and asserts every
     // category through the same real routes.
     rateLimit: { enabled: false, aiRequestsPerMinute: 10 },
+    // The production default. A test that needs a different retention window sets it
+    // explicitly, because a shortened window is how an "expired record" case is written
+    // without waiting a day.
+    idempotency: { ttlSeconds: DEFAULT_IDEMPOTENCY_TTL_SECONDS },
     // Logging defaults match the production defaults. Tests that assert on log
     // output install a capture sink and raise the level with
     // `configureLogging({ sink, level: "debug" })` *after* building the app, because

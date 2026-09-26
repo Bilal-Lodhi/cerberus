@@ -40,6 +40,12 @@ import {
   type SessionCountsUpdate,
   type SessionDeletionReport,
 } from "../../../packages/mcp-mongodb/src/mongo-client.js";
+import type {
+  ClaimPaidOperationInput,
+  CompletePaidOperationInput,
+  FailPaidOperationInput,
+  PaidOperationClaimOutcome,
+} from "../../../packages/mcp-mongodb/src/operation-claims.js";
 import { McpStoreDouble, type StoredDocument } from "./support/mcp-store-double.js";
 
 /**
@@ -92,6 +98,9 @@ export interface ContractStore {
   }>;
   listReferenceDocuments(limit: number): Promise<StoredDocument[]>;
   deleteReferenceDocument(referenceId: string): Promise<boolean>;
+  claimPaidOperation(input: ClaimPaidOperationInput): Promise<PaidOperationClaimOutcome>;
+  completePaidOperation(input: CompletePaidOperationInput): Promise<boolean>;
+  failPaidOperation(input: FailPaidOperationInput): Promise<boolean>;
   ping(): Promise<boolean>;
   isConnected(): boolean;
 }
@@ -1298,7 +1307,297 @@ export const CONTRACT_CASES: ContractCase[] = [
       assert.equal(await store.ping(), true);
     },
   },
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Paid-operation claims
+  // ═══════════════════════════════════════════════════════════════════
+  //
+  // These run against the double **and** a real MongoDB, which is what makes the claim's
+  // predicates a property of the database rather than of an in-process map. The one thing
+  // they cannot assert is the race itself — a single-threaded case never has two claims in
+  // flight at once — and that is asserted by the two-process suite.
+
+  {
+    name: "claimPaidOperation claims an unused key and reports the claim id",
+    async run(store) {
+      const keyHash = randomUUID();
+      const outcome = await store.claimPaidOperation(claimInput(keyHash));
+
+      assert.equal(outcome.outcome, "claimed");
+      if (outcome.outcome !== "claimed") return;
+      assert.ok(outcome.claimId.length > 0, "a claim with no id cannot be completed");
+    },
+  },
+
+  {
+    name: "a second claim for the same key does not execute: it reports the first as pending",
+    async run(store) {
+      const keyHash = randomUUID();
+      const first = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(first.outcome, "claimed");
+
+      const second = await store.claimPaidOperation(claimInput(keyHash));
+
+      // This is the invariant the unique index exists for. Asserted as "the second caller
+      // is not allowed to execute", not as a guess about which one won.
+      assert.equal(
+        second.outcome,
+        "pending",
+        "a second claim for a live key was allowed to execute, so a retry would spend twice",
+      );
+      if (second.outcome !== "pending") return;
+      assert.ok(second.retryAfterSeconds >= 1);
+    },
+  },
+
+  {
+    name: "a completed claim replays its recorded result and is never re-claimed",
+    async run(store) {
+      const keyHash = randomUUID();
+      const claim = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(claim.outcome, "claimed");
+      if (claim.outcome !== "claimed") return;
+
+      const body = { success: true, matrix: { metadata: { matrixId: "m-1" } } };
+      assert.equal(
+        await store.completePaidOperation({
+          routeFamily: "scenarios",
+          keyHash,
+          claimId: claim.claimId,
+          result: { status: 201, body },
+          ttlMs: 60_000,
+        }),
+        true,
+      );
+
+      const replay = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(replay.outcome, "replay");
+      if (replay.outcome !== "replay") return;
+      assert.equal(replay.state, "completed");
+      assert.equal(replay.result?.status, 201);
+      assert.deepEqual(replay.result?.body, body);
+    },
+  },
+
+  {
+    name: "the same key with a different fingerprint is a conflict, not a replay",
+    async run(store) {
+      const keyHash = randomUUID();
+      const claim = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(claim.outcome, "claimed");
+      if (claim.outcome !== "claimed") return;
+
+      await store.completePaidOperation({
+        routeFamily: "scenarios",
+        keyHash,
+        claimId: claim.claimId,
+        result: { status: 201, body: { success: true } },
+        ttlMs: 60_000,
+      });
+
+      const other = await store.claimPaidOperation({
+        ...claimInput(keyHash),
+        fingerprint: "a-different-fingerprint",
+      });
+
+      // Answering from the first request's record would be a lie about which request ran.
+      assert.equal(other.outcome, "conflict");
+    },
+  },
+
+  {
+    name: "a different fingerprint cannot reclaim a stale pending claim",
+    async run(store) {
+      const keyHash = randomUUID();
+      // A lease of zero, so the claim is stale the moment it is written.
+      const claim = await store.claimPaidOperation({ ...claimInput(keyHash), leaseMs: 0 });
+      assert.equal(claim.outcome, "claimed");
+
+      const other = await store.claimPaidOperation({
+        ...claimInput(keyHash),
+        fingerprint: "a-different-fingerprint",
+        leaseMs: 0,
+      });
+
+      // The fingerprint is in the reclaim predicate precisely so this cannot happen.
+      assert.equal(
+        other.outcome,
+        "conflict",
+        "a stale claim belonging to a different request was reclaimed, so a reused key " +
+          "would silently re-execute instead of being reported as a conflict",
+      );
+    },
+  },
+
+  {
+    name: "a stale pending claim with the same fingerprint is reclaimed, and only once",
+    async run(store) {
+      const keyHash = randomUUID();
+      const first = await store.claimPaidOperation({ ...claimInput(keyHash), leaseMs: 0 });
+      assert.equal(first.outcome, "claimed");
+
+      const second = await store.claimPaidOperation({ ...claimInput(keyHash), leaseMs: 60_000 });
+      assert.equal(second.outcome, "reclaimed");
+      if (second.outcome !== "reclaimed") return;
+      assert.notEqual(
+        second.claimId,
+        first.outcome === "claimed" ? first.claimId : "",
+        "the reclaimer reused the abandoned claim id, so the original owner could still write",
+      );
+
+      // And the reclaimed claim now has a live lease, so a third caller does not execute.
+      const third = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(third.outcome, "pending");
+    },
+  },
+
+  {
+    name: "a completion with a stale claim id is refused, so a lost completion is visible",
+    async run(store) {
+      const keyHash = randomUUID();
+      const first = await store.claimPaidOperation({ ...claimInput(keyHash), leaseMs: 0 });
+      assert.equal(first.outcome, "claimed");
+      if (first.outcome !== "claimed") return;
+
+      const second = await store.claimPaidOperation({ ...claimInput(keyHash), leaseMs: 60_000 });
+      assert.equal(second.outcome, "reclaimed");
+
+      // The original owner's completion must not land: another process owns the record now,
+      // and a silent success here would hide the second execution that has begun.
+      assert.equal(
+        await store.completePaidOperation({
+          routeFamily: "scenarios",
+          keyHash,
+          claimId: first.claimId,
+          result: { status: 201, body: { success: true } },
+          ttlMs: 60_000,
+        }),
+        false,
+        "a stale claim id overwrote a record another process owns",
+      );
+    },
+  },
+
+  {
+    name: "a retryable failure is reclaimed, so a same-key retry re-executes",
+    async run(store) {
+      const keyHash = randomUUID();
+      const claim = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(claim.outcome, "claimed");
+      if (claim.outcome !== "claimed") return;
+
+      assert.equal(
+        await store.failPaidOperation({
+          routeFamily: "scenarios",
+          keyHash,
+          claimId: claim.claimId,
+          errorCategory: "provider-unavailable",
+          ttlMs: 60_000,
+        }),
+        true,
+      );
+
+      const retry = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(
+        retry.outcome,
+        "reclaimed",
+        "a provider failure that produced nothing usable did not let a retry re-execute",
+      );
+    },
+  },
+
+  {
+    name: "a non-retryable failure replays instead of spending again",
+    async run(store) {
+      const keyHash = randomUUID();
+      const claim = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(claim.outcome, "claimed");
+      if (claim.outcome !== "claimed") return;
+
+      const failure = {
+        status: 503,
+        body: { success: false, code: "IDEMPOTENCY_STATE_UNAVAILABLE" },
+      };
+      assert.equal(
+        await store.failPaidOperation({
+          routeFamily: "scenarios",
+          keyHash,
+          claimId: claim.claimId,
+          // The provider was observed to succeed and Cerberus could not record it. The money
+          // is spent, so re-executing would spend again on an operation that already ran.
+          errorCategory: "result-persist-failed",
+          result: failure,
+          ttlMs: 60_000,
+        }),
+        true,
+      );
+
+      const retry = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(retry.outcome, "replay");
+      if (retry.outcome !== "replay") return;
+      assert.equal(retry.state, "failed");
+      assert.deepEqual(retry.result, failure);
+    },
+  },
+
+  {
+    name: "a non-retryable failure without a result is refused rather than written",
+    async run(store) {
+      const keyHash = randomUUID();
+      const claim = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(claim.outcome, "claimed");
+      if (claim.outcome !== "claimed") return;
+
+      // A record saying "do not retry" with nothing to replay would leave the caller with no
+      // answer at all: the operation cannot be re-executed and there is no recorded failure
+      // to return.
+      await assert.rejects(
+        () =>
+          store.failPaidOperation({
+            routeFamily: "scenarios",
+            keyHash,
+            claimId: claim.claimId,
+            errorCategory: "result-too-large",
+            ttlMs: 60_000,
+          }),
+        "a non-retryable failure was written with nothing to replay",
+      );
+
+      // And the claim is untouched, so the operation is still completable.
+      const still = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(still.outcome, "pending");
+    },
+  },
+
+  {
+    name: "the two route families are separate key namespaces",
+    async run(store) {
+      const keyHash = randomUUID();
+      const scenarios = await store.claimPaidOperation(claimInput(keyHash));
+      assert.equal(scenarios.outcome, "claimed");
+
+      // One key used against two routes must not collide: answering the auditor request from
+      // the scenarios record would be a lie about which operation ran.
+      const auditor = await store.claimPaidOperation({
+        ...claimInput(keyHash),
+        routeFamily: "auditor",
+      });
+      assert.equal(auditor.outcome, "claimed");
+    },
+  },
 ];
+
+/** A claim for a fresh key, in the shape the routes send. */
+function claimInput(keyHash: string): ClaimPaidOperationInput {
+  return {
+    routeFamily: "scenarios",
+    keyHash,
+    fingerprint: "fingerprint-1",
+    fingerprintVersion: 1,
+    leaseMs: 60_000,
+    ttlMs: 300_000,
+  };
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Fidelity guard: the double must still look like the real store
@@ -1335,6 +1634,9 @@ describe("store double fidelity", () => {
     "storeReferenceDocument",
     "listReferenceDocuments",
     "deleteReferenceDocument",
+    "claimPaidOperation",
+    "completePaidOperation",
+    "failPaidOperation",
     "ping",
     "isConnected",
   ] as const;

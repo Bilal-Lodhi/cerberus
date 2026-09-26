@@ -25,6 +25,11 @@ export const MCP_TOOL_NAMES = {
   STORE_REFERENCE_DOCUMENT: "store_reference_document",
   LIST_REFERENCE_DOCUMENTS: "list_reference_documents",
   DELETE_REFERENCE_DOCUMENT: "delete_reference_document",
+  // The three tools that make a paid operation retry-safe. See
+  // docs/development/paid-operation-state-model.md.
+  CLAIM_PAID_OPERATION: "claim_paid_operation",
+  COMPLETE_PAID_OPERATION: "complete_paid_operation",
+  FAIL_PAID_OPERATION: "fail_paid_operation",
   HEALTH_CHECK: "health_check",
 } as const;
 

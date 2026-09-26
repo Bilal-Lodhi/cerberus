@@ -205,6 +205,18 @@ artefact is not lost, and the response does not pretend it was stored.
 | `QUESTION_TOO_LONG` | 400 | `question` exceeds `MAX_QUESTION_CHARS` (2 000). Checked before either paid call. | Shorten it. |
 | `AUDITOR_QUERY_FAILED` | 500 | Pipeline construction or summarisation failed. | Report with the `correlationId`. |
 
+### 7.1 Idempotency, on both paid routes
+
+| Code | Status | When | What a client should do |
+| --- | --- | --- | --- |
+| `INVALID_IDEMPOTENCY_KEY` | 400 | The `Idempotency-Key` header was present and unusable: empty, over 255 characters, or containing a character outside printable ASCII or a space. **No claim is written.** | Fix the key, or omit the header to make a non-idempotent request. |
+| `IDEMPOTENCY_CONFLICT` | 409 | The key was already used for a **different** request. Nothing was spent. | Use a new key for a different request. The response deliberately reveals nothing about the original. |
+| `IDEMPOTENCY_IN_PROGRESS` | 409 | An operation with this key is already running. Nothing was spent. The response carries `retryAfterSeconds` **and** a `Retry-After` header. | Wait, then retry the same key. Do not switch keys — that starts a second operation. |
+| `IDEMPOTENCY_STATE_UNAVAILABLE` | 503 | The claim store did not answer, so the mutual exclusion could not be enforced. **Nothing was claimed and nothing was spent.** Also returned when a prior result was too large to retain (see the state model §3.7). | Retry with backoff. `retryable: true`. |
+
+These four are additive: no existing code changed meaning. See §11.1 for the full contract,
+including what happens on a retry after a failure and what is deliberately not claimed.
+
 ## 8. Reference corpus
 
 | Code | HTTP | Meaning | Client action |
@@ -262,32 +274,52 @@ common failure, and "retry it" is only safe advice where the route says so.
 | `DELETE /api/v1/guardian/sessions/:id` | **Idempotent in effect, not in status.** The first call returns `200`; a second returns `404` because nothing matched. A caller retrying after a lost response should treat `404` as success. | `sessionId` | none |
 | `POST /api/v1/reference-documents` | **Idempotent via `referenceId`.** An update of an existing document is always allowed; only a genuinely new id claims a slot. Omitting `referenceId` makes each call a **new** document, so a retry creates a second one. | `referenceId` | none |
 | `DELETE /api/v1/reference-documents/:id` | **Idempotent in effect, not in status** (`200`, then `404`). | `referenceId` | none |
-| `POST /api/v1/scenarios` | **Non-idempotent, and paid.** Every call spends two provider calls (classify, generate). A retry after a lost response re-spends both. | — | **high.** See §11.1. |
+| `POST /api/v1/scenarios` | **Idempotent when an `Idempotency-Key` is supplied.** Same key and same request replays the first response and does not call the provider; same key and a different request is `409`. With no key: **non-idempotent, and paid** — every call spends two provider calls (classify, generate). | `Idempotency-Key` (optional) | **high without a key.** With a key, the remaining exposure is the crash window in §11.1. |
 | `POST /api/v1/scenarios/cancel` | **Idempotent in effect.** Cancelling an unknown or finished request is a `404`; treat it as done. | `generationRequestId` | none |
-| `POST /api/v1/auditor/query` | **Non-idempotent, and paid.** Every call spends two provider calls. A retry re-spends both. | — | **high.** |
+| `POST /api/v1/auditor/query` | **Idempotent when an `Idempotency-Key` is supplied.** Same key and same request replays the first response; same key and a different request is `409`. With no key: **non-idempotent, and paid** — two provider calls. | `Idempotency-Key` (optional) | **high without a key.** With a key, the remaining exposure is the crash window in §11.1. |
 
-### 11.1 The two paid paths, and why no `Idempotency-Key` was added
+### 11.1 The two paid paths: the `Idempotency-Key` contract
 
-Both paid routes can double-spend on a retry, and neither carries an idempotency key. That
-is a **deliberate** decision, recorded here rather than left implicit.
+Both paid routes accept an optional **`Idempotency-Key`** request header. A caller that sends
+one gets a durable guarantee; a caller that sends none gets exactly the behaviour it had
+before, which is why the change is additive.
 
-**What a key would cost.** Implementing one properly means: a bounded key length, a request
-fingerprint, returning the prior result for the same key and payload, conflicting for the
-same key and a different payload, durability across a restart, race-safety under concurrent
-identical requests, a bounded retention window, and no secret in the logs. That is a
-capability in its own right — a durable request-result store — and it would be the largest
-single component in the system.
+| Same key, then… | Answer |
+| --- | --- |
+| the same request, after the first **completed** | The recorded status and body, with `Idempotency-Replayed: true`. **No provider call.** |
+| the same request, while the first is **in progress** | `409 IDEMPOTENCY_IN_PROGRESS` with `Retry-After`. **No provider call.** |
+| the same request, after the first **failed retryably** | The retry **re-executes**. A provider outage is not a permanent answer. |
+| the same request, after the first failed and the provider was **observed to succeed** | The recorded failure is replayed. The money is already spent, so re-executing would spend again — use a **new key** to force a fresh operation. |
+| a **different** request | `409 IDEMPOTENCY_CONFLICT`. The response reveals nothing about the original request. |
+| anything, when the claim store is unreachable | `503 IDEMPOTENCY_STATE_UNAVAILABLE`. **Nothing was claimed and nothing was spent.** |
 
-**What the evidence says.** Neither path is retried by the console on a timeout: it surfaces
-the error and lets the operator decide, and the operator is present and reading the screen.
-The rate limiter already bounds how much a looping client can spend. And the scenario route
-reports `persisted` honestly, so a lost response is recoverable by reading the matrix back
-rather than by re-generating it.
+The header is validated before anything is claimed:
 
-**What would change the decision.** A client that retries paid routes automatically, or a
-second consumer of the API that cannot see the screen. Either would justify the store. Until
-then, the honest position is that these two routes are **non-idempotent and paid**, and the
-documentation says so plainly rather than implying a guarantee that is not there.
+| Rule | Value |
+| --- | --- |
+| Length | 1–255 characters |
+| Characters | `U+0021`–`U+007E` — printable ASCII, **no space** |
+| Invalid | `400 INVALID_IDEMPOTENCY_KEY`, and **no claim is written** |
+
+A malformed key is never echoed back and never stored. The record holds `sha256(key)`, so a
+key that is not written down cannot leak from a backup.
+
+#### What this does not claim
+
+- **Not exactly-once billing.** The provider client retries internally, and one process that
+  dies between the provider's response and the record write leaves an operation whose outcome
+  is unknown; a retry after the lease expires may spend again. That window is stated in
+  [development/paid-operation-state-model.md](development/paid-operation-state-model.md) §3.11
+  rather than papered over.
+- **Not replay protection, and not authorization.** A key stops a *retry* from executing
+  twice. A caller that sends a new key gets a new operation, and the key grants no authority
+  the shared operator key did not already grant.
+- **Not permanent.** A claim record expires after `CERBERUS_IDEMPOTENCY_TTL_SECONDS`
+  (default 24 h). A retry after that is a new operation.
+
+The full state machine — every step, every durable field, every failure path, the pending
+lease, the retention bound and the measured query cost — is in
+[development/paid-operation-state-model.md](development/paid-operation-state-model.md).
 
 **What *is* idempotent, and how.** `ingest` is the one paid path that is safe to retry for
 its *telemetry*: the durable `(sessionId, eventId)` identity makes storage at-most-once and

@@ -24,6 +24,7 @@ const MANAGED_VARS = [
   "CERBERUS_MAX_BODY_BYTES",
   "CERBERUS_LOG_LEVEL",
   "CERBERUS_LOG_FORMAT",
+  "CERBERUS_IDEMPOTENCY_TTL_SECONDS",
 ] as const;
 
 /** Puts the environment into a minimal valid state for `loadConfig()`. */
@@ -40,6 +41,7 @@ function installMinimalEnv(saved: Map<string, string | undefined>): void {
   delete process.env["CERBERUS_API_KEY_PREVIOUS"];
   delete process.env["CERBERUS_LOG_LEVEL"];
   delete process.env["CERBERUS_LOG_FORMAT"];
+  delete process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"];
 }
 
 function restoreEnv(saved: Map<string, string | undefined>): void {
@@ -103,6 +105,81 @@ describe("loadConfig — SESSION_TTL_SECONDS", () => {
         error.message.includes("SESSION_TTL_SECONDS") &&
         error.message.includes("7200"),
     );
+  });
+});
+
+describe("loadConfig — CERBERUS_IDEMPOTENCY_TTL_SECONDS", () => {
+  const saved = new Map<string, string | undefined>();
+
+  beforeEach(() => installMinimalEnv(saved));
+  afterEach(() => restoreEnv(saved));
+
+  test("defaults to 24 hours when unset", () => {
+    assert.equal(loadConfig().idempotency.ttlSeconds, 86_400);
+  });
+
+  test("honours an explicit value inside the bounds", () => {
+    for (const value of ["60", "3600", "604800"]) {
+      process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"] = value;
+      assert.equal(loadConfig().idempotency.ttlSeconds, Number(value));
+    }
+  });
+
+  test("refuses a value below the floor", () => {
+    // Below the floor, a claim expires before an ordinary retry arrives — so the caller's
+    // key stops being recognised and a retry spends a second time, silently.
+    for (const bad of ["0", "1", "59"]) {
+      process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"] = bad;
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigError &&
+          error.message.includes("CERBERUS_IDEMPOTENCY_TTL_SECONDS") &&
+          error.message.includes("between"),
+        `expected a ConfigError for CERBERUS_IDEMPOTENCY_TTL_SECONDS=${bad}`,
+      );
+    }
+  });
+
+  test("refuses a value above the ceiling", () => {
+    // Above the ceiling, a collection of caller-supplied keys outlives its usefulness.
+    for (const bad of ["604801", "9999999"]) {
+      process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"] = bad;
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigError &&
+          error.message.includes("CERBERUS_IDEMPOTENCY_TTL_SECONDS"),
+        `expected a ConfigError for CERBERUS_IDEMPOTENCY_TTL_SECONDS=${bad}`,
+      );
+    }
+  });
+
+  test("refuses a value that is not a whole number of seconds", () => {
+    for (const bad of ["1.5", "86400s", "1e5", "abc", "-1", "  "]) {
+      process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"] = bad;
+      if (bad.trim().length === 0) {
+        // An all-whitespace value reads as unset, which takes the default rather than
+        // failing — the same rule every other setting follows.
+        assert.equal(loadConfig().idempotency.ttlSeconds, 86_400);
+        continue;
+      }
+      assert.throws(
+        () => loadConfig(),
+        (error: unknown) =>
+          error instanceof ConfigError &&
+          error.message.includes("CERBERUS_IDEMPOTENCY_TTL_SECONDS"),
+        `expected a ConfigError for CERBERUS_IDEMPOTENCY_TTL_SECONDS=${JSON.stringify(bad)}`,
+      );
+    }
+  });
+
+  test("the parsed value is actually consumed, not merely validated", () => {
+    // A variable that is parsed and then read by nothing is the failure the configuration
+    // census exists to catch. This asserts the value reaches the config object the route
+    // uses to compute a claim's `expiresAt`.
+    process.env["CERBERUS_IDEMPOTENCY_TTL_SECONDS"] = "120";
+    assert.equal(loadConfig().idempotency.ttlSeconds, 120);
   });
 });
 

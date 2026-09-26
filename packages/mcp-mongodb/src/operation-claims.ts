@@ -159,3 +159,185 @@ export const OPERATION_CLAIM_FORBIDDEN_FIELDS = [
   "prompt",
   "question",
 ] as const;
+
+// ═══════════════════════════════════════════════════════════════════
+// The claim protocol
+// ═══════════════════════════════════════════════════════════════════
+
+/** The response a completed — or definitively failed — operation replays. */
+export interface PaidOperationResult {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * The two deadlines, and why they are derived rather than configured independently.
+ *
+ * The **lease** bounds how long a `pending` claim may block a retry. It must be longer than
+ * the slowest possible provider call, or a healthy operation would have its lease expire
+ * while the first process was still waiting and a second process would reclaim it and spend
+ * again — a duplicate charge caused by a misconfiguration rather than by a crash.
+ *
+ * So it is derived from the provider timeout rather than set beside it:
+ *
+ *     lease = clamp(2 × providerTimeout + margin, MIN, MAX)
+ *
+ * The doubling covers the fact that a `/scenarios` operation runs **two** provider calls
+ * back to back, each of which may take the full timeout; the margin covers the durable
+ * round trips inside the operation. An operator who raises `OPENAI_REQUEST_TIMEOUT_MS` to
+ * ten minutes therefore gets a twenty-minute lease without having to know this rule exists.
+ *
+ * `expiresAt` is separate and independent: it bounds how long the *record* exists, which is
+ * a retention question rather than a concurrency one.
+ */
+export const MIN_LEASE_MS = 60_000;
+export const MAX_LEASE_MS = 30 * 60_000;
+export const LEASE_TIMEOUT_MULTIPLIER = 2;
+export const LEASE_MARGIN_MS = 30_000;
+
+/** The lease for a given provider timeout, clamped to the documented bounds. */
+export function deriveLeaseMs(providerTimeoutMs: number): number {
+  const usable =
+    Number.isFinite(providerTimeoutMs) && providerTimeoutMs > 0 ? providerTimeoutMs : 180_000;
+  const derived = usable * LEASE_TIMEOUT_MULTIPLIER + LEASE_MARGIN_MS;
+  return Math.min(Math.max(Math.round(derived), MIN_LEASE_MS), MAX_LEASE_MS);
+}
+
+/** The default retention window, in seconds. One day: long enough for an ordinary retry. */
+export const DEFAULT_IDEMPOTENCY_TTL_SECONDS = 86_400;
+/** The shortest retention an operator may configure. One minute. */
+export const MIN_IDEMPOTENCY_TTL_SECONDS = 60;
+/** The longest. Seven days. */
+export const MAX_IDEMPOTENCY_TTL_SECONDS = 604_800;
+
+/**
+ * The largest response body a completed claim will store, in bytes.
+ *
+ * The record exists so a retry can be answered without spending again, which means it has
+ * to hold the response. Holding an *unbounded* response in a collection whose whole purpose
+ * is bounded retention would be the one way this collection could grow without limit, so
+ * there is a ceiling.
+ *
+ * The ceiling is defensive rather than reachable: the auditor caps its `raw` array at 200
+ * records and its summary at 1 200 output tokens, and a test serialises a maximal payload
+ * and asserts it lands far below this. The branch that handles an over-large result is
+ * therefore a refusal that should never fire, and it is written to be truthful if it ever
+ * does — the record is marked completed with `resultOmitted`, and a replay answers `503`
+ * saying the prior result was too large to retain rather than silently re-executing.
+ */
+export const MAX_STORED_RESULT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Why an operation failed, as a stable category.
+ *
+ * A category, never a provider message: the record is on a path that handles
+ * operator-authored content, and a provider's error text can quote the request. The
+ * category is what an operator acts on, and it is what decides whether a retry may
+ * re-execute.
+ */
+export const OPERATION_FAILURE_CATEGORIES = [
+  /** The provider call did not complete: timeout, transport failure, 429 or 5xx. */
+  "provider-unavailable",
+  /** The provider answered with a definitive failure that produced nothing usable. */
+  "provider-failed",
+  /** The provider answered, and Cerberus could not record the result. */
+  "result-persist-failed",
+  /** The response was too large to retain for replay. */
+  "result-too-large",
+  /** The caller cancelled the operation, so it produced nothing. */
+  "cancelled",
+  /** The idempotency store itself could not be reached. */
+  "state-unavailable",
+] as const;
+export type OperationFailureCategory = (typeof OPERATION_FAILURE_CATEGORIES)[number];
+
+/**
+ * The categories for which a same-key retry **re-executes**.
+ *
+ * `provider-unavailable` and `provider-failed` describe a call that did not produce a
+ * usable result, so re-executing is the whole point of the retry.
+ *
+ * `result-persist-failed` and `result-too-large` describe the opposite: Cerberus **observed
+ * the provider succeed** and then failed to record it. The money is already spent, so
+ * re-executing would spend again on an operation that already ran. Those are recorded
+ * `retryable: false` and replayed, and a caller who wants a different outcome uses a **new
+ * key** — a deliberate act rather than a silent second charge.
+ *
+ * `state-unavailable` is not reachable through the claim path at all: if the store cannot
+ * be reached, there is no record to mark and the route answers `503` with nothing claimed.
+ */
+export const RETRYABLE_FAILURE_CATEGORIES: readonly OperationFailureCategory[] = [
+  "provider-unavailable",
+  "provider-failed",
+  "cancelled",
+];
+
+/** Whether a failure in `category` may be retried by re-executing the operation. */
+export function isRetryableFailure(category: OperationFailureCategory): boolean {
+  return RETRYABLE_FAILURE_CATEGORIES.includes(category);
+}
+
+/** The input to a claim. */
+export interface ClaimPaidOperationInput {
+  routeFamily: PaidRouteFamily;
+  keyHash: string;
+  fingerprint: string;
+  fingerprintVersion: number;
+  /** How long a `pending` claim blocks a retry. See {@link deriveLeaseMs}. */
+  leaseMs: number;
+  /** How long the record exists at all. */
+  ttlMs: number;
+}
+
+/**
+ * What a claim attempt produced.
+ *
+ * Five outcomes, and the route treats each differently. `conflict` and `pending` are
+ * the two that must **never** be answered by calling the provider.
+ */
+export type PaidOperationClaimOutcome =
+  | { outcome: "claimed"; claimId: string }
+  | { outcome: "reclaimed"; claimId: string }
+  | {
+      outcome: "replay";
+      state: "completed" | "failed";
+      result: PaidOperationResult | null;
+      resultOmitted?: string;
+    }
+  | { outcome: "pending"; retryAfterSeconds: number }
+  | { outcome: "conflict" };
+
+/** The input to a completion. */
+export interface CompletePaidOperationInput {
+  routeFamily: PaidRouteFamily;
+  keyHash: string;
+  claimId: string;
+  result: PaidOperationResult;
+  ttlMs: number;
+  /**
+   * Present only when the real result was too large to retain.
+   *
+   * The record is still `completed` — the operation did succeed — and `result` carries a
+   * small, truthful substitute saying so. This field is what lets an operator tell that
+   * apart from an ordinary replay.
+   */
+  resultOmitted?: string;
+}
+
+/** The input to a failure. */
+export interface FailPaidOperationInput {
+  routeFamily: PaidRouteFamily;
+  keyHash: string;
+  claimId: string;
+  errorCategory: OperationFailureCategory;
+  ttlMs: number;
+  /**
+   * The response to replay, required when the failure is **not** retryable.
+   *
+   * A non-retryable failure is one Cerberus observed the provider complete, so there is no
+   * re-execution to offer and the only truthful answer to a same-key retry is the recorded
+   * failure. A record that says "failed, do not retry" with nothing to replay would leave
+   * the caller with no answer at all, so the store refuses to write one.
+   */
+  result?: PaidOperationResult;
+}
