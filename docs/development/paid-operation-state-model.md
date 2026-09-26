@@ -173,7 +173,7 @@ small, and entirely Mongo-backed: **a unique index is the whole of the mutual
 exclusion**, so it works on the documented single-node deployment without a transaction,
 without Redis, and without a lock service.
 
-### 3.1 Request validation — *Partly*
+### 3.1 Request validation — *Implemented*
 
 Both routes keep their existing validation exactly, in the existing order. The claim is
 made **after** every validation that does not spend money, so a malformed, oversized or
@@ -190,7 +190,7 @@ different body that passes. That is correct — no operation was claimed, so not
 being reused — and it is why the conflict check is scoped to records that exist rather
 than to keys the server has ever seen.
 
-### 3.2 Idempotency-key validation — *Partly*
+### 3.2 Idempotency-key validation — *Implemented*
 
 Header name: **`Idempotency-Key`**. Optional.
 
@@ -207,12 +207,11 @@ cannot know that two requests are the same request — that is precisely what th
 knows and the server does not — so a synthesised key would silently claim a guarantee
 that does not exist. See §5.
 
-**Partly implemented.** `apps/api/src/services/idempotency-key.ts` implements this contract
-in full — the range, the length bound, the digest, the log-safe truncated identifier, and a
-rejection that carries no key material and never echoes the value — with its own suite.
-`POST /api/v1/scenarios` reads the header and answers `400 INVALID_IDEMPOTENCY_KEY`.
-`POST /api/v1/auditor/query` does **not** read it yet, so it neither validates a key nor
-claims one; that is §3.4's remaining route.
+**Implemented.** `apps/api/src/services/idempotency-key.ts` implements this contract in full
+— the range, the length bound, the digest, the log-safe truncated identifier, and a rejection
+that carries no key material and never echoes the value — with its own suite, and **both**
+paid routes read the header and answer `400 INVALID_IDEMPOTENCY_KEY` before anything is
+claimed. An invalid key creates no record on either route.
 
 ### 3.3 Request fingerprint — *Implemented*
 
@@ -275,7 +274,7 @@ MongoDB, where a single-document write is atomic. `insertOne` racing on a unique
 atomic without a transaction, so the mechanism works on the deployment the repository
 documents rather than requiring a replica set.
 
-### 3.5 Provider call(s) — *Partly*
+### 3.5 Provider call(s) — *Implemented*
 
 **One route-level operation record covers one caller request**, and a completed replay
 re-runs **neither** paid call.
@@ -295,6 +294,19 @@ failure after the pipeline was built and before the summary exists also re-execu
 | --- | --- | --- |
 | `/scenarios` | both calls ran once, result recorded | both calls run again |
 | `/auditor/query` | both calls ran once, result recorded | both calls run again |
+
+**A durable read that fails must fail the operation, not be substituted.** The auditor reads
+the session list between its two paid calls, and that read used to degrade silently: a failed
+`list_sessions` became an empty array — the same value a store that answered "no sessions
+matched" returns — and the route summarised nothing and answered `200`. That was untruthful on
+its own. It became a **correctness** defect the moment the response started being recorded for
+replay: a `200` recorded as `completed` would replay the fabricated answer for the whole
+retention window, and a caller would have no way to tell it apart from a real one.
+
+So the read now reports whether it answered, and a failure is a `503 AUDITOR_STORE_UNAVAILABLE`
+recorded as a retryable failure — nothing claimed as an answer, nothing to replay, and a
+same-key retry that re-executes. The general rule this is an instance of: **a response is only
+worth remembering if it is true.**
 
 ### 3.6 Same key + same request, completed — *Implemented*
 
@@ -686,23 +698,31 @@ done?".
 | Atomic claim, replay, conflict, in-progress | **Implemented** | `MongoStore.claimPaidOperation`, `claim_paid_operation`; 11 contract cases in `store-contract.test.ts`, run against the double **and** a real MongoDB |
 | Reclaim of a stale or retryable claim | **Implemented** | the same contract cases; the reclaim predicate carries the fingerprint, so a stale record for another request cannot be taken |
 | Conditional completion and failure, and the lost-completion signal | **Implemented** | `completePaidOperation` / `failPaidOperation`; the stale-claim-id contract case asserts a lost completion is reported rather than swallowed |
-| The `400 INVALID_IDEMPOTENCY_KEY` response | **Implemented** | `scenarios-idempotency.test.ts` |
+| The `400 INVALID_IDEMPOTENCY_KEY` response | **Implemented** | `scenarios-idempotency.test.ts`, `auditor-idempotency.test.ts` |
 | `/scenarios` durable claim and replay | **Implemented** | `scenarios-idempotency.test.ts` (19 cases: replay, conflict, pending, stale reclaim, failure, redaction, correlation identity) |
-| `/auditor/query` durable claim and replay | **Design** | `auditor-idempotency.test.ts` |
+| `/auditor/query` durable claim and replay | **Implemented** | `auditor-idempotency.test.ts` (13 cases) |
 | Two-process race and replay against real MongoDB | **Design** | `test/integration/multi-process-idempotency.test.ts` |
 | Retention bound, TTL index and `CERBERUS_IDEMPOTENCY_TTL_SECONDS` | **Implemented** | `operation-claims.ts` (`expireAfterSeconds: 0`), migration `0004`, `config.ts` (bounded, fail-closed), `config.test.ts`, `critical-indexes.test.ts` |
 | Migration from a `v0.5.0` database | **Implemented** | `release-fixture.ts` (`v0.5.0` shape), `migration-from-previous-release.test.ts` |
 | Backup/restore covers the collection and both indexes | **Implemented** | `backup-restore-drill.mjs` (11 checks, including a refused duplicate claim after restore), `restore-cerberus.ps1` |
 | Release harness and CI coverage | **Design** | `verify-release.mjs`, `.github/workflows/ci.yml` |
 
-**`/scenarios` is protected; `/auditor/query` is not yet.** `operation_claims` exists with
-both indexes, migration `0004` creates them, `CERBERUS_IDEMPOTENCY_TTL_SECONDS` bounds
-retention, the claim protocol is in `MongoStore` behind three MCP tools, and
-`POST /api/v1/scenarios` reads the header, claims, replays and conflicts. A retry of
-**that** route no longer spends twice.
+**Both paid routes are protected.** `operation_claims` exists with both indexes, migration
+`0004` creates them, `CERBERUS_IDEMPOTENCY_TTL_SECONDS` bounds retention, the claim protocol
+is in `MongoStore` behind three MCP tools, and **both** `POST /api/v1/scenarios` and
+`POST /api/v1/auditor/query` read the header, claim, replay, conflict and record their
+outcomes. A retry of either route with a key no longer spends twice.
 
-`POST /api/v1/auditor/query` is unchanged: it does not read the header, so a retry still
-spends again. §3.1 and §3.4 to §3.14 are **Partly** for that reason — the mechanism exists
-and one of the two routes uses it. The race between two real processes is asserted by the
-store contract cases against a real MongoDB, but not yet by two API processes; that is
-§13's remaining **Design** row and the next pull request's job.
+Two rows remain **Design**, and both are about *proving* rather than *building*:
+
+1. **The race between two real API processes.** The store contract cases prove every
+   predicate against a real MongoDB, but a single-threaded suite cannot put two claimants in
+   flight at once. The two-process harness is the next pull request.
+2. **Release-harness and CI coverage** for the new suites. They run in `npm test`, which CI
+   already runs, but the harness does not name them as a gate yet.
+
+**One behaviour changed rather than being added**, and it is recorded here because it is the
+kind of change that should not be discovered from a diff: a failed `list_sessions` on the
+auditor route now answers `503 AUDITOR_STORE_UNAVAILABLE` instead of `200` with a summary
+over an empty record set. See §3.5 for why the idempotency mechanism made that a correctness
+requirement rather than a nicety.

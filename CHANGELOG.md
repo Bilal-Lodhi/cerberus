@@ -13,6 +13,16 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **Durable idempotency for `POST /api/v1/auditor/query`.** The second paid route now reads
+  the optional `Idempotency-Key` header, claims the operation before the first paid call,
+  replays a completed answer, conflicts on the same key with a different question, answers
+  `409 IDEMPOTENCY_IN_PROGRESS` for a live claim, and records its outcome. A retry of either
+  paid route with a key no longer spends twice. Verified with 13 cases through the real route,
+  counting provider calls at the stub, including one that drives **both** paid routes through
+  one app to prove their key namespaces are separate.
+- **`AUDITOR_STORE_UNAVAILABLE`** — a new `503` for a failed session read on the auditor route,
+  and `retryable` on the `AUDITOR_QUERY_FAILED` body. Both additive: the statuses and the codes
+  a caller already depended on are unchanged.
 - **Durable idempotency for `POST /api/v1/scenarios`.** The route accepts an optional
   `Idempotency-Key` header and, when one is supplied, claims the operation **before** the
   first paid call. A retry with the same key and the same request replays the first response
@@ -133,6 +143,16 @@ deployment. This is an experimental research system and is not production ready.
   `MAX_QUESTION_CHARS` docstring already said "sent to a paid provider twice"; only the
   two documents disagreed with the code. The correction is recorded rather than silently
   patched, and both documents are corrected in place.
+
+- **`POST /api/v1/auditor/query` no longer answers a database outage with a fabricated audit
+  finding.** The route read the session list through the persistence layer and, when that read
+  failed, substituted an empty list — the same value a store that answered "no sessions
+  matched" returns — then summarised nothing and returned `200` with a plausible-looking
+  answer. It now answers `503 AUDITOR_STORE_UNAVAILABLE` with `retryable: true` and **no**
+  summary. This became a **correctness** defect rather than only a truthfulness one once the
+  response started being recorded for replay: a `200` recorded as `completed` would replay the
+  fabricated answer for the whole retention window, indistinguishable from a real one. A
+  response is only worth remembering if it is true.
 
 ### Changed
 

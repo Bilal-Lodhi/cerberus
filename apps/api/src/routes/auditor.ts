@@ -9,6 +9,15 @@
  * The pipeline is NEVER forwarded to MongoDB verbatim: only a small, explicit
  * subset of stages ($match, $sort, $limit) is interpreted, so a model cannot
  * induce an arbitrary database operation.
+ *
+ * ── Two paid calls, and a durable read between them ───────────────────
+ *
+ * `toMongoPipeline` builds the pipeline and `summarizeSessionRecords`
+ * summarises the result. A `list_sessions` read sits between them, so the gap
+ * between the two spends is a network dependency rather than a scheduling one.
+ * One route-level idempotency record covers the whole request, which is what
+ * makes a retry after a lost response free. See
+ * docs/development/paid-operation-state-model.md §3.5.
  */
 
 import { Hono } from "hono";
@@ -18,6 +27,24 @@ import { LOG_EVENTS, logger } from "../observability/logger.js";
 import { currentRequestId } from "../observability/request-context.js";
 import { getAIProvider } from "../ai/provider.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
+import {
+  IDEMPOTENCY_KEY_HEADER,
+  readIdempotencyKey,
+} from "../services/idempotency-key.js";
+import {
+  FINGERPRINT_VERSION,
+  fingerprintAuditorRequest,
+} from "../services/request-fingerprint.js";
+import {
+  beginPaidOperation,
+  classifyProviderFailure,
+  completePaidOperation,
+  failPaidOperation,
+  isRetryableFailure,
+  stripRequestIdentity,
+  withCurrentRequestId,
+  type PaidOperationContext,
+} from "../services/paid-operation.js";
 
 interface SessionRecord {
   [key: string]: unknown;
@@ -49,17 +76,42 @@ export const MAX_AUDITOR_RESULTS = 200;
 export function createAuditorRouter(config: AppConfig): Hono {
   const auditorRouter = new Hono();
 
-  async function listSessions(requestId: string): Promise<SessionRecord[]> {
+  /**
+   * Reads the session list, **reporting whether the store answered**.
+   *
+   * ── Why this is not just an array ────────────────────────────────────
+   *
+   * It used to be one: a failed read returned `[]`, which is the same value as a store that
+   * answered "no sessions". The route then summarised an empty record set and returned
+   * `200` with a plausible-looking answer, so a database outage was presented as an audit
+   * finding — "no sessions matched" when in fact nothing was read.
+   *
+   * That was a truthfulness defect on its own. It became a **correctness** defect once the
+   * response started being recorded for replay: a `200` recorded as `completed` would
+   * replay that fabricated answer for the whole retention window, and the caller would have
+   * no way to tell it apart from a real one. A response is only worth remembering if it is
+   * true.
+   */
+  async function listSessions(
+    requestId: string,
+  ): Promise<{ ok: true; records: SessionRecord[] } | { ok: false; error: string }> {
     const result = await callMcpTool<{ data?: unknown }>(
       config,
       MCP_TOOL_NAMES.LIST_SESSIONS,
       {},
       { requestId, timeoutMs: 5_000 },
     );
-    if (!result.ok) return [];
-    return Array.isArray(result.data?.data)
-      ? (result.data?.data as SessionRecord[])
-      : [];
+
+    if (!result.ok) {
+      return { ok: false, error: result.error ?? "the session store did not answer" };
+    }
+
+    return {
+      ok: true,
+      records: Array.isArray(result.data?.data)
+        ? (result.data?.data as SessionRecord[])
+        : [],
+    };
   }
 
   auditorRouter.post("/query", async (c) => {
@@ -99,23 +151,170 @@ export function createAuditorRouter(config: AppConfig): Hono {
       );
     }
 
+    // ── Idempotency key: validated before anything is claimed ───────
+    //
+    // After every validation that spends nothing, and before the first paid call. A
+    // rejected key is a `400` and **no record is created**, because a rejected key must
+    // not consume an operation.
+    const idempotencyKey = readIdempotencyKey(c.req.header(IDEMPOTENCY_KEY_HEADER));
+    if (idempotencyKey.status === "rejected") {
+      return c.json(
+        {
+          success: false,
+          error: idempotencyKey.reason,
+          code: "INVALID_IDEMPOTENCY_KEY",
+          correlationId: requestId,
+        },
+        400,
+      );
+    }
+
+    // ── Idempotency: claim the operation before any money is spent ──
+    let operation: PaidOperationContext | undefined;
+    if (idempotencyKey.status === "accepted") {
+      const decision = await beginPaidOperation(config, {
+        routeFamily: "auditor",
+        keyHash: idempotencyKey.keyHash,
+        // The route passes `question` through untrimmed to both paid calls, so the
+        // untrimmed value is what the fingerprint covers.
+        fingerprint: fingerprintAuditorRequest({ question: body.question }),
+        fingerprintVersion: FINGERPRINT_VERSION,
+        keyId: idempotencyKey.keyId,
+      });
+
+      if (decision.kind === "conflict") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "This Idempotency-Key was already used for a different request. Use a new key " +
+              "for a different request.",
+            code: "IDEMPOTENCY_CONFLICT",
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      if (decision.kind === "pending") {
+        c.header("Retry-After", String(decision.retryAfterSeconds));
+        return c.json(
+          {
+            success: false,
+            error:
+              "An operation with this Idempotency-Key is already in progress. Retry " +
+              "shortly, or use a new key to start a separate operation.",
+            code: "IDEMPOTENCY_IN_PROGRESS",
+            retryAfterSeconds: decision.retryAfterSeconds,
+            correlationId: requestId,
+          },
+          409,
+        );
+      }
+
+      if (decision.kind === "unavailable") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "The idempotency store is unavailable, so this request was not started and " +
+              "nothing was spent. Retry shortly.",
+            code: "IDEMPOTENCY_STATE_UNAVAILABLE",
+            retryable: true,
+            correlationId: requestId,
+          },
+          503,
+        );
+      }
+
+      if (decision.kind === "replay") {
+        c.header("Idempotency-Replayed", "true");
+        return c.json(
+          withCurrentRequestId(decision.body, requestId) as never,
+          decision.status as never,
+        );
+      }
+
+      operation = decision.context;
+    }
+
     try {
       const provider = getAIProvider(config);
       const pipeline = await provider.toMongoPipeline(body.question);
-      const matched = applySafePipeline(await listSessions(requestId), pipeline);
+
+      const sessions = await listSessions(requestId);
+      if (!sessions.ok) {
+        // The store did not answer. Summarising an empty list would present an outage as
+        // an audit finding, and recording it would replay that fabricated answer for the
+        // whole retention window.
+        logger.warn(LOG_EVENTS.AUDITOR_FAILURE, {
+          dependency: "mcp",
+          classification: "read-failed",
+          error: sessions.error,
+        });
+
+        if (operation) {
+          // Retryable: nothing usable was produced, so a same-key retry re-executes.
+          await failPaidOperation(config, operation, "provider-unavailable");
+        }
+
+        return c.json(
+          {
+            success: false,
+            error:
+              "The session store is unavailable, so this query could not be answered. " +
+              "Nothing was read, and no answer is reported.",
+            code: "AUDITOR_STORE_UNAVAILABLE",
+            retryable: true,
+            correlationId: requestId,
+          },
+          503,
+        );
+      }
+
+      const matched = applySafePipeline(sessions.records, pipeline);
       // The model's own `$limit` is a suggestion; this ceiling is the control,
       // so a pipeline without one cannot pass every session to the model.
       const records = matched.slice(0, MAX_AUDITOR_RESULTS);
       const summary = await provider.summarizeSessionRecords(body.question, records);
 
-      return c.json({ success: true, summary, raw: records });
+      const successBody = { success: true, summary, raw: records };
+
+      // The operation succeeded, so the record is completed with the response to replay.
+      // `summary` and `raw` are the business result; only the request-specific correlation
+      // identity is stripped, and this body carries none.
+      if (operation) {
+        await completePaidOperation(config, operation, {
+          status: 200,
+          body: stripRequestIdentity(successBody),
+        });
+      }
+
+      return c.json(successBody);
     } catch (error) {
       logger.failure(LOG_EVENTS.AUDITOR_FAILURE, error, { dependency: "provider" });
+
+      const message = error instanceof Error ? error.message : "auditor query failed";
+      const category = classifyProviderFailure(message);
+
+      if (operation) {
+        await failPaidOperation(config, operation, category);
+      }
+
       return c.json(
         {
           success: false,
           error: "Auditor query failed.",
           code: "AUDITOR_QUERY_FAILED",
+          // Additive: the status and the code are unchanged, and a caller that ignores
+          // `retryable` sees exactly what it saw before.
+          //
+          // `retryable` answers one specific question — *may a retry with the same
+          // Idempotency-Key execute again?* — and it is the same predicate the claim uses.
+          // It is deliberately not "will retrying help": a provider that rejected the
+          // credential is retryable in this sense, because the operation produced nothing
+          // and the record must not replay a failure that a fixed credential would clear.
+          retryable: isRetryableFailure(category),
           correlationId: requestId,
         },
         500,

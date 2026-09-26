@@ -129,7 +129,42 @@ Still explicitly **not** public, and changeable without notice:
 - the merge's internal shape, the reconciler's module path, and the
   `SessionTransitionCache` interface, all of which are internal to `apps/api/src`.
 
-## 2. Breaking-change policy
+## 1c. What the paid-operation idempotency cycle added to the public surface
+
+Mostly **additive**. The two paid routes gained an optional request header and four new error
+codes, and the auditor route gained a truthful answer where it used to give a wrong one. The
+record is in [development/paid-operation-state-model.md](development/paid-operation-state-model.md).
+
+| Surface | Change | Kind |
+| --- | --- | --- |
+| `POST /api/v1/scenarios`, `POST /api/v1/auditor/query` | accept an optional `Idempotency-Key` request header; added to the CORS allow-list | added |
+| both paid routes | a replayed response carries `Idempotency-Replayed: true`; added to the CORS expose-list | added |
+| `POST /api/v1/auditor/query` | a failed `list_sessions` now answers `503 AUDITOR_STORE_UNAVAILABLE` instead of `200` with a summary over an **empty** record set | **changed — see below** |
+| `POST /api/v1/auditor/query` | the `AUDITOR_QUERY_FAILED` body gains `retryable` | added |
+| `POST /api/v1/scenarios` | the `INVALID_IDEMPOTENCY_KEY` / `IDEMPOTENCY_CONFLICT` / `IDEMPOTENCY_IN_PROGRESS` / `IDEMPOTENCY_STATE_UNAVAILABLE` codes | added |
+| MCP tools | `claim_paid_operation`, `complete_paid_operation`, `fail_paid_operation` | added |
+| collection | `operation_claims`, with a unique index on `(routeFamily, keyHash)` and a TTL index on `expiresAt` | added |
+| environment | `CERBERUS_IDEMPOTENCY_TTL_SECONDS` | added |
+
+One change is **observable** rather than additive, and it is a correction to an answer that
+was false:
+
+- **A failed session read on `POST /api/v1/auditor/query` is now a `503`, not a `200`.** The
+  route read the session list through the persistence layer and, when that read failed,
+  substituted an empty list — the same value a store that answered "no sessions matched"
+  returns. It then summarised nothing and returned `200` with a plausible-looking answer, so a
+  database outage was presented as an audit finding. A client that depended on that `200` was
+  depending on a lie. This became a **correctness** defect rather than only a truthfulness one
+  once the response started being recorded for replay: a `200` recorded as `completed` would
+  replay the fabricated answer for the whole retention window, indistinguishable from a real
+  one. A response is only worth remembering if it is true.
+
+**No key means no change.** A caller that sends no `Idempotency-Key` gets exactly the status
+codes, bodies and provider-call behaviour it got before, with one exception: the auditor's
+store-outage case above, which now answers `503` instead of a fabricated `200`. That
+exception is a fix, not a regression, and it is stated here rather than buried.
+
+
 
 Before breaking a public surface, in order:
 
