@@ -46,4 +46,9 @@ Thumbs.db
 # Documentation is a first-class part of this repository.
 # Do NOT add a blanket `*.md` ignore rule here.
 
-# Screenshots captured by the browser QA pass (scripts/qa/). Evidence, not source.\n.qa-artifacts/
+# Screenshots captured by the browser QA pass (scripts/qa/). Evidence, not source.
+.qa-artifacts/
+
+# Screenshots written by `npm run verify:console-smoke`. Evidence, not source: the smoke
+# writes them for a human to inspect, and regenerates them on every run.
+smoke-output/

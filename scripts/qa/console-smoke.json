@@ -1,0 +1,32 @@
+[
+  { "//": "The identity gate. A fresh console must ask who the operator is before it shows anything." },
+  { "wait": 8000 },
+  { "screenshot": "01-identity-gate" },
+  { "console": true },
+
+  { "//": "Fill the two required fields. `typetext`, not `type`: Flutter web routes text through a hidden DOM input that `Input.insertText` does not reach." },
+  { "click": [631, 365] },
+  { "typetext": "smoke-operator" },
+  { "click": [631, 425] },
+  { "typetext": "smoke-employee-1" },
+  { "wait": 500 },
+  { "screenshot": "02-identity-filled" },
+
+  { "//": "Enter the dashboard. This is the transition the gate exists to make deliberate." },
+  { "click": [631, 564] },
+  { "wait": 5000 },
+  { "screenshot": "03-dashboard" },
+  { "console": true },
+
+  { "//": "A narrow viewport, where an overflow is most likely to show. Flutter reports one to the console as `A RenderFlex overflowed by N pixels`." },
+  { "viewport": [420, 820] },
+  { "wait": 2500 },
+  { "screenshot": "04-narrow" },
+  { "console": true },
+
+  { "//": "And back to a wide viewport, so the last screenshot is the layout an operator uses." },
+  { "viewport": [1280, 900] },
+  { "wait": 1500 },
+  { "screenshot": "05-wide" },
+  { "console": true }
+]
