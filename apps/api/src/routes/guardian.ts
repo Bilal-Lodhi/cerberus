@@ -1247,6 +1247,43 @@ export function createGuardianRouter(
     const sessionId = c.req.param("sessionId");
     const requestId = randomUUID();
 
+    // Preserve the workspace **before** ending monitoring, because that is what "terminal
+    // content" means: the workspace as it was when monitoring stopped. This is the write
+    // that makes `monitored_sessions.terminalContent` the field's owner rather than a
+    // field no route ever populated — which is why the review path used to recover the
+    // workspace from a three-source chain with no rule about which won.
+    //
+    // Best-effort and non-fatal: a failure here must not stop an operator terminating a
+    // session. The review path still falls back to the newest assessment's
+    // `codeSnapshot`, which is a *different* fact (the workspace when that assessment ran)
+    // but is better than an empty panel.
+    const inMemoryCode = sessionStore.get(sessionId)?.currentCode;
+    try {
+      const workspace = await transitions.workspaceToPreserve(
+        sessionId,
+        inMemoryCode,
+        requestId,
+      );
+      if (workspace) {
+        const preserved = await transitions.updateTerminalContent(
+          sessionId,
+          workspace,
+          requestId,
+        );
+        if (!preserved.ok) {
+          console.warn(
+            `[guardian] [${requestId}] terminal content not preserved for ` +
+              `'${sessionId}': ${preserved.code}`,
+          );
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[guardian] [${requestId}] terminal-content preservation failed (non-fatal): ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const result = await transitions.terminate(sessionId, requestId);
     if (!result.ok) {
       const { body, status } = refusalResponse(result);

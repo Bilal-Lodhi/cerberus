@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Terminal content has one owner, and the API writes it.**
+  `update_session_terminal_content` is a published MCP capability that **no route called**,
+  so `monitored_sessions.terminalContent` was always absent. The review path therefore
+  recovered the workspace from a chain of three sources with no rule about which won:
+  the (empty) owner, the in-memory `currentCode` that a restart loses, and the newest
+  assessment's `codeSnapshot`.
+
+  **The API now adopts the capability**, and the three sources stop competing:
+
+  | Source | What it is | Role |
+  | --- | --- | --- |
+  | `monitored_sessions.terminalContent` | the workspace as monitoring ended | **the owner**, written once by `terminate` |
+  | the in-memory `currentCode` | this process's live reconstruction | fallback for a session still running |
+  | `risk_assessments.codeSnapshot` | the workspace **when that assessment ran** | fallback for a session terminated before terminal content was written at all |
+
+  Those are three different facts, not three copies of one, and the order now says so. A
+  session terminated by this build always has `terminalContent` written, so the third
+  fallback is unreachable for it.
+
+  The preservation is **best effort**: a failure is logged and the termination proceeds,
+  because an operator must be able to end monitoring even when the store is unhappy — the
+  telemetry and the assessments are already durable, and the review path still falls back.
+  The capability is **not** deprecated and **not** removed: an external MCP client may still
+  call it directly, and a test asserts that.
+
+- **`get_session_review` gained an optional `assessmentsLimit`**, and `getRiskAssessments`
+  an optional `limit`. Assessments are already sorted newest-first, so `assessmentsLimit: 1`
+  is "the latest assessment" — which is what preserving the terminal workspace needs, rather
+  than the session's whole analysis history. Both default to the previous unbounded
+  behaviour, so no existing caller changes.
+
 - **The reference-corpus ceiling is now enforced at the store.** It was a **read**
   ceiling only: `listReferenceDocuments` returns at most `MAX_REFERENCE_DOCUMENTS`, so a
   201st document was accepted, stored, and then neither listed nor compared against. The

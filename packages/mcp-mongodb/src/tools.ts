@@ -540,6 +540,10 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       const eventsLimit =
         readOptionalCount(body, "eventsLimit") ?? DEFAULT_SESSION_EVENTS_LIMIT;
       const includeAssessments = body["includeAssessments"] !== false;
+      // Assessments are already sorted newest-first, so a limit of 1 is "the latest
+      // assessment" — which is what a caller that needs one field from it wants, rather
+      // than the whole history.
+      const assessmentsLimit = readOptionalCount(body, "assessmentsLimit");
 
       // A limit of 0 skips the query rather than passing 0 to the driver, where
       // `.limit(0)` means "no limit" and would return the entire collection.
@@ -549,7 +553,7 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
           ? Promise.resolve([])
           : store.getSessionEvents(sessionId, { limit: eventsLimit }),
         includeAssessments
-          ? store.getRiskAssessments(sessionId)
+          ? store.getRiskAssessments(sessionId, { limit: assessmentsLimit })
           : Promise.resolve([]),
       ]);
       return { success: true, session, events, riskAssessments };

@@ -174,13 +174,14 @@ both are empty after a restart.
 
 | | |
 | --- | --- |
-| Initiator | **None in the API.** `MCP_TOOL_NAMES.UPDATE_SESSION_TERMINAL_CONTENT` is published by the MCP server and is callable by any MCP client; no route calls it. |
-| Durable writes | `store.updateSession(sessionId, {terminalContent})` → `$set {terminalContent, updatedAt}` |
-| Cache writes | none |
-| Precondition | none — `updateSession` matches on `sessionId` and silently matches nothing for an unknown session. The tool returns `{success: true}` either way. |
+| Initiator | `POST /api/v1/guardian/sessions/:sessionId/terminate`, through the transition boundary's `updateTerminalContent`. Also callable directly by an MCP client — the capability is published and is **not** deprecated. |
+| Precondition | The session document must exist. The raw MCP tool cannot check this (`updateSession` matches on `sessionId` and reports success either way); the boundary does. |
+| Durable writes | `update_session_terminal_content` → `$set {terminalContent, updatedAt}` |
+| Cache writes | none — it is content, not status |
+| Ordering | **Before** the status transition: the workspace is preserved while monitoring is still live, which is what "terminal content" means. A failure is logged and the termination proceeds. |
 | Retry | idempotent (a `$set` of the same value) |
-| Failure behaviour | A write for a nonexistent session reports success. |
-| Ownership | The review route reads `session.terminalContent` first, then the in-memory `currentCode`, then the newest assessment's `codeSnapshot`. So there are **three candidate sources for one concept**, and the durable session field — the one the published tool writes — is authoritative only because nothing writes it. |
+| Failure behaviour | Best effort by design. Losing the preserved workspace must not block an operator from ending monitoring; the telemetry and the assessments are already durable, and the review path still falls back to the newest assessment's `codeSnapshot`. |
+| Ownership | `monitored_sessions.terminalContent` is the **owner** of "the workspace as monitoring ended". The in-memory `currentCode` and the assessment `codeSnapshot` are fallbacks for **different facts** — the live workspace, and the workspace when an assessment ran — not competing owners. See [session-state-model.md](session-state-model.md) §5.2. |
 
 ## 3. The transition table
 
