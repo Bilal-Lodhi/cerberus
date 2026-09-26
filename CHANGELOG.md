@@ -280,6 +280,32 @@ dependency failure. Two migrations ship with it — `0002` and `0003`.
 
 ### Fixed
 
+- **The console claimed an identity integration it does not have.** The operator identity
+  gate carried the line *"Production deployments integrate with Google Cloud Identity
+  Platform."* That was **false** and it was operator-facing: Cerberus has no identity
+  provider, no sign-in, no roles and no per-user attribution, and accounts/RBAC/tenancy are
+  an explicit owner decision to stay out of scope. It described a capability that does not
+  exist, in text an operator reads.
+
+  The browser QA pass for this release is what caught it — no test could, because nothing
+  asserted what the console must *not* claim. The footnote now states what is true: the
+  label is ephemeral, it is not an account, and there is no sign-in, no roles and no
+  per-user attribution. Two code comments that implied a third-party identity flow was
+  merely pending are corrected to match the owner decision.
+
+  `apps/console/test/release_claims_test.dart` asserts the gate claims none of a list of
+  forbidden phrases and does state the truthful posture, so a screenshot is no longer the
+  only thing standing between this claim and a release.
+
+- **The risk-notification surface had no test coverage.** The behaviour-context grid is
+  where the renamed focus-loss counter is displayed, and it is only reachable when an
+  analysis produces a payload — so the browser QA pass could not reach it without driving a
+  paid provider. A widget test now renders it directly and asserts the label reads **Focus
+  Loss** and not the deprecated **Fullscreen Exit**, that the value it was given is shown,
+  and that it renders without overflow at a narrow width.
+
+### Fixed
+
 - **Four console files were not `dart format` clean.** `flutter analyze` does not check
   formatting, and the Flutter CI job ran `analyze` and `test` but not `format` — so a gate
   the release checklist names was documented but never enforced. Four files reached a release

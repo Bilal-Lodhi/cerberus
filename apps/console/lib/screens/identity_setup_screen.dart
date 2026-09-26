@@ -6,7 +6,12 @@ import '../providers/identity_provider.dart';
 /// Lightweight "who are you?" screen — no passwords, just name + Employee UID.
 /// Shows on first launch; once identity is registered, redirects to dashboard.
 ///
-/// In production this would be a full third-party identity provider flow.
+/// This is deliberately **not** a sign-in. It records a display label in an in-memory,
+/// per-process registry so the operator's own screens have a name on them. There is no
+/// identity provider, no account, no role and no per-user attribution, and adding one is
+/// an explicit owner decision that is out of scope — not a production gap waiting to be
+/// filled. The previous comment here said a third-party identity flow would replace it "in
+/// production", which implied a capability the project has decided not to have.
 
 class IdentitySetupScreen extends StatefulWidget {
   const IdentitySetupScreen({super.key});
@@ -254,9 +259,21 @@ class _IdentitySetupScreenState extends State<IdentitySetupScreen> {
                 const SizedBox(height: 24),
 
                 // ── Footnote ────────────────────────────────────────────────────
+                //
+                // This said "Production deployments integrate with Google Cloud Identity
+                // Platform." It was **false**, and it was operator-facing: Cerberus has no
+                // identity provider, no sign-in, no roles and no per-user attribution, and
+                // accounts/RBAC/tenancy are an explicit owner decision to stay out of
+                // scope. The claim described a capability that does not exist, which is
+                // exactly the kind of statement the release material must not contain.
+                //
+                // What is true is stated instead: this is a local label, and the durable
+                // facts an operator needs are that it does not survive a refresh and that
+                // nothing downstream attributes an action to a person.
                 Text(
-                  'Identity is ephemeral — resets on page refresh.\n'
-                  'Production deployments integrate with Google Cloud Identity Platform.',
+                  'Identity is ephemeral — it resets on page refresh.\n'
+                  'This is a local operator label, not an account: there is no sign-in,\n'
+                  'no roles and no per-user attribution.',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.outline,
                   ),
