@@ -576,11 +576,21 @@ export function createReviewRouter(
       employeeId: session.employeeId ?? memSession?.employeeId ?? "unknown",
       auditId: session.auditId ?? memSession?.auditId ?? "",
       status,
-      // `monitored_sessions.terminalContent` is never written — no route calls
-      // `update_session_terminal_content` — so after a restart this would resolve
-      // to "". The newest assessment's `codeSnapshot` holds the same content, so
-      // the review view recovers instead of reporting an empty workspace. The
-      // evidence was always durable; only the view lost it.
+      // ── Terminal content: one owner, then two documented fallbacks ──
+      //
+      // `monitored_sessions.terminalContent` **owns** "the workspace as monitoring
+      // ended". The API writes it on terminate, through the transition boundary, so a
+      // session ended by this build always has it.
+      //
+      // The fallbacks are not equivalent to it, and the order says so:
+      //
+      //   1. `session.terminalContent` — the owner.
+      //   2. the in-memory `currentCode` — this process's reconstruction of the live
+      //      workspace. Correct for a session that is still running, and lost on restart.
+      //   3. the newest assessment's `codeSnapshot` — the workspace **at the moment that
+      //      assessment ran**, which is a different fact. Read only for a session
+      //      terminated before terminal content was written at all; an empty panel would
+      //      be worse than a slightly older workspace, provided the difference is stated.
       terminalContent: firstNonEmptyString(
         session.terminalContent,
         memSession?.currentCode,

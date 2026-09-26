@@ -497,10 +497,19 @@ export class McpStoreDouble {
   }
 
   /** Newest first by `generatedAt`, which is `{ generatedAt: -1 }`. */
-  async getRiskAssessments(sessionId: string): Promise<StoredDocument[]> {
-    return [...(this.assessments.get(sessionId) ?? [])]
+  async getRiskAssessments(
+    sessionId: string,
+    options: { limit?: number } = {},
+  ): Promise<StoredDocument[]> {
+    const sorted = [...(this.assessments.get(sessionId) ?? [])]
       .sort((a, b) => timeOf(b["generatedAt"]) - timeOf(a["generatedAt"]))
       .map((assessment) => ({ ...assessment }));
+
+    // Mirrors the real store: 0 is "not specified", because MongoDB's `.limit(0)` means
+    // "no limit". The tool layer is where "0 means none" lives, and it skips the query.
+    return typeof options.limit === "number" && options.limit > 0
+      ? sorted.slice(0, options.limit)
+      : sorted;
   }
 
   async getEmployeeRiskHistory(employeeId: string): Promise<StoredDocument[]> {

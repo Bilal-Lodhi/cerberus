@@ -180,6 +180,16 @@ export interface SessionTransitions {
   autoClear(sessionId: string, requestId?: string): Promise<SessionTransitionResult>;
   reactivate(sessionId: string, requestId?: string): Promise<SessionTransitionResult>;
   /**
+   * The terminal workspace content for a session, or `null` when nothing holds one.
+   *
+   * Used by `terminate` to preserve the workspace before monitoring ends.
+   */
+  workspaceToPreserve(
+    sessionId: string,
+    inMemoryCode: string | undefined,
+    requestId?: string,
+  ): Promise<string | null>;
+  /**
    * Writes the terminal workspace content.
    *
    * Not a status transition, but it is lifecycle state owned by the session document
@@ -409,6 +419,62 @@ export function createSessionTransitions(
     };
   }
 
+  /**
+   * The terminal workspace content for a session, or `null` when nothing holds one.
+   *
+   * ── Ownership ─────────────────────────────────────────────────────────
+   *
+   * `monitored_sessions.terminalContent` is the **owner** of "the workspace as it was when
+   * monitoring ended", and `update_session_terminal_content` is the only way it is written.
+   * Before this, no route called that tool, so the field was always absent and the review
+   * path recovered the workspace from a chain of three sources — one concept with three
+   * candidate owners and no rule saying which won.
+   *
+   * The three sources are not equivalent, and the distinction is now explicit:
+   *
+   *   - `terminalContent` — the workspace as monitoring ended. Owned by the session
+   *     document, written once, by the transition that ends monitoring.
+   *   - `risk_assessments.codeSnapshot` — the workspace **at the moment a given assessment
+   *     ran**. Point-in-time evidence, and a different fact: an assessment taken an hour
+   *     before termination records what the workspace was then, not what it ended as.
+   *   - the in-memory `currentCode` — this process's reconstruction, which a restart loses.
+   *
+   * `codeSnapshot` is therefore read here as a **fallback for a session terminated before
+   * this change existed**, not as a competing owner. A session terminated by this build
+   * always has `terminalContent` written, so the fallback is unreachable for it.
+   *
+   * `assessmentsLimit: 1` because only the newest assessment can hold the most recent
+   * workspace; reading the history to take its first element would be work proportional to
+   * the session's whole analysis history.
+   */
+  async function workspaceToPreserve(
+    sessionId: string,
+    inMemoryCode: string | undefined,
+    requestId: string,
+  ): Promise<string | null> {
+    if (inMemoryCode && inMemoryCode.length > 0) return inMemoryCode;
+
+    const response = await callMcpTool<{
+      success?: boolean;
+      session?: Record<string, unknown> | null;
+      riskAssessments?: Array<Record<string, unknown>>;
+    }>(
+      config,
+      MCP_TOOL_NAMES.GET_SESSION_REVIEW,
+      { sessionId, eventsLimit: 0, assessmentsLimit: 1 },
+      { requestId, timeoutMs: MCP_TIMEOUT_MS },
+    );
+
+    if (!response.ok || !response.data?.success) return null;
+
+    const stored = response.data.session?.["terminalContent"];
+    if (typeof stored === "string" && stored.length > 0) return stored;
+
+    // Newest-first, so the first element is the latest assessment.
+    const snapshot = response.data.riskAssessments?.[0]?.["codeSnapshot"];
+    return typeof snapshot === "string" && snapshot.length > 0 ? snapshot : null;
+  }
+
   return {
     terminate: (sessionId, requestId = randomUUID()) =>
       apply("terminate", sessionId, requestId),
@@ -418,6 +484,8 @@ export function createSessionTransitions(
       apply("autoClear", sessionId, requestId),
     reactivate: (sessionId, requestId = randomUUID()) =>
       apply("reactivate", sessionId, requestId),
+
+    workspaceToPreserve,
 
     async updateTerminalContent(sessionId, content, requestId = randomUUID()) {
       // Content, not status: no transition is validated, but the session must exist,

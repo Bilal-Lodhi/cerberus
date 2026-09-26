@@ -622,11 +622,28 @@ export class MongoStore {
     }
   }
 
-  async getRiskAssessments(sessionId: string): Promise<Document[]> {
-    return this.collection("riskAssessments")
+  /**
+   * Risk assessments for one session, newest first.
+   *
+   * `limit` is optional and unbounded by default, which preserves the previous behaviour
+   * for every existing caller. A caller that needs one field from the latest assessment —
+   * the terminal-content owner, for instance — passes `limit: 1` rather than reading the
+   * whole history.
+   */
+  async getRiskAssessments(
+    sessionId: string,
+    options: { limit?: number } = {},
+  ): Promise<Document[]> {
+    const cursor = this.collection("riskAssessments")
       .find({ sessionId })
-      .sort({ generatedAt: -1 })
-      .toArray();
+      .sort({ generatedAt: -1 });
+    // `.limit(0)` means "no limit" in MongoDB, so 0 is treated as "not specified" rather
+    // than passed down. The tool layer is where "0 means none" lives, and it skips the
+    // query instead.
+    if (typeof options.limit === "number" && options.limit > 0) {
+      cursor.limit(options.limit);
+    }
+    return cursor.toArray();
   }
 
   async getEmployeeRiskHistory(employeeId: string): Promise<Document[]> {

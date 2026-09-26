@@ -84,17 +84,30 @@ analysis ran, so the evidence survived; the *session-level counter* did not.
 
 Now written, read back, and exposed on both session-list paths.
 
-### 5.2 `currentCode` is not in the session document — fixed on the read path
+### 5.2 `currentCode` is not in the session document — fixed at the owner
 
-`update_session_terminal_content` exists as an MCP tool and **no route calls it**,
-so `monitored_sessions.terminalContent` is always absent. The review route's
-`session.terminalContent ?? memSession?.currentCode ?? ""` therefore resolved to
-`""` after a restart, even though the latest risk assessment holds the identical
-content in `codeSnapshot`.
+`update_session_terminal_content` exists as an MCP tool and **no route called it**, so
+`monitored_sessions.terminalContent` was always absent. The review route's
+`session.terminalContent ?? memSession?.currentCode ?? ""` therefore resolved to `""`
+after a restart, even though the latest risk assessment held the identical content in
+`codeSnapshot`.
 
-The evidence was never lost; the review view was. The read path now falls back to
-the newest assessment's `codeSnapshot`, which needs no new write and cannot
-disagree with the assessment it came from.
+The read path was fixed first by falling back to the newest assessment's
+`codeSnapshot`, which needs no new write. **The owner is now written too**: `terminate`
+preserves the workspace through `update_terminal_content`, so a session ended by this
+build has `terminalContent` set.
+
+That resolves the deeper problem — one concept with three candidate sources and no
+rule about which won. They are three *different facts*:
+
+| Source | What it is | Role |
+| --- | --- | --- |
+| `monitored_sessions.terminalContent` | the workspace as monitoring ended | **the owner** |
+| the in-memory `currentCode` | this process's live reconstruction | fallback while a session is running |
+| `risk_assessments.codeSnapshot` | the workspace **when that assessment ran** | fallback for a session terminated before the owner was written |
+
+The preservation is best effort: a failure is logged and the termination proceeds. See
+[state-transition-model.md](state-transition-model.md) T8.
 
 ### 5.3 The review route assumed a sort order the store does not provide — fixed
 
