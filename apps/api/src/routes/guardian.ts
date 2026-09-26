@@ -21,10 +21,17 @@
  * full contract.
  *
  * Deduplication layers (all preserved from the original implementation):
- *   1. identical risk-assessment id from the AI provider
- *   2. code-hash equality — skip re-analysis when the workspace is unchanged
- *   3. micro-event fingerprint ring (last 128) — suppress replayed batches
- *   4. behavioural counter blend — repeated violations amplify the score
+ *   1. code-hash equality — skip re-analysis when the workspace is unchanged
+ *   2. micro-event fingerprint ring (last 128) — suppress replayed batches
+ *   3. behavioural counter blend — repeated violations amplify the score
+ *
+ * A fourth layer was previously described here as "identical risk-assessment id
+ * from the AI provider". It was never implemented: nothing in the ingest path
+ * compares `riskAssessmentId`, and `risk_assessments` has no unique index on it,
+ * so a retry after a restart can write a second assessment row for one incident.
+ * The claim is removed rather than left standing, and the durable idempotency it
+ * described is tracked as open work in
+ * `docs/development/failure-semantics.md` §3.9.
  */
 
 import { Hono } from "hono";
