@@ -331,8 +331,32 @@ export function createReviewRouter(
         let copyAttemptCount = memSession?.copyAttemptCount ?? entry.copyAttemptCount ?? 0;
         let riskScore =
           memSession?.lastRiskPayload?.overallRiskScore ?? entry.peakRiskScore ?? 0;
-        let lastEventTimestamp: string | null = entry.updatedAt ?? null;
+        // The durable, server-written activity instant.
+        //
+        // This used to be the newest **client-supplied** event timestamp, read from the
+        // 500-event window this route no longer fetches. `updatedAt` is the same instant
+        // from a trustworthy source: it is written by the persistence layer on every
+        // mutation, and the liveness decision already uses it for exactly that reason.
+        // Reporting a client-supplied timestamp here while refusing to trust it for expiry
+        // was a quiet inconsistency.
+        const lastEventTimestamp: string | null = entry.updatedAt ?? null;
 
+        // ── One bounded read per session, not one session's history ──
+        //
+        // This used to ask for the default: up to **500 micro-events** plus every risk
+        // assessment, for every session in the list. With 200 sessions that is up to
+        // 100 000 event documents fetched and discarded per list request, and the cost grew
+        // with each session's history rather than with the number of sessions.
+        //
+        // Nothing in the events was load-bearing. Every counter the loop below used to
+        // re-derive from them is **already durable on the session document** — written on
+        // every ingest with `$max`, so monotonic and hydrated across a restart — and the
+        // one genuinely event-derived field was a display timestamp.
+        //
+        // So the read asks for the session document and the **latest** assessment only:
+        // `eventsLimit: 0` skips the events query outright (0 is not passed down, because
+        // MongoDB's `.limit(0)` means "no limit"), and `assessmentsLimit: 1` is enough
+        // because assessments are returned newest-first.
         const review = await callMcpTool<{
           success: boolean;
           events?: Array<{ eventType: string; timestamp: string }>;
@@ -340,43 +364,13 @@ export function createReviewRouter(
         }>(
           config,
           MCP_TOOL_NAMES.GET_SESSION_REVIEW,
-          { sessionId: entry.sessionId },
+          { sessionId: entry.sessionId, eventsLimit: 0, assessmentsLimit: 1 },
           { requestId, timeoutMs: MCP_TIMEOUT_MS },
         );
 
         if (review.ok && review.data?.success) {
-          const events = review.data.events ?? [];
-          if (events.length > eventCount) eventCount = events.length;
-
-          const mcpPastes = events.filter(
-            (event) => event.eventType === "PASTE_TRIGGER" || event.eventType === "PASTE",
-          ).length;
-          if (mcpPastes > pasteCount) pasteCount = mcpPastes;
-
-          const mcpTabs = events.filter(
-            (event) => event.eventType === "TAB_SWITCH" || event.eventType === "WINDOW_BLUR",
-          ).length;
-          if (mcpTabs > tabSwitchCount) tabSwitchCount = mcpTabs;
-
-          const mcpCopies = events.filter(
-            (event) => event.eventType === "COPY_ATTEMPT",
-          ).length;
-          if (mcpCopies > copyAttemptCount) copyAttemptCount = mcpCopies;
-
-          const mcpFocusLosses = events.filter(
-            (event) =>
-              event.eventType === "FULLSCREEN_EXIT" || event.eventType === "WINDOW_BLUR",
-          ).length;
-          if (mcpFocusLosses > focusLossCount) {
-            focusLossCount = mcpFocusLosses;
-          }
-
-          if (events.length > 0) {
-            lastEventTimestamp = [...events].sort(
-              (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-            )[0].timestamp;
-          }
-
+          // The latest assessment, which is the only one this list needs: `riskScore` is a
+          // single number, not a history.
           const assessments = sortReportsOldestFirst(
             review.data.riskAssessments ?? [],
           );
