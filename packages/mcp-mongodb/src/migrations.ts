@@ -414,6 +414,75 @@ const dedupeRiskAssessmentIdentity: Migration = {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// 0003 — truthful focus-loss vocabulary
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Renames `monitored_sessions.fullscreenExitCount` to `focusLossCount`.
+ *
+ * ── Why this is a data migration and not just a rename in code ────────
+ *
+ * The counter was incremented by **both** `WINDOW_BLUR` and `FULLSCREEN_EXIT`, so its
+ * name described one of the two events that produced it: a window blur that was never a
+ * fullscreen exit was counted as one. Browser telemetry cannot distinguish the two, so
+ * the counter has always measured *focus loss* and the field name has always been wrong.
+ *
+ * The **score contribution is unchanged**. It was gated on "focus was lost", never on
+ * "fullscreen was exited", so this corrects a name rather than a behaviour — which is why
+ * the rename is safe to apply without re-scoring anything, and why it needs no
+ * compatibility shim on the read path beyond a fallback for an un-migrated document.
+ *
+ * ── What it does ──────────────────────────────────────────────────────
+ *
+ * Copies the value to the new field and removes the old one, per document. A document
+ * that already has `focusLossCount` keeps the **larger** of the two, so a database where
+ * both fields exist — one written by a new process, one by an old — cannot lose the higher
+ * total. A pipeline update is used rather than `$rename` so the `$max` can be expressed
+ * and the whole operation stays idempotent: applying it twice cannot change the result.
+ */
+const renameFullscreenExitToFocusLoss: Migration = {
+  id: "0003-rename-fullscreen-exit-to-focus-loss",
+  description:
+    "Rename monitored_sessions.fullscreenExitCount to focusLossCount, which is what the counter has always measured.",
+  rewritesData: true,
+
+  async up({ db, log }) {
+    const sessions = db.collection("monitored_sessions");
+
+    const legacy = await sessions.countDocuments({
+      fullscreenExitCount: { $exists: true, $type: "number" },
+    });
+    if (legacy === 0) {
+      log("no documents carry the legacy fullscreenExitCount field");
+      return;
+    }
+
+    const copied = await sessions.updateMany(
+      { fullscreenExitCount: { $exists: true, $type: "number" } },
+      [
+        {
+          $set: {
+            focusLossCount: {
+              $max: [
+                { $ifNull: ["$focusLossCount", 0] },
+                { $ifNull: ["$fullscreenExitCount", 0] },
+              ],
+            },
+          },
+        },
+        { $unset: "fullscreenExitCount" },
+      ],
+    );
+
+    log(
+      `renamed the focus-loss counter on ${copied.modifiedCount} of ${legacy} ` +
+        `document(s) that carried the legacy field`,
+    );
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // Registry
 // ═══════════════════════════════════════════════════════════════════
 
@@ -427,6 +496,7 @@ const dedupeRiskAssessmentIdentity: Migration = {
 export const MIGRATIONS: readonly Migration[] = [
   dedupeMicroEventIdentity,
   dedupeRiskAssessmentIdentity,
+  renameFullscreenExitToFocusLoss,
 ];
 
 // ═══════════════════════════════════════════════════════════════════

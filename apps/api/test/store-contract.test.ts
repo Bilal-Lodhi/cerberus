@@ -260,10 +260,10 @@ export const CONTRACT_CASES: ContractCase[] = [
       });
       await store.updateSessionCounts(ids.sessionId, {
         eventCount: 3,
-        fullscreenExitCount: 7,
+        focusLossCount: 7,
       });
       const session = await store.getSession(ids.sessionId);
-      assert.equal(session?.["fullscreenExitCount"], 7);
+      assert.equal(session?.["focusLossCount"], 7);
     },
   },
   {

@@ -166,7 +166,7 @@ describe("the aggregate-counter update document", () => {
       eventCount: 3,
       pasteCount: 2,
       tabSwitchCount: 1,
-      fullscreenExitCount: 4,
+      focusLossCount: 4,
       copyAttemptCount: 0,
       peakRiskScore: 88,
     });
@@ -175,7 +175,7 @@ describe("the aggregate-counter update document", () => {
       eventCount: 3,
       pasteCount: 2,
       tabSwitchCount: 1,
-      fullscreenExitCount: 4,
+      focusLossCount: 4,
       copyAttemptCount: 0,
       peakRiskScore: 88,
     });
@@ -185,7 +185,7 @@ describe("the aggregate-counter update document", () => {
       "eventCount",
       "pasteCount",
       "tabSwitchCount",
-      "fullscreenExitCount",
+      "focusLossCount",
       "copyAttemptCount",
       "peakRiskScore",
     ]) {

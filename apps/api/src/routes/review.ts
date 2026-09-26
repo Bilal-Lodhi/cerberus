@@ -249,6 +249,8 @@ export function createReviewRouter(
       eventCount?: number;
       pasteCount?: number;
       tabSwitchCount?: number;
+      focusLossCount?: number;
+      /** Deprecated alias, read as a fallback for an un-migrated document. */
       fullscreenExitCount?: number;
       copyAttemptCount?: number;
       peakRiskScore?: number;
@@ -321,8 +323,11 @@ export function createReviewRouter(
             : Math.max(memSession.events.length, memSession.eventCount);
         let pasteCount = memSession?.pasteCount ?? entry.pasteCount ?? 0;
         let tabSwitchCount = memSession?.tabSwitchCount ?? entry.tabSwitchCount ?? 0;
-        let fullscreenExitCount =
-          memSession?.fullscreenExitCount ?? entry.fullscreenExitCount ?? 0;
+        let focusLossCount =
+          memSession?.focusLossCount ??
+          // The durable entry may still carry the deprecated field name, so the larger of
+          // the two is taken — a document holding both must not lose the higher total.
+          Math.max(entry.focusLossCount ?? 0, entry.fullscreenExitCount ?? 0);
         let copyAttemptCount = memSession?.copyAttemptCount ?? entry.copyAttemptCount ?? 0;
         let riskScore =
           memSession?.lastRiskPayload?.overallRiskScore ?? entry.peakRiskScore ?? 0;
@@ -358,12 +363,12 @@ export function createReviewRouter(
           ).length;
           if (mcpCopies > copyAttemptCount) copyAttemptCount = mcpCopies;
 
-          const mcpFullscreenExits = events.filter(
+          const mcpFocusLosses = events.filter(
             (event) =>
               event.eventType === "FULLSCREEN_EXIT" || event.eventType === "WINDOW_BLUR",
           ).length;
-          if (mcpFullscreenExits > fullscreenExitCount) {
-            fullscreenExitCount = mcpFullscreenExits;
+          if (mcpFocusLosses > focusLossCount) {
+            focusLossCount = mcpFocusLosses;
           }
 
           if (events.length > 0) {
@@ -400,7 +405,9 @@ export function createReviewRouter(
           eventCount,
           pasteCount,
           tabSwitchCount,
-          fullscreenExitCount,
+          focusLossCount,
+          // Deprecated alias. Same value, so a console or script on the old name keeps working.
+          fullscreenExitCount: focusLossCount,
           copyAttemptCount,
           riskScore,
           peakRiskScore: riskScore,

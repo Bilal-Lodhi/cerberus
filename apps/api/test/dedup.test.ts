@@ -54,7 +54,7 @@ function makeSession(overrides: Partial<SessionState> = {}): SessionState {
     pasteCount: 0,
     keystrokeDeltas: [],
     tabSwitchCount: 0,
-    fullscreenExitCount: 0,
+    focusLossCount: 0,
     copyAttemptCount: 0,
     lastRiskPayload: null,
     eventCount: 0,
@@ -123,7 +123,7 @@ describe("applyEventToSession", () => {
     applyEventToSession(session, makeEvent({ eventType: "FULLSCREEN_EXIT" }));
 
     assert.equal(session.tabSwitchCount, 1);
-    assert.equal(session.fullscreenExitCount, 2);
+    assert.equal(session.focusLossCount, 2);
   });
 
   test("COPY_ATTEMPT is counted", () => {

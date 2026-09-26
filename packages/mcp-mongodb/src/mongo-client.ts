@@ -88,11 +88,37 @@ export interface SessionCountsUpdate {
   eventCount: number;
   pasteCount?: number;
   tabSwitchCount?: number;
+  /**
+   * How many times the monitored window lost focus.
+   *
+   * Canonical name. The counter used to be called `fullscreenExitCount` and was
+   * incremented by **both** `WINDOW_BLUR` and `FULLSCREEN_EXIT`, so its name described
+   * one of the two events that produced it: a window blur that was never a fullscreen
+   * exit was counted as one. Browser telemetry cannot distinguish the two, so the
+   * truthful name is the one that covers what the counter measures.
+   *
+   * The score contribution is unchanged — it was always gated on "focus was lost", never
+   * on "fullscreen was exited" — so this is a naming correction, not a scoring change.
+   */
+  focusLossCount?: number;
+  /**
+   * The deprecated spelling of {@link focusLossCount}.
+   *
+   * Accepted so an existing MCP caller keeps working, and written to the *same* durable
+   * field. When both are supplied the larger wins, so a caller that sends both cannot
+   * lower the total.
+   */
   fullscreenExitCount?: number;
   copyAttemptCount?: number;
   peakRiskScore?: number;
   status?: string;
 }
+
+/** The durable field the focus-loss counter lives in. */
+export const FOCUS_LOSS_FIELD = "focusLossCount";
+
+/** The deprecated durable field name, read as a fallback for an un-migrated document. */
+export const LEGACY_FOCUS_LOSS_FIELD = "fullscreenExitCount";
 
 /**
  * Builds the update document for an aggregate-counter write.
@@ -110,10 +136,24 @@ export interface SessionCountsUpdate {
  *     `undefined` as BSON `null`, so spreading the whole `counts` object into
  *     `$set` clobbered a stored status whenever the caller omitted it. That was
  *     observed live: a session's status became `null` after a counter update.
+ *   - **The two focus-loss spellings write one field.** `fullscreenExitCount` is
+ *     deprecated in favour of `focusLossCount`, and both map to the same durable field so
+ *     a caller on either name sees one counter rather than two that could drift. When
+ *     both are supplied the larger wins, so sending both cannot lower the total.
  */
 export function buildSessionCountsUpdate(counts: SessionCountsUpdate): Document {
-  const { status, ...counterFields } = counts;
-  const counters = compact(counterFields);
+  const { status, focusLossCount, fullscreenExitCount, ...rest } = counts;
+
+  // `compact` is typed to the input, so the focus-loss field is added after it rather
+  // than being part of the spread — the two spellings collapse into one key here.
+  const counters: Record<string, unknown> = { ...compact(rest) };
+
+  const focusLossCandidates = [focusLossCount, fullscreenExitCount].filter(
+    (value): value is number => typeof value === "number",
+  );
+  if (focusLossCandidates.length > 0) {
+    counters[FOCUS_LOSS_FIELD] = Math.max(...focusLossCandidates);
+  }
 
   const update: Document = { $set: { updatedAt: new Date() } };
   if (Object.keys(counters).length > 0) update["$max"] = counters;
@@ -367,6 +407,10 @@ export class MongoStore {
             eventCount: 1,
             pasteCount: 1,
             tabSwitchCount: 1,
+            // Both spellings are projected: a document written before migration 0003 still
+            // carries the legacy field, and a list that projected only the canonical name
+            // would report zero for it.
+            focusLossCount: 1,
             fullscreenExitCount: 1,
             copyAttemptCount: 1,
             peakRiskScore: 1,

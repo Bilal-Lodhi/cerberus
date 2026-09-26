@@ -244,8 +244,20 @@ export interface BehavioralContext {
   totalCopyAttempts: number;
   /** Total dev-tools-open events */
   totalDevToolsOpens: number;
-  /** Total fullscreen-exit events */
-  totalFullscreenExits: number;
+    /**
+   * Total focus-loss events — `WINDOW_BLUR` and `FULLSCREEN_EXIT` together.
+   *
+   * Browser telemetry cannot distinguish the two, so this is what the counter has always
+   * measured.
+   */
+  totalFocusLosses: number;
+  /**
+   * Deprecated alias for {@link totalFocusLosses}, with the same value.
+   *
+   * Kept because a risk assessment is **persisted**: a document written before the rename
+   * carries this field and is still read back by the review surfaces.
+   */
+  totalFullscreenExits?: number;
 }
 
 /** Keystroke timing summary captured at risk-detection time. */

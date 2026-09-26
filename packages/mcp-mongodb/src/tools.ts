@@ -479,6 +479,11 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
         eventCount: (counts["eventCount"] as number) ?? 0,
         pasteCount: counts["pasteCount"] as number | undefined,
         tabSwitchCount: counts["tabSwitchCount"] as number | undefined,
+        // Both spellings are accepted and map to one durable field. `focusLossCount` is
+        // canonical; `fullscreenExitCount` is the deprecated name, kept because this tool
+        // is a published interface and the counter is the same number under either name.
+        // See `buildSessionCountsUpdate`.
+        focusLossCount: counts["focusLossCount"] as number | undefined,
         fullscreenExitCount: counts["fullscreenExitCount"] as number | undefined,
         copyAttemptCount: counts["copyAttemptCount"] as number | undefined,
         peakRiskScore: counts["peakRiskScore"] as number | undefined,

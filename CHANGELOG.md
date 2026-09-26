@@ -150,6 +150,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The focus-loss counter is named for what it measures.** `applyEventToSession` treated
+  `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically and incremented one counter, which was
+  called `fullscreenExitCount` — so the field name described **one of the two events that
+  produced it**: a window blur that was never a fullscreen exit was counted as one, and the
+  incident summary said "fullscreen exit detected" for what may have been a blur. Browser
+  telemetry cannot distinguish the two, so the counter has always measured *focus loss*.
+
+  The canonical name is now `focusLossCount`, and migration
+  `0003-rename-fullscreen-exit-to-focus-loss` renames the durable field. **No score moves:**
+  the penalty was gated on `count > 0`, which is "focus was lost", never on "fullscreen was
+  exited" — so this corrects a name rather than a behaviour. A test asserts that a blur and
+  a fullscreen exit score identically, because a silent scoring change would be the worst
+  possible outcome of a rename.
+
+  The old names are kept where they are cheap and where a caller may depend on them:
+
+  | Surface | Canonical | Deprecated alias, same value |
+  | --- | --- | --- |
+  | Session detail and both list responses | `focusLossCount` | `fullscreenExitCount` |
+  | `update_session_counts` argument | `focusLossCount` | `fullscreenExitCount` |
+  | `behavioralContext` in a risk assessment | `totalFocusLosses` | `totalFullscreenExits` |
+  | The durable field | `focusLossCount` | read as a fallback for an un-migrated document |
+
+  `update_session_counts` maps both spellings to **one** durable field, so the two names
+  cannot become two counters that drift; when both are supplied the larger wins, so a caller
+  mid-migration cannot lower the total. The `list_sessions` projection carries both, because
+  a document written before the migration still holds the legacy field and projecting only
+  the canonical name would report zero for it. The console reads the truthful name and falls
+  back to the old one, and its panel now says **Focus Loss** rather than Fullscreen Exit.
+
+- **The incident summary says "focus lost"** rather than "fullscreen exit detected", for the
+  same reason.
+
+
 - `POST /api/v1/guardian/sessions/:sessionId/terminate` now returns **`503`** when the
   persistence layer cannot be reached, instead of the previous `404` — which reported
   "not found" for a session that exists. It returns `409 SESSION_CONFLICT` when the

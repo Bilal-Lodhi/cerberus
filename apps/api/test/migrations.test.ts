@@ -177,6 +177,8 @@ interface FakeDb {
   riskAssessmentDeletedIdBatches: unknown[][];
   aggregateCalls: () => number;
   riskAssessmentAggregateCalls: () => number;
+  sessionCountCalls: () => number;
+  sessionUpdateCalls: () => number;
 }
 
 /**
@@ -196,6 +198,8 @@ function fakeDb(options: {
     docs: Array<Record<string, unknown>>;
   }>;
   /** Duplicate groups for `risk_assessments`, keyed by `riskAssessmentId`. */
+  /** How many session documents carry the legacy focus-loss field. */
+  legacyFocusLossDocs?: number;
   riskAssessmentGroups?: Array<{
     _id: string;
     count: number;
@@ -207,6 +211,8 @@ function fakeDb(options: {
   const riskAssessmentDeletedIdBatches: unknown[][] = [];
   let aggregateCalls = 0;
   let riskAssessmentAggregateCalls = 0;
+  let sessionCountCalls = 0;
+  let sessionUpdateCalls = 0;
 
   const microEvents = {
     aggregate() {
@@ -227,6 +233,17 @@ function fakeDb(options: {
     async deleteMany(filter: { _id: { $in: unknown[] } }) {
       riskAssessmentDeletedIdBatches.push(filter._id.$in);
       return { deletedCount: filter._id.$in.length };
+    },
+  };
+
+  const monitoredSessions = {
+    async countDocuments() {
+      sessionCountCalls++;
+      return options.legacyFocusLossDocs ?? 0;
+    },
+    async updateMany() {
+      sessionUpdateCalls++;
+      return { modifiedCount: options.legacyFocusLossDocs ?? 0 };
     },
   };
 
@@ -254,6 +271,7 @@ function fakeDb(options: {
     collection(name: string) {
       if (name === "micro_events") return microEvents;
       if (name === "risk_assessments") return riskAssessments;
+      if (name === "monitored_sessions") return monitoredSessions;
       if (name === MIGRATIONS_COLLECTION) return schemaMigrations;
       throw new Error(`the fake Db has no collection named '${name}'`);
     },
@@ -266,6 +284,8 @@ function fakeDb(options: {
     riskAssessmentDeletedIdBatches,
     aggregateCalls: () => aggregateCalls,
     riskAssessmentAggregateCalls: () => riskAssessmentAggregateCalls,
+    sessionCountCalls: () => sessionCountCalls,
+    sessionUpdateCalls: () => sessionUpdateCalls,
   };
 }
 
@@ -286,9 +306,10 @@ function appliedEntry(migrationId: string, appliedAt = new Date("2026-01-01T00:0
 }
 
 /** The migrations a full run applies, in order. */
-const APPLIED_BOTH = [
+const APPLIED_ALL = [
   "0001-dedupe-micro-event-identity",
   "0002-dedupe-risk-assessment-identity",
+  "0003-rename-fullscreen-exit-to-focus-loss",
 ];
 
 describe("planMigrations", () => {
@@ -345,11 +366,12 @@ describe("runMigrations", () => {
 
     const result = await runMigrations(db);
 
-    assert.deepEqual(result.applied, APPLIED_BOTH);
+    assert.deepEqual(result.applied, APPLIED_ALL);
     assert.deepEqual(deletedIdBatches, [["b"]]);
-    assert.equal(ledger.length, 2);
+    assert.equal(ledger.length, 3);
     assert.equal(ledger[0]["migrationId"], "0001-dedupe-micro-event-identity");
     assert.equal(ledger[1]["migrationId"], "0002-dedupe-risk-assessment-identity");
+    assert.equal(ledger[2]["migrationId"], "0003-rename-fullscreen-exit-to-focus-loss");
     assert.ok(ledger[0]["appliedAt"] instanceof Date);
   });
 
@@ -385,7 +407,7 @@ describe("runMigrations", () => {
     const first = await runMigrations(db);
     const second = await runMigrations(db);
 
-    assert.deepEqual(first.applied, APPLIED_BOTH);
+    assert.deepEqual(first.applied, APPLIED_ALL);
     assert.deepEqual(second.applied, []);
     assert.equal(deletedIdBatches.length, 1, "the second run deleted again");
   });
@@ -428,8 +450,8 @@ describe("runMigrations", () => {
 
     const result = await runMigrations(db);
 
-    assert.deepEqual(result.applied, APPLIED_BOTH);
-    assert.equal(ledger.length, 2);
+    assert.deepEqual(result.applied, APPLIED_ALL);
+    assert.equal(ledger.length, 3);
     assert.match(String(ledger[0]["detail"]), /no duplicate event identities found/);
     assert.match(
       String(ledger[1]["detail"]),
@@ -457,7 +479,7 @@ describe("runMigrations", () => {
 
     const result = await runMigrations(db);
 
-    assert.deepEqual(result.applied, APPLIED_BOTH);
+    assert.deepEqual(result.applied, APPLIED_ALL);
     assert.deepEqual(riskAssessmentDeletedIdBatches, [["b"]], "the earliest copy is kept");
     assert.match(String(ledger[1]["detail"]), /removed 1 duplicate document\(s\)/);
   });
@@ -558,6 +580,36 @@ describe("runMigrations", () => {
 
     await runMigrations(db);
     assert.equal(aggregateCalls(), 1);
+  });
+
+  test("the focus-loss rename touches nothing when no document carries the legacy field", async () => {
+    // The common case for a database created after the rename. It must record itself as a
+    // no-op rather than running an update over the whole collection.
+    const { db, ledger, sessionUpdateCalls } = fakeDb({ legacyFocusLossDocs: 0 });
+
+    const result = await runMigrations(db);
+
+    assert.deepEqual(result.applied, APPLIED_ALL);
+    assert.equal(sessionUpdateCalls(), 0, "an update ran with nothing to rename");
+    assert.match(
+      String(ledger[2]["detail"]),
+      /no documents carry the legacy fullscreenExitCount field/,
+    );
+  });
+
+  test("the focus-loss rename reports how many documents it rewrote", async () => {
+    const { db, ledger, sessionCountCalls, sessionUpdateCalls } = fakeDb({
+      legacyFocusLossDocs: 7,
+    });
+
+    await runMigrations(db);
+
+    assert.equal(sessionCountCalls(), 1, "the migration did not check before mutating");
+    assert.equal(sessionUpdateCalls(), 1);
+    assert.match(
+      String(ledger[2]["detail"]),
+      /renamed the focus-loss counter on 7 of 7 document\(s\)/,
+    );
   });
 });
 
