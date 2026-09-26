@@ -34,6 +34,10 @@ command.
 
 ## What it runs
 
+**Nineteen steps**, in the order below. The list is the plan `npm run verify:release -- --list`
+prints, and it is what the harness actually executes — the two are the same array, so the
+documentation cannot describe a step the harness does not run.
+
 | Step | What it proves | npm script |
 | --- | --- | --- |
 | `build` | The TypeScript compiles, and the entrypoints the `Dockerfile` expects exist | `npm run build` |
@@ -45,6 +49,7 @@ command.
 | `docs` | Every relative link and heading anchor resolves | `npm run check:docs` |
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
+| `idempotency-guard` | The paid-operation claim's unique and retention indexes are named where a restore checks them, the shared index specification still matches that list, the two tool-name declarations agree, and the suites that prove the mechanism are still in the test glob — **all without a database** | `npm run verify:idempotency` |
 | `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
 | `private-packages` | Every workspace package is unpublishable by construction | `npm run verify:packages` |
 | `attribution-guard` | No commit in range presents a non-existent contributor | `npm run verify:attribution` |
@@ -52,6 +57,7 @@ command.
 | `stale-image-defence` | The image is built `--no-cache` from this tree, and its recorded version and commit match the source and the running container | `npm run verify:image` |
 | `console-format` | The Flutter sources are formatted, which `flutter analyze` does not check | `npm run console:format` |
 | `console-analyze` | The Flutter console analyses clean | `npm run console:analyze` |
+| `console-smoke` | The built console is driven in headless Chrome: it renders, the browser console reports no error, nothing overflows, and the screenshots a human must inspect are written | `npm run verify:console-smoke` |
 | `console-test` | The Flutter widget and release-claim tests pass | `npm run console:test` |
 
 Every step is an npm script, so the harness and a maintainer run the same thing. Adding a
