@@ -720,3 +720,77 @@ and is otherwise stated as not met.
 container image and no hosted deployment, and nothing marked stable or latest. The four earlier tags
 are unchanged. The record is [multi-writer-checkpoint.md](multi-writer-checkpoint.md) §10.
 
+
+## Paid-operation idempotency phase: in progress
+
+**No release is published in this phase.** The theme is the one the previous checkpoint handed
+over: *Cerberus v0.6.0 — Durable Idempotency & Side-Effect Safety*.
+
+The `v0.5.0` cycle made the system tell the truth when more than one process serves the same
+session. It left one boundary unresolved and stated it as a decision rather than a defect:
+
+> What exactly happens when a caller retries a paid operation after an ambiguous response,
+> especially when two API processes receive the same request at nearly the same time?
+
+[idempotency-model.md](idempotency-model.md) answered it with a measured exposure and a designed
+mechanism that was **not built**. This phase builds it.
+
+The phase is deliberately Mongo-backed, for the same reason the previous one was. The answer to a
+concurrency problem is a durable predicate, not a distributed lock: the **unique index** on
+`(routeFamily, keyHash)` is the whole of the mutual exclusion, so it works on the documented
+single-node deployment without a transaction, without Redis, and without a lock service.
+
+### The documents this phase produces
+
+- [paid-operation-state-model.md](paid-operation-state-model.md) — the state machine for both
+  paid routes: every step, every durable field, every failure path, the pending lease, the
+  retention bound, the measured query cost, and an implementation-status table that is the single
+  source of truth for what is done. Its §2.3 records the revalidation finding that the auditor
+  route spends **twice**, not once.
+- [operations/multi-replica.md](../operations/multi-replica.md) §2.3–§2.4 — what the notification
+  review reduced, what remains possible, and the paid routes' contract under more than one
+  replica.
+
+### Phase exit criteria
+
+Tracked as the phase proceeds. A condition is **met** only when something in this repository
+proves it — a test, a workflow run, or a measured number.
+
+| # | Condition | State |
+| --- | --- | --- |
+| A | `/scenarios` supports durable idempotency | **Met** — `scenarios-idempotency.test.ts`, 19 cases |
+| B | `/auditor/query` supports durable idempotency | **Met** — `auditor-idempotency.test.ts`, 13 cases |
+| C | Same key + same request replays the prior result without a second provider call | **Met** — asserted by counting provider calls **at the stub**, on both routes and across processes |
+| D | Same key + different request is rejected deterministically | **Met** — `409 IDEMPOTENCY_CONFLICT`, with a changed field, a changed vector count, a changed question and a changed severity distribution each asserted |
+| E | Two replicas racing one key permit one provider execution in the normal race case | **Met** — `test/integration/multi-process-idempotency.test.ts`, two API processes against one real MongoDB |
+| F | Restart after a completed operation preserves replay semantics | **Met** — the restart case in that suite, on both routes |
+| G | Stale pending operations have defined recovery semantics | **Met** — the reclaim predicate is the filter; a stale claim is reclaimed exactly once, and a stale claim for a *different* request is refused |
+| H | Process death before the provider call is distinguishable from death after claim | **Met** — the lease is derived from `OPENAI_REQUEST_TIMEOUT_MS` and the state left behind is asserted |
+| I | Death after provider success but before durable completion is documented as ambiguous | **Met** — §3.11 states it, and `paid-operation-recovery.test.ts` asserts **both** halves, including the residual window where the store refuses the failure write too |
+| J | No exactly-once billing claim is made | **Met** — §11 of the state model, and the threat model's §8b boundary list |
+| K | Idempotency retention is bounded | **Met** — `CERBERUS_IDEMPOTENCY_TTL_SECONDS`, bounded `60`–`604800`, fail-closed |
+| L | Idempotency storage cannot grow forever | **Met** — the TTL index, guarded in both directions |
+| M | Unique + TTL indexes exist and are guarded as critical | **Met** — `critical-indexes.json` gained a `ttlIndexes` list; both are asserted against a real store and after every restore |
+| N | Migration from a `v0.5.0` state is tested | **Met** — the `v0.5.0` shape in the release fixture, and six upgrade cases |
+| O | Backup/restore includes the new records and indexes | **Met** — the drill seeds the collection and asserts the restored database **refuses** a duplicate claim |
+| P | Rate limiting and idempotency semantics do not conflict | **Met** — the order is auth → limiter → validation → claim → provider, and a replay is deliberately not exempted |
+| Q | Request logging does not leak keys or fingerprints | **Met** — the record holds `sha256(key)`; log lines carry eight hex characters of it, and no body |
+| R | Duplicate notification behaviour is measured and either reduced or re-accepted | **Met, both** — an alert is now at-most-once per stored `riskAssessmentId` using the existing unique index, and the surviving per-incident duplicate is re-accepted with the reason it cannot be keyed |
+| S | Reconciliation latency baseline is closed | **Met** — [performance-baseline.md](performance-baseline.md), `v0.4.0` against `main`, same benchmark code, one machine. The live detail went from 0.09 ms to 3.49 ms p50 |
+| T | The `v0.5.0` multi-writer guarantees remain intact | **Met** — the whole suite runs on every pull request, including the two-process session flows |
+| U | No known P0/P1 correctness or security defect remains | **Met** — two real defects were found and fixed in this phase: a failed completion write left a claim `pending` so a retry would re-spend, and a second alert was sent for an already-stored assessment. Both have regression tests |
+| V | Docs, threat model and compatibility match implementation | **Met** — the state model's §13 is the source of truth, `compatibility.md` §1c records the one observable change, and three false claims the notification review found are corrected |
+| W | CI and release verification remain green | **Met** — every pull request green; the harness gained a database-free `idempotency-guard` step |
+| X | Published tags remain immutable | **Met** — verified at the checkpoint |
+| Y | A coherent next release candidate can be described | **Met** — [release/v0.6.0-release-notes.md](../release/v0.6.0-release-notes.md), **prepared and not published** |
+
+### What this phase inherits, and how each item is answered
+
+| Inherited limitation | This phase |
+| --- | --- |
+| The two paid routes are non-idempotent | **Closed.** Both accept an optional `Idempotency-Key`; the exposure was re-measured first (§2.3 of the state model corrected the auditor's call count from one to two) |
+| Reconciliation has no before/after baseline | **Closed.** Measured, and the answer is a 38× p50 increase on the live detail — the cost of the correctness the previous phase bought |
+| Notifications duplicate | **Reduced where a durable anchor exists**, and re-accepted with the reason it cannot be extended |
+| Rate limiting is per-process | Unchanged, and now stated alongside the idempotency order so the two cannot be confused |
+| The console embeds the operator key | Unchanged. Still a documented consequence of the single-key model |
+| Backups have no scheduling or off-host storage | Unchanged. Out of scope for this cycle |

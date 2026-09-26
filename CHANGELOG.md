@@ -59,6 +59,30 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **The v0.6.0 release candidate — prepared, and not published.**
+  `docs/release/v0.6.0-release-notes.md` states the theme, the retry contract, the two kinds of
+  failure, the one observable change, the measured cost of the previous cycle's correctness, and
+  **ten things the release does not claim**. `docs/release/v0.6.0-checklist.md` records every gate
+  run in this cycle with its result, the gates specific to idempotency, the published-tag
+  immutability proof, and the publication steps explicitly marked **not run**. The theme the scope
+  supports is **Cerberus v0.6.0 — Durable Idempotency & Side-Effect Safety**: both paid routes
+  gained a durable retry contract, four real defects were found and fixed, and two previously open
+  limitations were closed with measurements rather than prose.
+- **`docs/development/paid-operation-idempotency-checkpoint.md` — the cycle's record.** The eight
+  merged pull requests, the seven defects and how each was found (four of them P1), the design in
+  one page, the twenty-five exit criteria with their state, the verification at the checkpoint, the
+  immutability proof for the five published tags verified against `origin`, and the ten limitations
+  accepted rather than fixed.
+- **The `v0.6.0` phase in `docs/development/maturity-plan.md`**, with the charter's twenty-five
+  exit conditions tracked individually and each marked met only where something in this repository
+  proves it.
+- **The five new API error codes are mapped in the console.**
+  `apps/console/lib/services/api_error_codes.dart` gained `INVALID_IDEMPOTENCY_KEY`,
+  `IDEMPOTENCY_CONFLICT`, `IDEMPOTENCY_IN_PROGRESS`, `IDEMPOTENCY_STATE_UNAVAILABLE` and
+  `AUDITOR_STORE_UNAVAILABLE`, and the Dart census test asserts the console explains every
+  documented code and no others. The wording says what happened to the **money** where that is
+  knowable, because that is what a retry decision turns on. The unknown-code fallback is unchanged:
+  a code the console does not know still shows the server's message rather than a blank panel.
 - **`npm run verify:idempotency` — the database-free half of the idempotency gates, and a new
   step in `npm run verify:release`.** The stronger check is `critical-indexes.test.ts`, which
   asserts the claim indexes against a **real MongoDB** — and that is exactly why this one
