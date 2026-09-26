@@ -29,6 +29,7 @@ Two layers, kept apart on purpose:
 | Marker | Meaning |
 | --- | --- |
 | **Implemented** | In `main`, with a test that fails if it stops being true. |
+| **Partly** | Part of it is in `main` and tested; the rest is specified here. §13 names which part. |
 | **Design** | Specified here, not in `main`. Do not describe it as behaviour. |
 
 The status of the whole mechanism is in §13, which is the only place a reader should
@@ -189,7 +190,7 @@ different body that passes. That is correct — no operation was claimed, so not
 being reused — and it is why the conflict check is scoped to records that exist rather
 than to keys the server has ever seen.
 
-### 3.2 Idempotency-key validation — *Design*
+### 3.2 Idempotency-key validation — *Partly*
 
 Header name: **`Idempotency-Key`**. Optional.
 
@@ -206,7 +207,13 @@ cannot know that two requests are the same request — that is precisely what th
 knows and the server does not — so a synthesised key would silently claim a guarantee
 that does not exist. See §5.
 
-### 3.3 Request fingerprint — *Design*
+**Partly implemented.** `apps/api/src/services/idempotency-key.ts` implements this contract
+in full — the range, the length bound, the digest, the log-safe truncated identifier, and a
+rejection that carries no key material and never echoes the value — with its own suite. What
+is **not** in `main` is the wiring: neither route reads the header yet, so no route answers
+`400 INVALID_IDEMPOTENCY_KEY`. That lands with the claim protocol in §3.4.
+
+### 3.3 Request fingerprint — *Implemented*
 
 A versioned, canonical digest of the semantically relevant fields, so that a key reused
 for a different request is detectable.
@@ -426,7 +433,7 @@ still is, and a reclaim after the lease will call the provider again. Closing it
 require the provider itself to support idempotent requests, which it does not. §11 states
 this as the guarantee's edge.
 
-### 3.12 Retention — *Design*
+### 3.12 Retention — *Partly*
 
 `expiresAt` is set from `CERBERUS_IDEMPOTENCY_TTL_SECONDS` (default **86 400** — 24 h;
 bounds 60..604 800), and swept by a TTL index on `expiresAt` with
@@ -673,20 +680,22 @@ done?".
 | Capability | Status | Proof, once it lands |
 | --- | --- | --- |
 | `operation_claims` collection and its two indexes | **Implemented** | `operation-claims.ts` (one shared specification), `MongoStore.ensureIndexes`, migration `0004`, `critical-indexes.json`, `packages/mcp-mongodb/test/operation-claims.test.ts` |
-| `Idempotency-Key` validation and the `400` contract | **Design** | `idempotency-key.test.ts` |
-| Canonical, versioned request fingerprint | **Design** | `request-fingerprint.test.ts` |
+| `Idempotency-Key` reading, validation and digesting | **Implemented** | `idempotency-key.ts`, `idempotency-key.test.ts` |
+| Canonical, versioned request fingerprint | **Implemented** | `request-fingerprint.ts`, `request-fingerprint.test.ts` |
+| The `400 INVALID_IDEMPOTENCY_KEY` response on each route | **Design** | `scenarios-idempotency.test.ts`, `auditor-idempotency.test.ts` |
 | Atomic claim, replay, conflict, in-progress | **Design** | `paid-operation-claim.test.ts` |
 | `/scenarios` durable claim and replay | **Design** | `scenarios-idempotency.test.ts` |
 | `/auditor/query` durable claim and replay | **Design** | `auditor-idempotency.test.ts` |
 | Two-process race and replay against real MongoDB | **Design** | `test/integration/multi-process-idempotency.test.ts` |
 | Stale-lease reclaim, failure injection | **Design** | `paid-operation-recovery.test.ts` |
-| Retention bound and TTL index | **Implemented** | `operation-claims.ts` (`expireAfterSeconds: 0` on `expiresAt`), migration `0004`, `critical-indexes.test.ts` (both directions, against a real store) |
+| Retention bound and TTL index | **Partially implemented** | the TTL index exists and is guarded (`operation-claims.ts`, migration `0004`, `critical-indexes.test.ts`); `CERBERUS_IDEMPOTENCY_TTL_SECONDS` and the read-path "expired means absent" rule are **Design** |
 | Migration from a `v0.5.0` database | **Implemented** | `release-fixture.ts` (`v0.5.0` shape), `migration-from-previous-release.test.ts` |
-| Backup/restore covers the collection and both indexes | **Design** | `backup-restore-drill.mjs`, `restore-cerberus.ps1` |
+| Backup/restore covers the collection and both indexes | **Implemented** | `backup-restore-drill.mjs` (11 checks), `restore-cerberus.ps1` |
 | Release harness and CI coverage | **Design** | `verify-release.mjs`, `.github/workflows/ci.yml` |
 
-**The schema is in `main`; the protocol is not.** `operation_claims` exists, carries both
-of its indexes, is created by migration `0004` from the same specification the store uses,
-and is verified after a restore. No route reads or writes it yet, so at this point the
-collection is inert: a retry of either paid route still spends again, exactly as
-`idempotency-model.md` describes. §3.1 to §3.14 remain **Design**.
+**The schema and the two pure functions are in `main`; nothing is wired up.** `operation_claims`
+exists with both indexes and is verified after a restore; `readIdempotencyKey` and the two
+fingerprint builders exist and are unit-tested. **No route reads a header, no route writes a
+record, and no MCP tool exposes the claim**, so at this point the mechanism is inert: a retry
+of either paid route still spends again, exactly as `idempotency-model.md` describes. §3.1
+and §3.4 to §3.14 remain **Design**.

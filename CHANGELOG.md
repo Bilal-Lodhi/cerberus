@@ -13,6 +13,26 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **`apps/api/src/services/idempotency-key.ts` — the `Idempotency-Key` contract.** Reads the
+  header, validates it, and derives the only form of it that is ever stored. The charset is
+  `\x21`–`\x7E` — printable ASCII with **no space** — because a key reaches a log line, a
+  database field and possibly a terminal (no control characters), because every HTTP stack
+  folds header whitespace differently (no whitespace ambiguity), and because every realistic
+  generator produces ASCII (no multi-byte aliases). The stored value is `sha256(key)`, and a
+  log line carries eight hex characters of that digest, so an operation can be joined across
+  log lines without the key ever being written down. A rejection carries **no** key material
+  and never echoes the value that failed. An empty header is rejected rather than treated as
+  absent, because a caller that sent the header believed the request was protected.
+- **`apps/api/src/services/request-fingerprint.ts` — the canonical, versioned request
+  fingerprint.** A `sha256` over a canonical serialisation of the fields that decide what a
+  paid operation actually does: stable object-key ordering **by UTF-16 code unit** rather
+  than `localeCompare`, so two replicas cannot disagree about the digest of one request;
+  arrays order-sensitive by construction; `undefined` omitted and `null` preserved; strings
+  escaped; no Unicode normalisation, because NFC and NFD spellings are different provider
+  inputs and normalising them would make two genuinely different requests collide. The
+  version is hashed into the digest as well as stored on the record, so a future change to
+  the canonical form is a new version rather than a silent reinterpretation of existing
+  records.
 - **`operation_claims` — the durable claim collection for a paid operation, and the two
   indexes that make it work.** One document per paid-operation attempt, keyed on
   `(routeFamily, sha256(Idempotency-Key))`. The **unique** index on that pair is the whole
