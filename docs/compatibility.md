@@ -23,6 +23,39 @@ a breaking change, not a refactor:
 | Session counter field names in API responses and MCP arguments | the route modules and `packages/mcp-mongodb/src/tools.ts` |
 | The console's build contract: the `--dart-define` names it reads and the output directory it writes | `apps/console/lib/main.dart`, [configuration.md](configuration.md) |
 
+## 1a. What the architecture-integrity cycle added to the public surface
+
+All of it is **additive**. Every MCP change is an added optional argument, and every
+renamed field keeps a deprecated alias, so an existing client keeps working without a
+change. The full record is in
+[development/architecture-integrity-checkpoint.md](development/architecture-integrity-checkpoint.md).
+
+| Surface | Change | Kind |
+| --- | --- | --- |
+| `get_session_review` | optional `eventsLimit`, `includeAssessments`, `assessmentsLimit` | added |
+| `set_session_status` | optional `expectedStatuses` compare-and-set predicate | added |
+| `store_risk_assessment` | response gains `riskAssessmentId` and `inserted` | added |
+| `store_reference_document` | response gains `created`, `count`, `limit`; a full corpus is `409` | added / behaviour |
+| `update_session_counts` | accepts `focusLossCount`; `fullscreenExitCount` is deprecated and writes the same field | added / deprecated |
+| Error codes | `REFERENCE_CORPUS_LIMIT_REACHED`, `SESSION_CONFLICT`, `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE`, `INVALID_SESSION_TRANSITION` | added |
+| Session responses | `focusLossCount` alongside the deprecated `fullscreenExitCount` | added / deprecated |
+| `behavioralContext` | `totalFocusLosses` alongside the deprecated `totalFullscreenExits` | added / deprecated |
+| Ingest response | `telemetryPersisted`, `assessmentPersisted`; `acceptedCount`/`duplicateCount` omitted when the store did not answer | added / behaviour |
+| Collection | `reference_corpus_meta` — one counter document for the corpus ceiling | added |
+| Durable field | `monitored_sessions.focusLossCount` replaces `fullscreenExitCount`; migration `0003` renames it | **migration** |
+
+Three changes are **observable** rather than additive, and each is a correction:
+
+- `terminate` returns `503` where it used to return a misleading `404` for a session that
+  exists, and `409 SESSION_CONFLICT` where it used to overwrite a concurrent change.
+- `GET /api/v1/guardian/sessions` no longer lists terminated sessions, and its
+  `lastEventTimestamp` is the durable server-written `updatedAt` rather than the newest
+  client-supplied event timestamp.
+- Ingest refuses a terminated session with `409 SESSION_TERMINATED`.
+
+Under §4's pre-1.0 rule these may ship in a minor version, and each has the changelog
+entry and migration note §2 requires.
+
 Explicitly **not** public, and changeable without notice:
 
 - internal module structure, file layout and function signatures inside

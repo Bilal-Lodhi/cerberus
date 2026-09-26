@@ -16,8 +16,8 @@ Status labels used below:
 - **Accepted limitation** — will not be fixed for now, with a reason.
 - **Needs decision** — cannot proceed safely without a maintainer choice.
 
-Last updated at the architecture-integrity phase start (see `CHANGELOG.md`
-`[Unreleased]`).
+Last updated at the **architecture-integrity checkpoint**. The full record is in
+[architecture-integrity-checkpoint.md](architecture-integrity-checkpoint.md).
 
 ## Current state
 
@@ -572,16 +572,27 @@ defects and a claim without the list is not checkable.
 | The risk assessment is persisted **after** the notification and the status write | P2 | Failure-window trace |
 | The module header claims four dedup layers; layer 1 is not implemented and `risk_assessments` has no unique index on `riskAssessmentId` | P2 | Header-versus-code comparison |
 
-## Architecture-integrity phase: the documents
+## Architecture-integrity phase: complete
 
-Three documents carry this phase's design work, and each is written from the source
-rather than from intent:
+**The checkpoint is reached.** Every exit criterion in the table above is met or explicitly
+rejected with a reason, and **nothing has been published** — no tag, no release, no package,
+no image.
 
-- [state-transition-model.md](state-transition-model.md) — the mutations, their
-  ordering, and the transition table including the transitions the code performs
-  that the model forbids.
-- [failure-semantics.md](failure-semantics.md) — what each multi-step operation
-  guarantees when a step fails, and what it does not.
-- [test-double-contract.md](test-double-contract.md) — the doubles, the contract
-  matrix, and why a passing suite was not evidence of correctness.
+The record of the cycle is
+[architecture-integrity-checkpoint.md](architecture-integrity-checkpoint.md): the eleven
+merged pull requests, the twelve defects it found and how, the exit criteria with their
+state, the verification at the checkpoint, and what remains accepted.
 
+The three documents that carried the design work:
+
+- [state-transition-model.md](state-transition-model.md) — the enforced transition table,
+  the five mutation paths it replaced, and the P1 that tracing them found.
+- [failure-semantics.md](failure-semantics.md) — what each multi-step operation guarantees
+  when a step fails, and what it does not.
+- [test-double-contract.md](test-double-contract.md) — the doubles, the contract matrix, and
+  why a passing suite was not evidence of correctness.
+
+A coherent next release candidate is described in
+[release/v0.3.0-release-notes.md](../release/v0.3.0-release-notes.md), **as a draft**. The
+gates for authorising it are in
+[release/v0.3.0-checklist.md](../release/v0.3.0-checklist.md), every box unchecked.

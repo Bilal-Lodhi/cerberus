@@ -276,6 +276,34 @@ State these plainly to anyone who will run this:
    (consent, works councils, data-protection law) that the software does not
    address.
 
+## 8a. What the architecture-integrity cycle changed here
+
+Recorded because a threat model that does not move when the code does is a document, not a
+model. The full record is in
+[development/architecture-integrity-checkpoint.md](../development/architecture-integrity-checkpoint.md).
+
+| Change | Effect on this model |
+| --- | --- |
+| **A terminated session is now terminal.** Ingest refuses one, and the transition table has no transition out of `terminated` | Strengthens the one irreversible lifecycle guarantee the system claims. Before, a caller holding the operator key could silently un-do a termination by sending a high-risk batch |
+| **The status write is a compare-and-set, and its result is inspected** | A concurrent transition is detected and reported rather than overwritten. This is a correctness property, not a security one, but it removes a way two operators' intentions could silently collide |
+| **A terminated session leaves the live session list** | The list no longer reports a session as live when it is not |
+| **The focus-loss counter is named for what it measures** | Vocabulary only. **No score moves**, so no operator threshold changes meaning |
+| **The reference-corpus ceiling is enforced at the store** | The ceiling was a read ceiling, so a 201st document was stored and then excluded from every comparison. That was a **detection gap**, not a storage one: an operator who added a document and saw it accepted would reasonably believe it was being compared against |
+| **Durable identity for risk assessments** | A re-analysis of one incident stores one row, so a review surface cannot double-count |
+| **Durable evidence is written before the side effects that depend on it** | A lock can no longer exist without the assessment that justifies it, and a notification can no longer describe an incident with no review record. This matters for **reviewability**: an operator challenging a lock can always find its basis |
+| **The console words errors from the stable `code`, not the server's prose** | The console's operator-facing text no longer depends on API wording, and no internal identifier or stack is surfaced |
+
+**Unchanged, deliberately.** No new data category is collected. Telemetry still originates
+only from the browser console. There is still no endpoint agent, no filesystem or process
+collection, no screenshots, no clipboard monitoring beyond the console's existing explicit
+semantics, and no packet inspection. The advisory posture is unchanged: a risk score is a
+signal for a human reviewer, never a finding of intent.
+
+**Two limitations this cycle did not close**, both stated in the checkpoint rather than
+implied: rate limiting remains a per-process backstop, and the two paid routes remain
+non-idempotent, so a retry after a lost response re-spends. The condition that would change
+the latter is named in [api-errors.md](../api-errors.md) §11.1.
+
 ## 9. Reporting a vulnerability
 
 See [SECURITY.md](../../SECURITY.md) at the repository root for the private

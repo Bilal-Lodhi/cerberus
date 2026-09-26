@@ -168,3 +168,56 @@ is not an account. See [security/threat-model.md](security/threat-model.md).
 - **No per-field validation error array.** One message names the first problem, which
   is enough for a client to fix and retry. A full field-error list would be a larger
   contract to keep stable than the value it returns.
+
+## 11. Retry and idempotency contracts, per route
+
+What a caller may safely do after a timeout, a dropped connection, or any response it did
+not receive. This is the contract that matters most in practice: a network ambiguity is the
+common failure, and "retry it" is only safe advice where the route says so.
+
+| Route | Contract | Key | Duplicate-spend risk |
+| --- | --- | --- | --- |
+| `GET /health`, `GET /ready` | **Retry-safe.** Read-only. | — | none |
+| `GET /api/v1/guardian/sessions` | **Retry-safe.** Read-only. | — | none |
+| `GET /api/v1/guardian/sessions/:id` | **Retry-safe.** Read-only. | — | none |
+| `GET /api/v1/sessions`, `GET /api/v1/sessions/:id` | **Retry-safe.** Read-only. | — | none |
+| `GET /api/v1/identity/me` | **Retry-safe.** Read-only. | — | none |
+| `POST /api/v1/identity/set` | **Retry-safe.** Re-registering the same identity returns the same handle shape; the registry is keyed on the display name and evicts by age, not by call count. | — | none |
+| `POST /api/v1/guardian/deploy` | **Idempotent.** `create_session` is `$setOnInsert`, so a retry inserts nothing and returns the same `201`. | `sessionId` | none |
+| `POST /api/v1/guardian/ingest` | **Idempotent via `eventId`.** `micro_events` carries a unique index on `(sessionId, eventId)` and the store reports which events were new, so a retry stores nothing and does not inflate the counters. The response's `acceptedCount` / `duplicateCount` tell the caller which case it was. | `(sessionId, eventId)` per event | **analysis re-spend.** A retry re-runs the paid analysis unless the workspace is unchanged *and* the process did not restart — the code-hash dedup layer is in-memory only. See §11.1. |
+| `POST /api/v1/guardian/sessions/:id/terminate` | **Idempotent.** A second call is a legal no-op that returns `200`. | `sessionId` | none |
+| `POST /api/v1/guardian/sessions/:id/reactivate` | **Idempotent** for a live session; refused for a terminated one. | `sessionId` | none |
+| `DELETE /api/v1/guardian/sessions/:id` | **Idempotent in effect, not in status.** The first call returns `200`; a second returns `404` because nothing matched. A caller retrying after a lost response should treat `404` as success. | `sessionId` | none |
+| `POST /api/v1/reference-documents` | **Idempotent via `referenceId`.** An update of an existing document is always allowed; only a genuinely new id claims a slot. Omitting `referenceId` makes each call a **new** document, so a retry creates a second one. | `referenceId` | none |
+| `DELETE /api/v1/reference-documents/:id` | **Idempotent in effect, not in status** (`200`, then `404`). | `referenceId` | none |
+| `POST /api/v1/scenarios` | **Non-idempotent, and paid.** Every call spends two provider calls (classify, generate). A retry after a lost response re-spends both. | — | **high.** See §11.1. |
+| `POST /api/v1/scenarios/cancel` | **Idempotent in effect.** Cancelling an unknown or finished request is a `404`; treat it as done. | `generationRequestId` | none |
+| `POST /api/v1/auditor/query` | **Non-idempotent, and paid.** Every call spends two provider calls. A retry re-spends both. | — | **high.** |
+
+### 11.1 The two paid paths, and why no `Idempotency-Key` was added
+
+Both paid routes can double-spend on a retry, and neither carries an idempotency key. That
+is a **deliberate** decision, recorded here rather than left implicit.
+
+**What a key would cost.** Implementing one properly means: a bounded key length, a request
+fingerprint, returning the prior result for the same key and payload, conflicting for the
+same key and a different payload, durability across a restart, race-safety under concurrent
+identical requests, a bounded retention window, and no secret in the logs. That is a
+capability in its own right — a durable request-result store — and it would be the largest
+single component in the system.
+
+**What the evidence says.** Neither path is retried by the console on a timeout: it surfaces
+the error and lets the operator decide, and the operator is present and reading the screen.
+The rate limiter already bounds how much a looping client can spend. And the scenario route
+reports `persisted` honestly, so a lost response is recoverable by reading the matrix back
+rather than by re-generating it.
+
+**What would change the decision.** A client that retries paid routes automatically, or a
+second consumer of the API that cannot see the screen. Either would justify the store. Until
+then, the honest position is that these two routes are **non-idempotent and paid**, and the
+documentation says so plainly rather than implying a guarantee that is not there.
+
+**What *is* idempotent, and how.** `ingest` is the one paid path that is safe to retry for
+its *telemetry*: the durable `(sessionId, eventId)` identity makes storage at-most-once and
+the counters monotonic. What it does not protect is the analysis spend, which is bounded by
+the in-memory code-hash layer and by the rate limiter. Both halves are stated in §5.
