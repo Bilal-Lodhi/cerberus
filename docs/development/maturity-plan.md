@@ -642,3 +642,75 @@ is per-process; the two paid routes remain non-idempotent; the console embeds th
 key in its bundle; backups have no scheduling, off-host storage, encryption or
 point-in-time recovery; the live surfaces report the status this process holds in memory;
 and the browser smoke's terminology pass is a human reading screenshots.
+
+## Multi-writer trust-boundary phase: in progress
+
+**No release is published in this phase.** The theme is the one the previous checkpoint
+handed over: *Cerberus v0.5.0 — Multi-Writer Consistency & Trust Boundaries*.
+
+The `v0.4.0` cycle made the system **inspectable**. It did not ask what happens when two API
+processes serve the same session at once, because the system had only ever run as one. Every
+state path in the repository was written by someone who was the only writer:
+
+> If process A and process B handle requests for the same session at the same time, does
+> Cerberus still tell the truth?
+
+For the transition boundary, the answer was already yes — it reads MongoDB, validates
+against a table, writes with a predicate, and repairs its caches from the outcome. For the
+**read** paths it was no, and that is the gap this phase exists to close.
+
+The phase is deliberately Mongo-backed. The answer to a multi-writer problem is a durable
+predicate, not a distributed lock: a compare-and-set on one document is atomic in MongoDB
+without a transaction, so it works on the documented single-node deployment. Nothing here
+adds Redis, Kafka, a lock service, or a replica set.
+
+### The documents this phase produces
+
+- [multi-writer-model.md](multi-writer-model.md) — every session concept classified, the six
+  multi-writer questions answered per field, the invariant the read paths owe, and the four
+  places the current implementation breaks it. Its §6 is the honest enforcement table.
+- [live-read-consistency.md](live-read-consistency.md) — the freshness contract per surface,
+  why there is deliberately no bounded-stale surface, and how the live list and detail
+  reconcile against durable truth.
+- [operability-checkpoint.md](operability-checkpoint.md) — the previous cycle's record, whose
+  §8 is the list of limitations this phase starts from.
+
+### What this phase inherits, and how each item is being answered
+
+| Inherited limitation | This phase |
+| --- | --- |
+| The live surfaces report the status this process holds in memory | **The main gap.** Durable reconciliation on the live list and live detail — see the model's §5.1 |
+| `peakRiskScore` is not read on the memory paths | Same reconciliation; the durable value is `$max`-maintained and is the answer |
+| `terminalContent` has no ownership rule | First successful terminal transition owns it, enforced with a compare-and-set |
+| The two paid routes remain non-idempotent | Re-evaluated, with the decision and its evidence recorded rather than assumed |
+| Rate limiting is per-process | Quantified for N replicas, and the honest scope documented rather than papered over with a shared store |
+| The console embeds the operator key in its bundle | Unchanged. Still a documented consequence of the single-key model |
+| Backups have no scheduling, off-host storage or encryption | Unchanged. Out of scope for a trust-boundary cycle |
+
+### Phase exit criteria
+
+The charter's eighteen conditions, tracked as the phase proceeds. A condition is **met** only
+when something in this repository proves it — a test, a workflow run, or a measured number —
+and is otherwise stated as not met.
+
+| # | Condition | State |
+| --- | --- | --- |
+| A | Live session reads reconcile against durable lifecycle state | Not met — see the model's §5.1 |
+| B | Stale in-memory status cannot override newer durable status on read | Not met — same |
+| C | Two processes can safely observe/transition the same session under supported flows | Partially met — transitions are safe; reads are not |
+| D | Stale process caches are detected and reconciled deterministically | Partially met — a transition detects and repairs; a read does not |
+| E | Live-list semantics stay bounded and performant after durable reconciliation | Not met — no durable query on the memory path today |
+| F | Route-level multi-writer behaviour is documented | **Met** — [multi-writer-model.md](multi-writer-model.md) §4 |
+| G | Paid-route duplicate-spend risk reduced or explicitly re-accepted with stronger evidence | Not met — no decision recorded yet |
+| H | Any idempotency mechanism is durable, race-safe and bounded | Not applicable yet — none introduced |
+| I | Per-process rate limiting honestly scoped, or a safe next-step boundary documented | Partially met — the limiter documents its own N-replica behaviour |
+| J | Shared-key lifecycle risks bounded without inventing accounts | Partially met — [../operations/key-rotation.md](../operations/key-rotation.md) covers the overlap procedure |
+| K | `@cerberus/mcp-mongodb` hardened against accidental publication | **Met** — `private: true`, plus `npm run verify:packages` |
+| L | Full release verification runnable through CI, not only a developer machine | **Met** — `.github/workflows/release-verification.yml` on `workflow_dispatch` |
+| M | Docker-dependent release evidence reproducible in CI/manual workflow | **Met** — same workflow, with a real `mongo:7` and a Docker build |
+| N | Live-state reconciliation has measured cost, no pathological query amplification | Not met — nothing added yet to measure |
+| O | No known P0/P1 correctness or security defect remains | Not met — §5.1 and §5.3 of the model are open |
+| P | Docs, threat model and compatibility docs match implementation | In progress — the new docs state the gaps rather than describing the target as done |
+| Q | Published tags remain immutable | **Met** — verified at the checkpoint, and nothing in this phase rewrites history |
+| R | A coherent next release candidate can be described | Not met — deferred to the checkpoint |
+
