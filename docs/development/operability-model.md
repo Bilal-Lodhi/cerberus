@@ -12,10 +12,10 @@ This document has two halves and they are labelled apart on purpose:
 
 - **§2–§4 and §8–§9 describe what the code does today**, and every claim there is
   checkable against the file it names.
-- **§5–§7 describe the target design** for structured logging, request correlation
-  and sensitive-field discipline. §10 records, item by item, which parts of that
-  design are implemented and which are not. A design section is not a claim that
-  the behaviour exists.
+- **§5–§7 describe the logging, correlation and redaction design.** Those three are now
+  **implemented**; §10 records, item by item, what is implemented and what is not, with
+  the test that proves it. The two remaining open items are the durable session-detail
+  fallback (§3.7) and reporting which source answered a detail request (§8.5).
 
 Cerberus is **not production ready**. This document does not change that, and
 nothing in it should be read as a compliance or audit-trail claim. Structured logs
@@ -44,8 +44,8 @@ the tables stay readable.
 | Column | Meaning |
 | --- | --- |
 | **Auth** | Whether the operator API key is required. `public` means the path is in `PUBLIC_PATHS` in `apps/api/src/middleware/auth.ts` and is reachable without a credential; `operator key` means a missing or wrong credential is a `401 UNAUTHENTICATED`. `CERBERUS_DEV_MODE=true` admits every route, so `operator key` describes production behaviour only. |
-| **Request ID** | What identifier is available for correlating this request's log lines today. `header only` means the response carries `X-Correlation-Id` and nothing else uses it; `header + body` means the response body's `correlationId` carries the same value; `route-local` means the route minted its own `randomUUID()` and **that value does not match the response header** (see §4). |
-| **Logs** | The `console.*` call sites the path can reach, by module. All of them are unstructured text today (§5). |
+| **Request ID** | The identifier available for correlating this request's log lines. Every route now has **one identifier**: the same value appears in the `X-Request-Id` and `X-Correlation-Id` response headers, in the error body's `correlationId` (except the authentication rejection, §6.1), and on the request log line. Before this cycle the column distinguished `header only` from `route-local`; §4 records why that distinction existed and how it was removed. |
+| **Logs** | The structured log events the path can emit, by module. The request line itself is emitted for every request by the middleware in `index.ts` and is not repeated here. |
 | **Dependencies** | The external calls the request makes, and their deadlines. Every MCP call is timeout-isolated by `callMcpTool`; every provider call by `ai/provider.ts`; every notification by `notifications.ts`. |
 | **Durable writes** | What the request can change in MongoDB. A blank cell means the request is read-only. |
 | **Response status** | The statuses the route can return. |
@@ -61,16 +61,16 @@ Rate limiting applies to every authenticated route and is described once, in §3
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /health` | public | header only | none | none | — | `200` | — | Answers while the process answers HTTP. It checks **nothing**, deliberately: a liveness probe that fails on a dependency outage causes a restart loop while the outage continues (`services/readiness.ts`). | — |
-| `GET /ready` | public | header only | `services/readiness.ts` does not log; the probe's dependency check logs through `mcp-client.ts` | one `health_check` MCP call, 1 500 ms | — | `200` ready, `503` not ready | — | Never throws. A failed check is reported as a `down` dependency with a one-line `detail`; the result is cached for 2 000 ms and concurrent probes share one in-flight check. | — |
-| `GET /` | public | header only | none | none | — | `200` | — | Alias of `/health`. | — |
+| `GET /health` | public | one identifier | none | none | — | `200` | — | Answers while the process answers HTTP. It checks **nothing**, deliberately: a liveness probe that fails on a dependency outage causes a restart loop while the outage continues (`services/readiness.ts`). | — |
+| `GET /ready` | public | one identifier | `services/readiness.ts` does not log; the probe's dependency check logs through `mcp-client.ts` | one `health_check` MCP call, 1 500 ms | — | `200` ready, `503` not ready | — | Never throws. A failed check is reported as a `down` dependency with a one-line `detail`; the result is cached for 2 000 ms and concurrent probes share one in-flight check. | — |
+| `GET /` | public | one identifier | none | none | — | `200` | — | Alias of `/health`. | — |
 
 ### 3.2 Identity
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/identity/set` | operator key | header only | `routes/identity.ts` (one `console.log` on registration) | none | none — the registry is in-memory, per-process, 12 h expiry, 100-entry ceiling | `201`, `400` | `INVALID_IDENTITY_FIELD` | Nothing to degrade: no dependency. An at-ceiling registry evicts the oldest handle rather than refusing. | `displayName`, `employeeId` are operator-supplied identifiers — log the fact of registration, not the values |
-| `GET /api/v1/identity/me` | operator key | header only | none | none | — | `200`, `401` | — (prose only) | Nothing to degrade. An expired or unknown handle is `401` and the entry is dropped. | the session token; it is **not** a credential, and must not be logged as one |
+| `POST /api/v1/identity/set` | operator key | one identifier | `identity.registered` (the fact and the registry size; never the values) | none | none — the registry is in-memory, per-process, 12 h expiry, 100-entry ceiling | `201`, `400` | `INVALID_IDENTITY_FIELD` | Nothing to degrade: no dependency. An at-ceiling registry evicts the oldest handle rather than refusing. | `displayName`, `employeeId` are operator-supplied identifiers — log the fact of registration, not the values |
+| `GET /api/v1/identity/me` | operator key | one identifier | none | none | — | `200`, `401` | — (prose only) | Nothing to degrade. An expired or unknown handle is `401` and the entry is dropped. | the session token; it is **not** a credential, and must not be logged as one |
 
 The identity registry is **not** an authentication mechanism. A handle is not an
 account, is not accepted as a credential anywhere, and carries no authorization.
@@ -79,8 +79,8 @@ account, is not accepted as a credential anywhere, and carries no authorization.
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/scenarios` | operator key | **header + body** — the one route that reads `X-Correlation-Id` | `routes/scenarios.ts`, `ai/provider.ts` | two provider calls (classify, generate) + one `store_threat_scenario` MCP call | `threat_scenarios` (best effort) | `201`, `400`, `422`, `500`, `503` | `PROMPT_TOO_LONG`, `ROLE_CONTEXT_TOO_LONG`, `CLASSIFIER_UNAVAILABLE`, `AI_UNAVAILABLE`, `SCENARIO_GENERATION_FAILED` | **Fail-closed on classification**: an unreachable classifier is `503 CLASSIFIER_UNAVAILABLE` and no scenario is authored. Persistence is best-effort and reported: a failed write returns `201` with `persisted: false` and the matrix in the body. | the `prompt` and `roleContext` bodies in full; the provider prompt; the provider API key |
-| `POST /api/v1/scenarios/cancel` | operator key | header only | none | none | — | `200`, `404` | — (prose only) | Cancelling an unknown or already-finished generation is `404`; treat it as done. | — |
+| `POST /api/v1/scenarios` | operator key | one identifier | `routes/scenarios.ts`, `ai/provider.ts` | two provider calls (classify, generate) + one `store_threat_scenario` MCP call | `threat_scenarios` (best effort) | `201`, `400`, `422`, `500`, `503` | `PROMPT_TOO_LONG`, `ROLE_CONTEXT_TOO_LONG`, `CLASSIFIER_UNAVAILABLE`, `AI_UNAVAILABLE`, `SCENARIO_GENERATION_FAILED` | **Fail-closed on classification**: an unreachable classifier is `503 CLASSIFIER_UNAVAILABLE` and no scenario is authored. Persistence is best-effort and reported: a failed write returns `201` with `persisted: false` and the matrix in the body. | the `prompt` and `roleContext` bodies in full; the provider prompt; the provider API key |
+| `POST /api/v1/scenarios/cancel` | operator key | one identifier | none | none | — | `200`, `404` | — (prose only) | Cancelling an unknown or already-finished generation is `404`; treat it as done. | — |
 
 **Non-idempotent and paid.** A retry after a lost response re-spends two provider
 calls. There is no `Idempotency-Key`, deliberately — the reasoning is in
@@ -90,7 +90,7 @@ calls. There is no `Idempotency-Key`, deliberately — the reasoning is in
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/auditor/query` | operator key | route-local (§4) | `routes/auditor.ts`, `ai/provider.ts` | one `list_sessions` MCP call + two provider calls (pipeline, summary) | — | `200`, `400`, `500` | `QUESTION_TOO_LONG`, `AUDITOR_QUERY_FAILED` | The result set is truncated to 200 records whatever pipeline the model produced, so a pipeline without `$limit` cannot pass every session to the provider. | the `question` in full; the provider prompt; the provider API key |
+| `POST /api/v1/auditor/query` | operator key | one identifier | `routes/auditor.ts`, `ai/provider.ts` | one `list_sessions` MCP call + two provider calls (pipeline, summary) | — | `200`, `400`, `500` | `QUESTION_TOO_LONG`, `AUDITOR_QUERY_FAILED` | The result set is truncated to 200 records whatever pipeline the model produced, so a pipeline without `$limit` cannot pass every session to the provider. | the `question` in full; the provider prompt; the provider API key |
 
 **Non-idempotent and paid**, for the same reason as §3.3.
 
@@ -98,8 +98,8 @@ calls. There is no `Idempotency-Key`, deliberately — the reasoning is in
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/guardian/deploy` | operator key | route-local (§4) | `routes/guardian.ts` | one `create_session` MCP call | `monitored_sessions` insert (`$setOnInsert`, so a retry inserts nothing) | `201`, `400`, `500` | — (prose only) | A store failure still returns `201` with `mongoDocumentId: "local-only"`, because the live registry entry is what the console needs next. The response does not claim a durable write that did not happen. | — |
-| `POST /api/v1/guardian/ingest` | operator key | route-local (§4) | `routes/guardian.ts`, `services/mcp-client.ts`, `ai/provider.ts`, `services/notifications.ts`, `services/session-transition.ts` | up to three MCP calls (session read/create, event batch, counters) + one or two provider calls + one `store_risk_assessment` + optional Slack and email | `micro_events`, `monitored_sessions` counters and status, `risk_assessments` | `200`, `400`, `404`, `409`, `500` | `BATCH_TOO_LARGE`, `MISSING_EVENT_ID`, `SESSION_EXPIRED`, `SESSION_TERMINATED` | Telemetry is written **before** any side effect. A failed event write is reported as `telemetryPersisted: false` with the counts **omitted** rather than guessed. A failed assessment write skips the status change and the notification, and reports `assessmentPersisted: false`. AI analysis failure is logged and swallowed: the telemetry is already durable. | full telemetry bodies; paste content; `currentCode`; the provider prompt; the operator key; the MCP token |
+| `POST /api/v1/guardian/deploy` | operator key | one identifier | `routes/guardian.ts` | one `create_session` MCP call | `monitored_sessions` insert (`$setOnInsert`, so a retry inserts nothing) | `201`, `400`, `500` | — (prose only) | A store failure still returns `201` with `mongoDocumentId: "local-only"`, because the live registry entry is what the console needs next. The response does not claim a durable write that did not happen. | — |
+| `POST /api/v1/guardian/ingest` | operator key | one identifier | `routes/guardian.ts`, `services/mcp-client.ts`, `ai/provider.ts`, `services/notifications.ts`, `services/session-transition.ts` | up to three MCP calls (session read/create, event batch, counters) + one or two provider calls + one `store_risk_assessment` + optional Slack and email | `micro_events`, `monitored_sessions` counters and status, `risk_assessments` | `200`, `400`, `404`, `409`, `500` | `BATCH_TOO_LARGE`, `MISSING_EVENT_ID`, `SESSION_EXPIRED`, `SESSION_TERMINATED` | Telemetry is written **before** any side effect. A failed event write is reported as `telemetryPersisted: false` with the counts **omitted** rather than guessed. A failed assessment write skips the status change and the notification, and reports `assessmentPersisted: false`. AI analysis failure is logged and swallowed: the telemetry is already durable. | full telemetry bodies; paste content; `currentCode`; the provider prompt; the operator key; the MCP token |
 
 Ingest is the busiest and most failure-prone path in the system, and it is the one
 where a log line is most likely to leak monitored content. §7 is written with this
@@ -109,16 +109,16 @@ route in mind.
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/guardian/sessions/:id/terminate` | operator key | route-local (§4) | `routes/guardian.ts`, `services/session-transition.ts` | one `get_session_review` + one `update_session_terminal_content` + one `set_session_status` | `monitored_sessions.terminalContent` and `.status` | `200`, `404`, `409`, `503` | `SESSION_TERMINATED`, `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE`, `SESSION_CONFLICT` | Terminal-content preservation is best-effort and non-fatal: a failure to write it is logged and termination proceeds. The status write is durable-first and its result decides the response. A store that does not answer is `503` with **nothing changed**. | the workspace content being preserved |
-| `POST /api/v1/guardian/sessions/:id/reactivate` | operator key | route-local (§4) | `routes/guardian.ts`, `services/session-transition.ts` | one `get_session_review` + one `set_session_status` | `monitored_sessions.status` | `200`, `404`, `409`, `503` | `SESSION_TERMINATED`, `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE`, `SESSION_CONFLICT`, `INVALID_SESSION_TRANSITION` | Idempotent for a live session. A terminated session is refused; termination is not reversible. | — |
-| `DELETE /api/v1/guardian/sessions/:id` | operator key | route-local (§4) | `routes/guardian.ts`, `services/mcp-client.ts` | one `delete_session` MCP call | `monitored_sessions`, `micro_events`, `risk_assessments` for that session | `200`, `404`, `503` | `SESSION_STORE_UNAVAILABLE` | A store that does not answer is `503` with **nothing changed** — the in-memory caches are deliberately left alone, because clearing them would hide a session that is still durable. | — |
+| `POST /api/v1/guardian/sessions/:id/terminate` | operator key | one identifier | `routes/guardian.ts`, `services/session-transition.ts` | one `get_session_review` + one `update_session_terminal_content` + one `set_session_status` | `monitored_sessions.terminalContent` and `.status` | `200`, `404`, `409`, `503` | `SESSION_TERMINATED`, `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE`, `SESSION_CONFLICT` | Terminal-content preservation is best-effort and non-fatal: a failure to write it is logged and termination proceeds. The status write is durable-first and its result decides the response. A store that does not answer is `503` with **nothing changed**. | the workspace content being preserved |
+| `POST /api/v1/guardian/sessions/:id/reactivate` | operator key | one identifier | `routes/guardian.ts`, `services/session-transition.ts` | one `get_session_review` + one `set_session_status` | `monitored_sessions.status` | `200`, `404`, `409`, `503` | `SESSION_TERMINATED`, `SESSION_NOT_FOUND`, `SESSION_STORE_UNAVAILABLE`, `SESSION_CONFLICT`, `INVALID_SESSION_TRANSITION` | Idempotent for a live session. A terminated session is refused; termination is not reversible. | — |
+| `DELETE /api/v1/guardian/sessions/:id` | operator key | one identifier | `routes/guardian.ts`, `services/mcp-client.ts` | one `delete_session` MCP call | `monitored_sessions`, `micro_events`, `risk_assessments` for that session | `200`, `404`, `503` | `SESSION_STORE_UNAVAILABLE` | A store that does not answer is `503` with **nothing changed** — the in-memory caches are deliberately left alone, because clearing them would hide a session that is still durable. | — |
 
 ### 3.7 Guardian — live list and detail
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/guardian/sessions` | operator key | route-local (§4) | `routes/guardian.ts`, `services/mcp-client.ts` | one `list_sessions` MCP call, **only when memory holds no live session** | — | `200` | — | Falls back to MongoDB when the in-memory store is empty, and rebuilds the live registry from the durable documents. A store failure yields an empty list rather than an error. | — |
-| `GET /api/v1/guardian/sessions/:id` | operator key | **none today** | none | **none today** | — | `200`, `404` | — | **No durable fallback.** Immediately after a restart this answers `404` for a session that exists durably, until `GET /api/v1/guardian/sessions` is called, because that is the path that rebuilds the registry. Recorded as open item D4 in `state-transition-model.md` §5. | `currentCode` is returned to the caller by contract, so it must not also be logged |
+| `GET /api/v1/guardian/sessions` | operator key | one identifier | `routes/guardian.ts`, `services/mcp-client.ts` | one `list_sessions` MCP call, **only when memory holds no live session** | — | `200` | — | Falls back to MongoDB when the in-memory store is empty, and rebuilds the live registry from the durable documents. A store failure yields an empty list rather than an error. | — |
+| `GET /api/v1/guardian/sessions/:id` | operator key | one identifier | none | **none today** | — | `200`, `404` | `SESSION_NOT_FOUND` | **No durable fallback.** Immediately after a restart this answers `404` for a session that exists durably, until `GET /api/v1/guardian/sessions` is called, because that is the path that rebuilds the registry. Recorded as open item D4 in `state-transition-model.md` §5. | `currentCode` is returned to the caller by contract, so it must not also be logged |
 
 This is the read-integrity gap the v0.4.0 cycle exists to close. It is a
 correctness defect, not a design choice: the same session is `404` on one surface
@@ -128,8 +128,8 @@ and `200` on the review surface, from the same process, at the same instant.
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `GET /api/v1/sessions` | operator key | route-local (§4) | `services/mcp-client.ts` | one `list_sessions` + one bounded `get_session_review` per session (`eventsLimit: 0`, `assessmentsLimit: 1`) | — | `200` | — | Merges durable entries with the two in-memory maps and takes the maximum observed counter, so a restart never under-reports. A failed per-session read leaves the durable entry's own counters in place. | — |
-| `GET /api/v1/sessions/:id` | operator key | route-local (§4) | `services/mcp-client.ts` | one `get_session_review` | — | `200`, `404` | — | **Serves from live memory when the store does not answer** and the session is in memory. A store failure with nothing in memory is `404`. | `terminalContent` and `codeSnapshot`; both are returned to the caller, and neither belongs in a log line |
+| `GET /api/v1/sessions` | operator key | one identifier | `services/mcp-client.ts` | one `list_sessions` + one bounded `get_session_review` per session (`eventsLimit: 0`, `assessmentsLimit: 1`) | — | `200` | — | Merges durable entries with the two in-memory maps and takes the maximum observed counter, so a restart never under-reports. A failed per-session read leaves the durable entry's own counters in place. | — |
+| `GET /api/v1/sessions/:id` | operator key | one identifier | `services/mcp-client.ts` | one `get_session_review` | — | `200`, `404` | — | **Serves from live memory when the store does not answer** and the session is in memory. A store failure with nothing in memory is `404`. | `terminalContent` and `codeSnapshot`; both are returned to the caller, and neither belongs in a log line |
 
 The review surfaces deliberately include sessions whose `SESSION_TTL_SECONDS`
 window has closed. Expiry stops monitoring; it never hides evidence.
@@ -138,9 +138,9 @@ window has closed. Expiry stops monitoring; it never hides evidence.
 
 | Route | Auth | Request ID | Logs | Dependencies | Durable writes | Response status | Stable error code | Degraded behaviour | Never logged |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /api/v1/reference-documents` | operator key | route-local (§4) | `routes/reference.ts` | one `store_reference_document` MCP call | `reference_documents`, `reference_corpus_meta` | `201`, `400`, `409`, `503` | `INVALID_REFERENCE_DOCUMENT`, `REFERENCE_CORPUS_LIMIT_REACHED`, `REFERENCE_STORE_UNAVAILABLE` | The ceiling is enforced **at the store** with an atomic conditional `$inc`, so a 201st document is refused rather than stored and then excluded from every comparison. | the document `content` — it is operator-supplied reference text and may itself be sensitive |
-| `GET /api/v1/reference-documents` | operator key | route-local (§4) | `routes/reference.ts` | one `list_reference_documents` MCP call | — | `200`, `503` | `REFERENCE_STORE_UNAVAILABLE` | A failed read is `503` rather than an empty corpus, because an empty corpus and an unreachable one mean different things to an operator. | `content` |
-| `DELETE /api/v1/reference-documents/:id` | operator key | route-local (§4) | `routes/reference.ts` | one `delete_reference_document` MCP call | `reference_documents`, `reference_corpus_meta` | `200`, `404`, `503` | `REFERENCE_STORE_UNAVAILABLE` | Idempotent in effect, not in status: `200` then `404`. | — |
+| `POST /api/v1/reference-documents` | operator key | one identifier | `routes/reference.ts` | one `store_reference_document` MCP call | `reference_documents`, `reference_corpus_meta` | `201`, `400`, `409`, `503` | `INVALID_REFERENCE_DOCUMENT`, `REFERENCE_CORPUS_LIMIT_REACHED`, `REFERENCE_STORE_UNAVAILABLE` | The ceiling is enforced **at the store** with an atomic conditional `$inc`, so a 201st document is refused rather than stored and then excluded from every comparison. | the document `content` — it is operator-supplied reference text and may itself be sensitive |
+| `GET /api/v1/reference-documents` | operator key | one identifier | `routes/reference.ts` | one `list_reference_documents` MCP call | — | `200`, `503` | `REFERENCE_STORE_UNAVAILABLE` | A failed read is `503` rather than an empty corpus, because an empty corpus and an unreachable one mean different things to an operator. | `content` |
+| `DELETE /api/v1/reference-documents/:id` | operator key | one identifier | `routes/reference.ts` | one `delete_reference_document` MCP call | `reference_documents`, `reference_corpus_meta` | `200`, `404`, `503` | `REFERENCE_STORE_UNAVAILABLE` | Idempotent in effect, not in status: `200` then `404`. | — |
 
 A failed corpus read during risk analysis is a different path and degrades
 differently: it returns an empty corpus and logs, rather than failing the analysis.
@@ -174,19 +174,19 @@ observability story:
 | Bench | `npm run bench` (`scripts/bench/run-bench.mjs`) | Writes measured request-handling figures; the method and one corrected artifact are in `performance-baseline.md`. |
 | HTTP smoke | `scripts/verify-all.ps1` and the three `smoke-*` / `stress-*` scripts | Requires a running instance. This is a manual aid, not the automated suite. |
 
-## 4. Correlation today, and the defect it leaves
+## 4. Correlation: the defect this document found, and its fix
 
-This is the single most consequential finding in this document, because it makes
-every other log line harder to use.
+**Status: fixed.** This section is kept because the defect is what the cycle was built
+around, and the fix's shape only makes sense against it.
 
-`apps/api/src/index.ts` installs a middleware that sets a fresh
-`X-Correlation-Id: randomUUID()` on **every** response and exposes that header
-through CORS. `docs/api-errors.md` §2 then promises that a body's `correlationId`
+`apps/api/src/index.ts` installed a middleware that set a fresh
+`X-Correlation-Id: randomUUID()` on **every** response and exposed that header
+through CORS. `docs/api-errors.md` §2 then promised that a body's `correlationId`
 "Matches the `X-Correlation-Id` response header and the server log line".
 
-What the routes actually do:
+What the routes actually did:
 
-| Route group | Source of the `correlationId` it returns | Matches the response header? |
+| Route group | Source of the `correlationId` it returned | Matched the response header? |
 | --- | --- | --- |
 | `routes/scenarios.ts` | `c.res.headers.get("X-Correlation-Id")` | **yes** |
 | `routes/guardian.ts` | its own `randomUUID()`, one per handler | **no** |
@@ -195,31 +195,43 @@ What the routes actually do:
 | `routes/auditor.ts` | its own `randomUUID()` | **no** |
 | `routes/identity.ts` | none | — |
 
-Consequences, all of them observable today:
+Consequences, all of them observable at the time:
 
-1. **The documented promise is false for four of five route groups.** A client that
-   reports the `correlationId` from an error body hands over a value that appears
-   nowhere in the response headers and nowhere in any log line that an operator can
+1. **The documented promise was false for four of five route groups.** A client that
+   reported the `correlationId` from an error body handed over a value that appeared
+   nowhere in the response headers and nowhere in any log line an operator could
    key on.
-2. **The MCP call logs are keyed on the route-local id.** `callMcpTool` logs
-   `[mcp] [<id>] <tool> → HTTP <status> in <ms>`, using the id the route passed. That
-   id is in the error body, so those lines are reachable — but they cannot be joined
-   to the request as a whole, because no line records the request.
-3. **There is no request log line outside dev mode.** In production
-   (`config.devMode === false`) `app.use("*", logger())` is not installed, so a
-   successful request produces no line at all. In dev mode the Hono logger prints
+2. **The MCP call logs were keyed on the route-local id.** `callMcpTool` logged
+   `[mcp] [<id>] <tool> → HTTP <status> in <ms>`, using the id the route passed. Those
+   lines could not be joined to the request as a whole, because no line recorded the
+   request.
+3. **There was no request log line outside dev mode.** In production
+   (`config.devMode === false`) `app.use("*", logger())` was not installed, so a
+   successful request produced no line at all. In dev mode the Hono logger printed
    `METHOD path status - latency` **without** the correlation id, so even there the
-   two cannot be joined.
-4. **Nothing records the route template.** `c.req.path` for
+   two could not be joined.
+4. **Nothing recorded the route template.** `c.req.path` for
    `/api/v1/guardian/sessions/op-123` contains a session id. A log line built from
-   the raw path therefore puts an identifier into the logs that §7 says should be
-   treated carefully, and it makes every session a distinct "route" for any
-   aggregation.
+   the raw path therefore put an identifier into the logs that §7 says to treat
+   carefully, and it made every session a distinct "route" for any aggregation.
 
-The fix is not "add a header". It is to make **one** identifier per request the
+The fix was not "add a header". It was to make **one** identifier per request the
 only one, to record it on a single request line, and to let every downstream module
 read it from the ambient request context rather than mint its own. §5 and §6 are
 that design; §10 records its status.
+
+Two things the fix deliberately did **not** do:
+
+- **The authentication rejection still carries no `correlationId` in its body.** The two
+  401 responses must stay byte-identical (`security/threat-model.md` §4), and a
+  per-request value would make them differ. Both still carry the request id in the
+  response headers, so the request is still correlatable.
+- **The request id is not used as a map key where it could be caller-influenced.**
+  `routes/scenarios.ts` keys its in-flight controller map on a server-generated value,
+  not on the request id: a caller may now choose its own `X-Request-Id`, and two
+  concurrent scenario requests sharing one id would otherwise collide in that map — the
+  second would overwrite the first's controller and the first's cleanup would delete the
+  second's, so a cancel could abort the wrong generation.
 
 ## 5. Structured logging: target design
 
@@ -254,12 +266,12 @@ Exactly one line is emitted per HTTP request, after the response is produced:
 | `level` | derived from status | `error` for 5xx, `warn` for 4xx, `info` otherwise. |
 | `requestId` | §6 | The same value as the `X-Request-Id` and `X-Correlation-Id` response headers. |
 | `method` | request | |
-| `route` | matched route template | `/api/v1/guardian/sessions/:sessionId`, **not** the concrete path. A session id is not a route. |
+| `route` | matched route template | `/api/v1/guardian/sessions/:sessionId`, **not** the concrete path. A session id is not a route. A request that matched no route is recorded as `<unmatched>` — its path is **not** logged, because a mistyped sub-path under a real session still contains that session's id, and the operator has the method, the status, the request id and the caller's own identifier to find the caller with. |
 | `status` | response | |
 | `latencyMs` | monotonic clock | |
-| `errorCode` | stable code, when one was produced | |
-| `dependency` | dependency category, when the request touched one | `mcp`, `provider`, `notification` |
-| `providerAttempts` | provider retry count, when a paid call ran | |
+| `errorCode` | stable code, read from the error response | Read by cloning the response when the status is 4xx or 5xx, so no route has to remember to record it. Absent when the body carries no `code`. |
+| `dependency` | dependency category, on the lines the request emitted | `mcp`, `provider`, `notification`. The request line itself carries no `dependency` field: a request may touch more than one, and each dependency's own line names its own. |
+| `providerAttempts` | provider attempt index, on the provider's own lines | |
 | `sessionId` | only where it is already the request's subject | A session id is an identifier of a monitored person's session; see §7. |
 
 ### 5.3 Levels, and what belongs at each
@@ -299,7 +311,10 @@ Every HTTP request gets exactly one identifier. It is:
 - **recorded** on the request log line (§5.2) and on every downstream line for that
   request;
 - **returned** in a structured error body's `correlationId`, so
-  `api-errors.md` §2 becomes true for every route rather than one.
+  `api-errors.md` §2 holds for every route rather than one. The **single exception** is
+  the authentication rejection: the two 401 responses must stay byte-identical
+  (`security/threat-model.md` §4), so neither carries one. Both still carry the request
+  id in the response headers.
 
 ### 6.2 Incoming identifier validation
 
@@ -408,8 +423,9 @@ that is *reachable but not connected to MongoDB*, because the remedies differ.
 ### 8.4 Did this request fail, and which request was it?
 
 The request log line (§5.2): `status`, `errorCode`, `latencyMs`, `requestId`. The
-same `requestId` is in the response headers and, for every route, in the error
-body's `correlationId` — which is the property §4 identifies as broken today.
+same `requestId` is in the response headers and, for every route except the
+authentication rejection, in the error body's `correlationId`. §4 records the defect
+that made this false for four of five route groups before this cycle.
 
 ### 8.5 Was a detail served from durable storage or from memory?
 
@@ -456,31 +472,50 @@ answers usefully.
 Recorded per item so this document cannot drift into describing a design as if it
 were behaviour. Updated as the work lands.
 
-| Design item | Status |
-| --- | --- |
-| §3 request-path map | **Described from source.** |
-| §4 the correlation-id defect | **Open.** Confirmed against `index.ts`, `guardian.ts`, `review.ts`, `reference.ts`, `auditor.ts`. |
-| §5.1 `CERBERUS_LOG_LEVEL` / `CERBERUS_LOG_FORMAT` | **Not implemented.** |
-| §5.2 the request log line | **Not implemented.** |
-| §5.3 level policy | **Not implemented.** |
-| §5.4 structural rules | **Not implemented.** |
-| §6.1 one identifier per request | **Not implemented.** |
-| §6.2 incoming-id validation | **Not implemented.** |
-| §6.4 ambient propagation | **Not implemented.** |
-| §7.1 never-logged list | **Partially true by accident**: the current `console.*` call sites do not log secrets, but nothing enforces that, and the list is not asserted by a test. |
-| §7.2 two-layer redaction | **Not implemented.** |
-| §8.5 detail-source reporting | **Not implemented.** |
-| §3.7 durable detail fallback | **Not implemented.** Open item D4. |
-| §9 degraded-state matrix | **Described from source.** |
+| Design item | Status | Evidence |
+| --- | --- | --- |
+| §3 request-path map | **Described from source.** | The file each claim names. |
+| §4 the correlation-id defect | **Fixed.** Every route's error body carries the same value as both response headers, with the one documented exception. | `apps/api/test/request-id.test.ts`, "the error body's correlationId matches the response header". |
+| §5.1 `CERBERUS_LOG_LEVEL` / `CERBERUS_LOG_FORMAT` | **Implemented.** Fail-closed validation; an unusable value is a startup `ConfigError`. | `apps/api/test/config.test.ts`, "loadConfig — structured logging". |
+| §5.2 the request log line | **Implemented.** One line per request, emitted after the response exists. | `apps/api/test/request-id.test.ts`, "the request log line". |
+| §5.3 level policy | **Implemented.** | `apps/api/test/observability-logger.test.ts`, "level filtering". |
+| §5.4 structural rules | **Implemented.** No queue or buffer; depth, breadth and length bounds; `Error` described, never serialised. | `apps/api/test/observability-logger.test.ts`, "the output is bounded"; `observability-redaction.test.ts`. |
+| §6.1 one identifier per request | **Implemented.** One value, two header spellings. | `apps/api/test/request-id.test.ts`, "the response headers carry one identifier". |
+| §6.2 incoming-id validation | **Implemented.** Length, charset and control-character rules; a rejected value is replaced, never echoed. | `apps/api/test/request-id.test.ts`, "incoming identifier validation". |
+| §6.4 ambient propagation | **Implemented** with `AsyncLocalStorage`; `callMcpTool` reads the ambient id and an explicit `requestId` still overrides it. | `apps/api/test/observability-logger.test.ts`, "attaches the ambient request id". |
+| §7.1 never-logged list | **Implemented and asserted.** Driven through real requests at `debug`, with the absence of every listed value asserted. | `apps/api/test/logging-secrets.test.ts`. |
+| §7.2 two-layer redaction | **Implemented.** A known-secret registry fed from configuration, plus pattern scrubbing and a linear PEM scanner. | `apps/api/test/observability-redaction.test.ts`. |
+| §8.5 detail-source reporting | **Not implemented.** Still open: the review detail response does not say whether it answered from memory or from durable storage. | — |
+| §3.7 durable detail fallback | **Not implemented.** Open item D4. | — |
+| §9 degraded-state matrix | **Described from source.** | The file each claim names. |
+
+### 10.1 A defect this work found in itself
+
+Worth recording, because it is the reason §7.2 is tested directly rather than inferred
+from a log line.
+
+The first implementation of the redactor classified **keys** only while walking a nested
+object, and applied only value-level scrubbing to the fields a caller passed directly.
+So `logger.info("x", { currentCode: "…" })` — the shape every call site in this codebase
+actually uses — emitted the workspace verbatim. The logger's own test suite caught it;
+the fix moved key classification into one `redactField` helper used for every field.
+
+The second defect found the same way was performance. A 200 KB field took **32 seconds**
+to log, because the private-key pattern scanned it quadratically with no match to stop
+it. The pattern phase is now bounded to `MAX_PATTERN_SCRUB_CHARS` (4 096, several times
+the emitted cap, so everything emitted is still inspected), the PEM block is stripped by
+a linear scan rather than a regular expression, and the userinfo run in the connection-string
+pattern is bounded. Measured after the fix: 20 fields of 200 KB each in well under two
+seconds, asserted in `logging-secrets.test.ts`.
 
 ## 11. Related documents
 
-- [`security/threat-model.md`](../security/threat-model.md) §10 — the logging
+- [`security/threat-model.md`](../security/threat-model.md) §9 — the logging
   threat model: what request metadata is recorded, what must not be, and why
   structured logs are not a compliance claim.
 - [`api-errors.md`](../api-errors.md) — every stable code and what a client does
-  with it. §2 states the `correlationId` promise that §4 of this document finds
-  broken.
+  with it, and §2 for the `correlationId` contract that §4 of this document found
+  broken and that this cycle fixed.
 - [`operations/health-probes.md`](../operations/health-probes.md) — which probe
   belongs in which orchestrator slot.
 - [`development/failure-semantics.md`](failure-semantics.md) — what each

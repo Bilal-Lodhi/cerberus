@@ -11,6 +11,15 @@
 
 import "dotenv/config";
 
+import {
+  isLogFormat,
+  isLogLevel,
+  LOG_FORMATS,
+  LOG_LEVELS,
+  type LogFormat,
+  type LogLevel,
+} from "./observability/logger.js";
+
 /**
  * Default maximum accepted request body size, in bytes (8 MiB).
  *
@@ -35,6 +44,21 @@ export interface AppConfig {
   cors: CorsConfig;
   security: SecurityConfig;
   rateLimit: RateLimitConfig;
+  log: LogConfig;
+}
+
+/**
+ * Structured-logging configuration.
+ *
+ * See `docs/development/operability-model.md` §5.1. Both values are validated at
+ * startup and an unusable one is a `ConfigError` rather than a silent fallback: a
+ * typo in a logging control must not quietly change what is recorded.
+ */
+export interface LogConfig {
+  /** Minimum level emitted. */
+  level: LogLevel;
+  /** `pretty` for a terminal, `json` for a log shipper. */
+  format: LogFormat;
 }
 
 export interface OpenAIConfig {
@@ -250,6 +274,30 @@ function readBoolStrict(name: string, fallback: boolean): boolean {
   );
 }
 
+/**
+ * Reads one value from a fixed set, case-insensitively.
+ *
+ * An explicitly set but unrecognised value is a startup failure rather than a silent
+ * fallback, for the same reason as {@link readPositiveInt}: a typo in
+ * `CERBERUS_LOG_FORMAT` must not quietly change the shape of every log line a
+ * deployment emits.
+ */
+function readEnum<T extends string>(
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = readEnv(name).toLowerCase();
+  if (!raw) return fallback;
+
+  if ((allowed as readonly string[]).includes(raw)) return raw as T;
+
+  throw new ConfigError(
+    `${name} must be one of ${allowed.join(", ")} (got "${raw}"). ` +
+      `Leave it unset to use the default of ${fallback}.`,
+  );
+}
+
 export function loadConfig(): AppConfig {
   const devMode = readBool("CERBERUS_DEV_MODE");
 
@@ -360,6 +408,11 @@ export function loadConfig(): AppConfig {
     ),
   };
 
+  const log: LogConfig = {
+    level: readEnum("CERBERUS_LOG_LEVEL", LOG_LEVELS, "info"),
+    format: readEnum("CERBERUS_LOG_FORMAT", LOG_FORMATS, "pretty"),
+  };
+
   // ── Startup banner: never prints secret material ──
   console.log(
     `[config] mode=${devMode ? "development" : "production"} ` +
@@ -372,7 +425,8 @@ export function loadConfig(): AppConfig {
       `corsOrigins=${cors.allowedOrigins.length} ` +
       `sessionTtl=${security.sessionTTLSeconds}s ` +
       `maxBody=${security.maxRequestBodyBytes}B ` +
-      `rateLimit=${rateLimit.enabled ? `on (ai=${rateLimit.aiRequestsPerMinute}/min)` : "off"}`,
+      `rateLimit=${rateLimit.enabled ? `on (ai=${rateLimit.aiRequestsPerMinute}/min)` : "off"} ` +
+      `log=${log.level}/${log.format}`,
   );
 
   if (devMode) {
@@ -391,5 +445,12 @@ export function loadConfig(): AppConfig {
     cors,
     security,
     rateLimit,
+    log,
   };
 }
+
+/**
+ * Re-exported so a caller can validate a logging value without importing the logger
+ * module, and so the accepted sets have one definition.
+ */
+export { isLogFormat, isLogLevel };

@@ -15,6 +15,11 @@ import {
   notifySlack,
   sendEmail,
 } from "../src/services/notifications.js";
+import {
+  configureLogging,
+  resetLogging,
+  type LogRecord,
+} from "../src/observability/logger.js";
 import type { RiskAssessmentPayload } from "../src/types.js";
 
 const payload: RiskAssessmentPayload = {
@@ -163,23 +168,73 @@ describe("notification deadline", () => {
     const stub = installHangingFetch();
     restore = stub.restore;
 
-    const logged: string[] = [];
-    const originalError = console.error;
-    console.error = (...args: unknown[]) => {
-      logged.push(args.map((arg) => String(arg)).join(" "));
-    };
+    // Captured through the logger's sink rather than by replacing `console.error`.
+    // The structured record is the stronger assertion: it names the classification and
+    // the exact deadline rather than pattern-matching rendered prose.
+    const records: LogRecord[] = [];
+    configureLogging({
+      level: "debug",
+      format: "json",
+      sink: (_line, record) => records.push(record),
+    });
+
     try {
       await notifySlack("https://hooks.slack.test/hang", payload, 25);
     } finally {
-      console.error = originalError;
+      resetLogging();
     }
 
-    assert.equal(logged.length, 1, `expected one log line, saw: ${logged.join(" | ")}`);
+    const timeouts = records.filter(
+      (record) => record["classification"] === "timeout",
+    );
+    assert.equal(
+      timeouts.length,
+      1,
+      `expected one timeout record, saw: ${JSON.stringify(records)}`,
+    );
     // Both halves matter: a timeout must be distinguishable from a transport
     // failure, and the number must be the deadline actually used rather than
     // the module default.
-    assert.match(logged[0], /timed out after 25ms/);
-    assert.doesNotMatch(logged[0], /5000ms/);
+    assert.equal(timeouts[0]["timeoutMs"], 25);
+    assert.equal(timeouts[0]["channel"], "slack");
+    assert.equal(timeouts[0]["dependency"], "notification");
+  });
+
+  test("the webhook URL and the incident content never reach a log record", async () => {
+    const stub = installStaticFetch(500);
+    restore = stub.restore;
+
+    const records: LogRecord[] = [];
+    configureLogging({
+      level: "debug",
+      format: "json",
+      sink: (_line, record) => records.push(record),
+    });
+
+    const webhook = "https://hooks.slack.com/services/T000/B000/SECRETWEBHOOKTOKEN";
+    try {
+      await notifySlack(webhook, payload, 50);
+    } finally {
+      resetLogging();
+    }
+
+    const serialised = JSON.stringify(records);
+    assert.ok(records.length > 0, "expected at least one record");
+    assert.doesNotMatch(
+      serialised,
+      /SECRETWEBHOOKTOKEN|hooks\.slack\.com/,
+      "a notification log record carried the webhook URL, which is itself a credential",
+    );
+    assert.doesNotMatch(
+      serialised,
+      /op-trader-001|large paste/,
+      "a notification log record carried incident content",
+    );
+    // The classification is what an operator acts on, and it is present.
+    assert.ok(
+      records.some((record) => record["classification"] === "non-2xx"),
+      "the non-2xx classification was not recorded",
+    );
   });
 
   test("an unconfigured channel makes no request at all", async () => {

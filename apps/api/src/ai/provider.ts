@@ -16,6 +16,7 @@
 
 import OpenAI, { APIError } from "openai";
 import type { AppConfig, OpenAIConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
 import { toISOStringLocal } from "../utils/time.js";
 import type {
   RiskAssessmentPayload,
@@ -95,12 +96,18 @@ export class OpenAIProvider {
     this.maxOutputTokens = config.openai.maxOutputTokens;
     this.temperature = config.openai.temperature;
 
-    console.log(
-      `[ai] OpenAI provider ready → model="${this.model}" ` +
-        `maxOutputTokens=${this.maxOutputTokens} ` +
-        `temperature=${this.temperature ?? "model default (not sent)"} ` +
-        `timeout=${config.openai.requestTimeoutMs}ms`,
-    );
+    // The model, the token ceiling and the deadline: configuration facts an operator
+    // needs. Never the API key, and never the base URL when it carries credentials —
+    // `redactString` removes a userinfo section before this line is emitted.
+    logger.info(LOG_EVENTS.PROVIDER_CALL, {
+      classification: "provider-ready",
+      model: this.model,
+      maxOutputTokens: this.maxOutputTokens,
+      temperature: this.temperature ?? "model-default",
+      timeoutMs: config.openai.requestTimeoutMs,
+      baseUrl: config.openai.baseUrl ?? "default",
+      dependency: "provider",
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -154,10 +161,16 @@ export class OpenAIProvider {
         );
         const text = completion.choices[0]?.message?.content ?? "";
 
-        console.log(
-          `[ai] attempt ${attempt}/${MAX_ATTEMPTS} ok — ` +
-            `elapsed=${Date.now() - startedAt}ms chars=${text.length}`,
-        );
+        // The attempt index, the elapsed time and the response length — the fields
+        // that make a paid retry loop auditable. Never the prompt or the completion.
+        logger.debug(LOG_EVENTS.PROVIDER_ATTEMPT, {
+          attempt,
+          maxAttempts: MAX_ATTEMPTS,
+          classification: "ok",
+          latencyMs: Date.now() - startedAt,
+          responseChars: text.length,
+          dependency: "provider",
+        });
 
         if (text.trim().length > 0) return text;
 
@@ -186,7 +199,14 @@ export class OpenAIProvider {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         lastError = error instanceof Error ? error : new AIProviderError(message);
-        console.error(`[ai] attempt ${attempt}/${MAX_ATTEMPTS} failed: ${message}`);
+        logger.warn(LOG_EVENTS.PROVIDER_ATTEMPT, {
+          attempt,
+          maxAttempts: MAX_ATTEMPTS,
+          classification: "failed",
+          fatal: isFatal(error),
+          dependency: "provider",
+          error: message,
+        });
 
         if (isFatal(error)) throw lastError;
       }
@@ -242,10 +262,13 @@ export class OpenAIProvider {
     const raw = await this.completeJson(system, user);
     const payload = parseRiskAssessment(raw, toISOStringLocal());
 
-    console.log(
-      `[ai] risk analysis parsed — score=${payload.overallRiskScore} ` +
-        `flags=${payload.flags.length} anomalies=${payload.behavioralAnomalies.length}`,
-    );
+    logger.debug(LOG_EVENTS.PROVIDER_CALL, {
+      classification: "risk-analysis-parsed",
+      riskScore: payload.overallRiskScore,
+      flagCount: payload.flags.length,
+      anomalyCount: payload.behavioralAnomalies.length,
+      dependency: "provider",
+    });
     return payload;
   }
 
@@ -260,10 +283,11 @@ export class OpenAIProvider {
       );
       return parseRecommendedActions(raw);
     } catch (error) {
-      console.error(
-        "[ai] recommended-actions generation failed:",
-        error instanceof Error ? error.message : String(error),
-      );
+      logger.failure(LOG_EVENTS.PROVIDER_FAILURE, error, {
+        classification: "recommended-actions-failed",
+        consequence: "empty-recommendations-returned",
+        dependency: "provider",
+      });
       return [];
     }
   }
@@ -283,10 +307,13 @@ export class OpenAIProvider {
       { signal },
     );
     const verdict = parseScenarioClassifierVerdict(raw);
-    console.log(
-      `[ai] classifier verdict — scenarioRelated=${verdict.isScenarioRelated} ` +
-        `appropriate=${verdict.isAppropriate} confidence=${verdict.confidence}`,
-    );
+    logger.debug(LOG_EVENTS.PROVIDER_CALL, {
+      classification: "classifier-verdict",
+      scenarioRelated: verdict.isScenarioRelated,
+      appropriate: verdict.isAppropriate,
+      confidence: verdict.confidence,
+      dependency: "provider",
+    });
     return verdict;
   }
 
@@ -303,10 +330,13 @@ export class OpenAIProvider {
       { signal },
     );
     const matrix = parseThreatScenarioMatrix(raw, this.model, toISOStringLocal());
-    console.log(
-      `[ai] scenario matrix parsed — vectors=${matrix.threatVectors.length} ` +
-        `mandates=${matrix.regulatoryMandates.length} systems=${matrix.targetSystems.length}`,
-    );
+    logger.debug(LOG_EVENTS.PROVIDER_CALL, {
+      classification: "scenario-matrix-parsed",
+      threatVectorCount: matrix.threatVectors.length,
+      mandateCount: matrix.regulatoryMandates.length,
+      targetSystemCount: matrix.targetSystems.length,
+      dependency: "provider",
+    });
     return matrix;
   }
 

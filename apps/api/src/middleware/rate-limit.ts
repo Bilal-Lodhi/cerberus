@@ -9,6 +9,8 @@
 
 import type { MiddlewareHandler } from "hono";
 import type { AppConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 import {
   categorizeRequest,
   type RateLimiter,
@@ -39,10 +41,16 @@ export function createRateLimitMiddleware(
 
     if (!decision.allowed) {
       c.header("Retry-After", String(decision.retryAfterSeconds));
-      console.warn(
-        `[rate-limit] ${category} bucket exhausted for ${c.req.method} ${c.req.path} ` +
-          `(retry in ${decision.retryAfterSeconds}s)`,
-      );
+      // Safe fields only: the category, the rejection, and the wait. No credential
+      // and no IP — the limiter deliberately does not key on either, so there is
+      // nothing per-caller to record. See `docs/development/operability-model.md`
+      // §3.10 and §7.
+      logger.warn(LOG_EVENTS.RATE_LIMITED, {
+        category,
+        rejected: true,
+        retryAfterSeconds: decision.retryAfterSeconds,
+        limit: decision.limit,
+      });
       return c.json(
         {
           success: false,
@@ -52,7 +60,7 @@ export function createRateLimitMiddleware(
           code: "RATE_LIMITED",
           category,
           retryAfterSeconds: decision.retryAfterSeconds,
-          correlationId: c.res.headers.get("X-Correlation-Id") ?? "unknown",
+          correlationId: currentRequestId(),
         },
         429,
       );

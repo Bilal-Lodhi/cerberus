@@ -20,6 +20,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import type { SeverityMix, ThreatScenarioRequest } from "../types.js";
 import { getAIProvider } from "../ai/provider.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
 import { toISOStringLocal } from "../utils/time.js";
 
@@ -161,8 +163,7 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
   scenariosRouter.post("/", async (c) => {
     const startedAt = toISOStringLocal();
-    const requestId = c.res.headers.get("X-Correlation-Id") ?? randomUUID();
-    console.log(`[scenarios] [${requestId}] incoming POST /api/v1/scenarios`);
+    const requestId = currentRequestId();
 
     // ── Parse & validate ──────────────────────────────────────────
     let body: ThreatScenarioRequest;
@@ -194,14 +195,22 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
     if (!body.prompt || typeof body.prompt !== "string" || !body.prompt.trim()) {
       return c.json(
-        { success: false, error: "Field 'prompt' is required and must be a non-empty string" },
+        {
+          success: false,
+          error: "Field 'prompt' is required and must be a non-empty string",
+          correlationId: requestId,
+        },
         400,
       );
     }
 
     if (!body.roleContext || typeof body.roleContext !== "string") {
       return c.json(
-        { success: false, error: "Field 'roleContext' is required and must be a string" },
+        {
+          success: false,
+          error: "Field 'roleContext' is required and must be a string",
+          correlationId: requestId,
+        },
         400,
       );
     }
@@ -238,7 +247,11 @@ export function createScenariosRouter(config: AppConfig): Hono {
     const vectorCount = body.vectorCount ?? 5;
     if (!Number.isInteger(vectorCount) || vectorCount < 1 || vectorCount > 25) {
       return c.json(
-        { success: false, error: "Field 'vectorCount' must be an integer between 1 and 25" },
+        {
+          success: false,
+          error: "Field 'vectorCount' must be an integer between 1 and 25",
+          correlationId: requestId,
+        },
         400,
       );
     }
@@ -248,10 +261,10 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
     // ── Stage 1: deterministic pre-filter ─────────────────────────
     const preFilter = runPreFilter(trimmedPrompt);
-    console.log(
-      `[scenarios] [${requestId}] pre-filter passed=${preFilter.passed} ` +
-        `flags=[${preFilter.flags.join(", ") || "none"}]`,
-    );
+    logger.debug(LOG_EVENTS.SCENARIOS_PREFILTER, {
+      passed: preFilter.passed,
+      flags: preFilter.flags,
+    });
 
     if (!preFilter.passed) {
       return c.json(
@@ -272,8 +285,14 @@ export function createScenariosRouter(config: AppConfig): Hono {
     const generationRequestId =
       c.req.header("X-Generation-Request-Id")?.trim() || randomUUID();
     const abortController = new AbortController();
-    ACTIVE_CONTROLLERS.set(requestId, abortController);
-    REQUEST_ID_TO_INTERNAL.set(generationRequestId, requestId);
+    // The controller map is keyed on a **server-generated** value, never on the
+    // request id. A caller may now choose its own `X-Request-Id`, and two concurrent
+    // scenario requests sharing one id would otherwise collide in this map: the second
+    // would overwrite the first's controller and the first's `finally` would delete
+    // the second's, so a cancel could abort the wrong generation.
+    const controllerKey = randomUUID();
+    ACTIVE_CONTROLLERS.set(controllerKey, abortController);
+    REQUEST_ID_TO_INTERNAL.set(generationRequestId, controllerKey);
 
     let classifierDiag: ClassifierDiagnostics = { executed: false, elapsedMs: 0 };
 
@@ -302,9 +321,13 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
       const rejection = evaluateVerdict(verdict);
       if (rejection) {
-        console.warn(
-          `[scenarios] [${requestId}] classifier rejected: ${rejection}`,
-        );
+        logger.warn(LOG_EVENTS.SCENARIOS_CLASSIFIER, {
+          classification: "rejected",
+          reason: rejection,
+          confidence: verdict.confidence,
+          detectedDomain: verdict.detectedDomain || null,
+          dependency: "provider",
+        });
         return c.json(
           {
             success: false,
@@ -326,9 +349,12 @@ export function createScenariosRouter(config: AppConfig): Hono {
       classifierDiag = { executed: true, elapsedMs: 0, error: message };
 
       // FAIL-CLOSED: never author a scenario set that was not validated.
-      console.warn(
-        `[scenarios] [${requestId}] classifier unavailable — rejecting (fail-closed)`,
-      );
+      logger.warn(LOG_EVENTS.SCENARIOS_CLASSIFIER, {
+        classification: "unavailable",
+        dependency: "provider",
+        consequence: "refused-fail-closed",
+        error: message,
+      });
       return c.json(
         {
           success: false,
@@ -343,7 +369,7 @@ export function createScenariosRouter(config: AppConfig): Hono {
         503,
       );
     } finally {
-      ACTIVE_CONTROLLERS.delete(requestId);
+      ACTIVE_CONTROLLERS.delete(controllerKey);
       REQUEST_ID_TO_INTERNAL.delete(generationRequestId);
     }
 
@@ -372,12 +398,18 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
       if (!persisted.ok) {
         // Persistence is best-effort: the matrix is still returned to the caller.
-        console.warn(
-          `[scenarios] [${requestId}] persistence failed (non-fatal): ${persisted.error}`,
-        );
+        logger.warn(LOG_EVENTS.SCENARIOS_PERSIST_FAILURE, {
+          dependency: "mcp",
+          classification: "write-failed",
+          reason: persisted.error,
+        });
       }
 
-      console.log(`[scenarios] [${requestId}] complete — vectors=${matrix.threatVectors.length}`);
+      logger.info(LOG_EVENTS.SCENARIOS_COMPLETE, {
+        threatVectorCount: matrix.threatVectors.length,
+        persisted: persisted.ok,
+        dependency: "provider",
+      });
       return c.json(
         {
           success: true,
@@ -391,10 +423,13 @@ export function createScenariosRouter(config: AppConfig): Hono {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown agent error";
-      console.error(`[scenarios] [${requestId}] generation failed: ${message}`);
 
       const cancelled = message.includes("cancelled") || abortController.signal.aborted;
       if (cancelled) {
+        logger.info(LOG_EVENTS.SCENARIOS_FAILURE, {
+          classification: "cancelled",
+          dependency: "provider",
+        });
         return c.json(
           {
             success: false,
@@ -414,6 +449,15 @@ export function createScenariosRouter(config: AppConfig): Hono {
         message.includes("503") ||
         message.includes("504");
 
+      // The classification and the retryable verdict, never the prompt or the
+      // provider's response body.
+      logger.error(LOG_EVENTS.SCENARIOS_FAILURE, {
+        classification: overloaded ? "provider-unavailable" : "generation-failed",
+        retryable: overloaded,
+        dependency: "provider",
+        error: message,
+      });
+
       return c.json(
         {
           success: false,
@@ -431,28 +475,40 @@ export function createScenariosRouter(config: AppConfig): Hono {
 
   // ── POST /cancel ────────────────────────────────────────────────
   scenariosRouter.post("/cancel", async (c) => {
-    const requestId = c.res.headers.get("X-Correlation-Id") ?? randomUUID();
+    const requestId = currentRequestId();
 
     let body: { generationRequestId?: string };
     try {
       body = await c.req.json();
     } catch {
       return c.json(
-        { success: false, error: "Invalid JSON body — expected 'generationRequestId'" },
+        {
+          success: false,
+          error: "Invalid JSON body — expected 'generationRequestId'",
+          correlationId: requestId,
+        },
         400,
       );
     }
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return c.json(
-        { success: false, error: "Request body must be a JSON object with 'generationRequestId'" },
+        {
+          success: false,
+          error: "Request body must be a JSON object with 'generationRequestId'",
+          correlationId: requestId,
+        },
         400,
       );
     }
 
     if (!body.generationRequestId) {
       return c.json(
-        { success: false, error: "Field 'generationRequestId' is required" },
+        {
+          success: false,
+          error: "Field 'generationRequestId' is required",
+          correlationId: requestId,
+        },
         400,
       );
     }

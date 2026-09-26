@@ -14,6 +14,8 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 import { getAIProvider } from "../ai/provider.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "../services/mcp-client.js";
 
@@ -61,18 +63,25 @@ export function createAuditorRouter(config: AppConfig): Hono {
   }
 
   auditorRouter.post("/query", async (c) => {
-    const requestId = randomUUID();
+    const requestId = currentRequestId();
 
     let body: { question?: unknown };
     try {
       body = await c.req.json();
     } catch {
-      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+      return c.json(
+        { success: false, error: "Invalid JSON body", correlationId: requestId },
+        400,
+      );
     }
 
     if (typeof body.question !== "string" || !body.question.trim()) {
       return c.json(
-        { success: false, error: "Field 'question' must be a non-empty string" },
+        {
+          success: false,
+          error: "Field 'question' must be a non-empty string",
+          correlationId: requestId,
+        },
         400,
       );
     }
@@ -84,6 +93,7 @@ export function createAuditorRouter(config: AppConfig): Hono {
           error: `Field 'question' must be at most ${MAX_QUESTION_CHARS} characters (got ${body.question.length}).`,
           code: "QUESTION_TOO_LONG",
           maxChars: MAX_QUESTION_CHARS,
+          correlationId: requestId,
         },
         400,
       );
@@ -100,10 +110,7 @@ export function createAuditorRouter(config: AppConfig): Hono {
 
       return c.json({ success: true, summary, raw: records });
     } catch (error) {
-      console.error(
-        `[auditor] [${requestId}] query failed:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      logger.failure(LOG_EVENTS.AUDITOR_FAILURE, error, { dependency: "provider" });
       return c.json(
         {
           success: false,

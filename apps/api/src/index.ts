@@ -30,10 +30,8 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 import { bodyLimit } from "hono/body-limit";
 import { prettyJSON } from "hono/pretty-json";
-import { randomUUID } from "node:crypto";
 
 import { loadConfig, ConfigError, type AppConfig } from "./config.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
@@ -49,6 +47,19 @@ import { createRateLimiter, type RateLimiter } from "./services/rate-limit.js";
 import { createReadinessProbe, type ReadinessProbe } from "./services/readiness.js";
 import { callMcpTool, MCP_TOOL_NAMES } from "./services/mcp-client.js";
 import { systemClock, type Clock } from "./services/session-liveness.js";
+import { configureLogging, LOG_EVENTS, logger } from "./observability/logger.js";
+import {
+  currentRequestId,
+  resolveRequestId,
+  runWithRequestContext,
+  type RequestContext,
+} from "./observability/request-context.js";
+import { matchedRouteTemplate } from "./observability/route-template.js";
+import {
+  NOTIFICATION_SECRET_ENV_VARS,
+  registerConfiguredSecrets,
+  registerSecret,
+} from "./observability/redaction.js";
 
 export interface AppOptions {
   /**
@@ -102,9 +113,73 @@ function defaultReadinessProbe(config: AppConfig, clock: Clock): ReadinessProbe 
 export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
   const app = new Hono();
 
+  // Logging is configured from the app's own config, so a test that builds a config
+  // directly is logged the same way a deployment is. Only the level and the format
+  // are set here: a test that installed a capture sink keeps it.
+  configureLogging({ level: config.log.level, format: config.log.format });
+
+  // Every configured secret is registered with the redactor before any line is
+  // emitted. Notification credentials are read from the environment here rather than
+  // through `loadConfig`, because those channels are optional and unset in tests:
+  // registering them is about making sure a value that *is* configured can never be
+  // logged, and that must not depend on the notification path being reached.
+  registerConfiguredSecrets(config);
+  for (const name of NOTIFICATION_SECRET_ENV_VARS) {
+    registerSecret(process.env[name]);
+  }
+
   // Session liveness reads the clock on every request, so the injected source
   // is resolved once here and shared by the guardian and review routers.
   const clock: Clock = options.clock ?? systemClock;
+
+  // ── Request context and the request log line ────────────────────
+  //
+  // Registered **first**, before CORS, so every request — including a preflight that
+  // the CORS middleware answers without calling `next()` — gets exactly one
+  // identifier and exactly one log line.
+  //
+  // One identifier per request, and the same value in both headers. Before this,
+  // `index.ts` set `X-Correlation-Id` while four of the five route groups minted
+  // their own `randomUUID()` for the body, so the documented promise in
+  // `docs/api-errors.md` §2 held for one route group and failed for four. See
+  // `docs/development/operability-model.md` §4.
+  app.use("*", async (c, next) => {
+    const requestId = resolveRequestId(c.req.header("x-request-id"));
+    const startedAtMs = performance.now();
+
+    const context: RequestContext = {
+      requestId,
+      method: c.req.method,
+      route: matchedRouteTemplate(c),
+    };
+
+    c.header("X-Request-Id", requestId);
+    c.header("X-Correlation-Id", requestId);
+
+    await runWithRequestContext(context, async () => {
+      try {
+        await next();
+      } finally {
+        // Resolved after the chain has run, because routing has happened by then and
+        // a middleware-only match would otherwise report a wildcard as the route.
+        context.route = matchedRouteTemplate(c);
+
+        const response = c.res;
+        const errorCode = await extractErrorCode(response);
+        const fields = {
+          method: context.method,
+          route: context.route,
+          status: response.status,
+          latencyMs: Math.round((performance.now() - startedAtMs) * 100) / 100,
+          ...(errorCode ? { errorCode } : {}),
+        };
+
+        if (response.status >= 500) logger.error(LOG_EVENTS.HTTP_REQUEST, fields);
+        else if (response.status >= 400) logger.warn(LOG_EVENTS.HTTP_REQUEST, fields);
+        else logger.info(LOG_EVENTS.HTTP_REQUEST, fields);
+      }
+    });
+  });
 
   // ── CORS: explicit allow-list only ──────────────────────────────
   const allowedOrigins = config.cors.allowedOrigins;
@@ -122,17 +197,15 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
         "X-API-Key",
         "X-Session-Token",
         "X-Generation-Request-Id",
+        "X-Request-Id",
       ],
-      exposeHeaders: ["X-Correlation-Id"],
+      // Both spellings of the same identifier are exposed, so a browser client can
+      // read the id it was correlated under. `X-Correlation-Id` is kept because it is
+      // already a documented exposed header.
+      exposeHeaders: ["X-Request-Id", "X-Correlation-Id"],
       maxAge: 86400,
     }),
   );
-
-  // ── Correlation id ──────────────────────────────────────────────
-  app.use("*", async (c, next) => {
-    c.header("X-Correlation-Id", randomUUID());
-    await next();
-  });
 
   // ── Request body size bound ─────────────────────────────────────
   //
@@ -157,7 +230,11 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
             error: `Request body exceeds the configured limit of ${maxBodyBytes} bytes.`,
             code: "PAYLOAD_TOO_LARGE",
             maxBytes: maxBodyBytes,
-            correlationId: c.res.headers.get("X-Correlation-Id") ?? "unknown",
+            // The ambient id, not a header read: this middleware runs inside the
+            // request context, so the body is provably correlated with the response
+            // header rather than with a value read back out of a response that does
+            // not exist yet.
+            correlationId: currentRequestId(),
           },
           413,
         ),
@@ -179,9 +256,11 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
   }
 
   // ── Observability ───────────────────────────────────────────────
-  if (config.devMode) {
-    app.use("*", logger());
-  }
+  //
+  // The Hono development logger that used to run here is gone. It printed
+  // `METHOD path status - latency` without the correlation id and only in
+  // development mode, so it could not be joined to anything and left production
+  // with no request line at all. The structured request line above replaces it.
   app.use("*", prettyJSON());
 
   // ── Routes ──────────────────────────────────────────────────────
@@ -210,6 +289,7 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
         error: "Route not found.",
         code: "NOT_FOUND",
         path: `${c.req.method} ${c.req.path}`,
+        correlationId: currentRequestId(),
       },
       404,
     ),
@@ -217,19 +297,45 @@ export function createApp(config: AppConfig, options: AppOptions = {}): Hono {
 
   // ── Error handler: never leak framework or provider internals ───
   app.onError((err, c) => {
-    console.error("[api] unhandled error:", err);
+    // The exception is described, never serialised: a provider or driver error can
+    // carry a request object, a connection string or an authorization header.
+    logger.failure(LOG_EVENTS.HTTP_UNHANDLED, err, {
+      method: c.req.method,
+      route: matchedRouteTemplate(c),
+    });
     return c.json(
       {
         success: false,
         error: "Internal server error.",
         code: "INTERNAL_ERROR",
-        correlationId: c.res.headers.get("X-Correlation-Id") ?? "unknown",
+        correlationId: currentRequestId(),
       },
       500,
     );
   });
 
   return app;
+}
+
+/**
+ * The stable `code` of an error response, read from the response the route produced.
+ *
+ * Read by cloning rather than by threading a "current error code" through every route:
+ * a clone of an error body — which is always a small JSON object — costs one parse and
+ * needs no route to remember to record anything. Only 4xx and 5xx responses are
+ * inspected, so a successful payload is never cloned, and a body that is not JSON or
+ * carries no `code` simply leaves the field absent.
+ */
+async function extractErrorCode(response: Response): Promise<string | undefined> {
+  if (response.status < 400) return undefined;
+
+  try {
+    const body = (await response.clone().json()) as { code?: unknown } | null;
+    const code = body?.code;
+    return typeof code === "string" && code.length > 0 ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -242,6 +348,9 @@ async function main(): Promise<void> {
     config = loadConfig();
   } catch (error) {
     if (error instanceof ConfigError) {
+      // Before `createApp`, so logging is not yet configured: this line is the
+      // documented exception, and it prints a configuration message that never
+      // contains secret material.
       console.error(`[api] FATAL: ${error.message}`);
       process.exit(1);
     }
@@ -250,14 +359,17 @@ async function main(): Promise<void> {
 
   const app = createApp(config);
 
-  console.log(
-    `\n  ${SERVICE_NAME} v${SERVICE_VERSION}\n` +
-      `  mode:    ${config.devMode ? "development" : "production"}\n` +
-      `  listen:  http://localhost:${config.port}\n` +
-      `  auth:    ${config.devMode ? "DISABLED (dev mode)" : "API key required"}\n` +
-      `  mcp:     ${config.mcp.serverEndpoint}\n` +
-      `  cors:    ${config.cors.allowedOrigins.length} origin(s) allow-listed\n`,
-  );
+  logger.info(LOG_EVENTS.STARTUP, {
+    service: SERVICE_NAME,
+    version: SERVICE_VERSION,
+    mode: config.devMode ? "development" : "production",
+    port: config.port,
+    auth: config.devMode ? "disabled" : "api-key",
+    mcp: config.mcp.serverEndpoint,
+    corsOrigins: config.cors.allowedOrigins.length,
+    logLevel: config.log.level,
+    logFormat: config.log.format,
+  });
 
   const { serve } = await import("@hono/node-server");
   serve({ fetch: app.fetch, port: config.port });
@@ -268,7 +380,7 @@ const isMainModule =
 
 if (isMainModule) {
   main().catch((error) => {
-    console.error("[api] Fatal startup error:", error);
+    logger.failure(LOG_EVENTS.STARTUP_FAILURE, error);
     process.exit(1);
   });
 }

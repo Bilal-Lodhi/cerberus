@@ -8,9 +8,22 @@
  * so without a deadline a hung webhook would stall the ingest request for as long
  * as the socket stayed open — turning the notification path into a way to block
  * telemetry collection, which is the opposite of what it is for.
+ *
+ * ── What is logged ────────────────────────────────────────────────────
+ *
+ * The request id, the channel, a classification (`skipped`, `non-2xx`, `timeout`,
+ * `transport`) and the HTTP status when there was one. **Never** the webhook URL — a
+ * webhook URL is itself a credential, and anyone holding it can post into the channel
+ * — and never the credentials or the incident content. The failure classification is
+ * what an operator acts on; the body is not. See
+ * `docs/development/operability-model.md` §7.
+ *
+ * Notifications remain **best effort**. There is no durable outbox, and no delivery
+ * guarantee is claimed.
  */
 
 import type { RiskAssessmentPayload } from "../types.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
 
 /**
  * Per-call deadline for an outbound notification, in milliseconds.
@@ -47,14 +60,24 @@ async function fetchWithDeadline(
   }
 }
 
-/** Distinguishes a deadline from a transport failure in the logs. */
-function describeFailure(error: unknown, channel: string, timeoutMs: number): string {
-  if (error instanceof Error && error.name === "AbortError") {
-    return `${channel} notification timed out after ${timeoutMs}ms`;
-  }
-  return `${channel} notification failed: ${
-    error instanceof Error ? error.message : String(error)
-  }`;
+/** Distinguishes a deadline from a transport failure, as a stable classification. */
+function classifyFailure(error: unknown): "timeout" | "transport" {
+  return error instanceof Error && error.name === "AbortError" ? "timeout" : "transport";
+}
+
+/** The safe, non-identifying fields every notification log line carries. */
+function notificationFields(
+  channel: string,
+  payload: RiskAssessmentPayload,
+): Record<string, unknown> {
+  return {
+    channel,
+    dependency: "notification",
+    // A session id is the incident's own subject and is already what the caller asked
+    // about, so it is safe here — unlike on a list or probe path.
+    sessionId: payload.sessionId,
+    severity: payload.overallRiskScore,
+  };
 }
 
 export async function notifySlack(
@@ -63,7 +86,11 @@ export async function notifySlack(
   timeoutMs: number = NOTIFICATION_TIMEOUT_MS,
 ): Promise<void> {
   if (!webhookUrl) {
-    console.log("[notifications] Slack skipped: webhook is not configured");
+    logger.debug(LOG_EVENTS.NOTIFICATION, {
+      ...notificationFields("slack", payload),
+      classification: "skipped",
+      reason: "not-configured",
+    });
     return;
   }
 
@@ -87,10 +114,24 @@ export async function notifySlack(
     );
 
     if (!response.ok) {
-      console.error(`[notifications] Slack returned HTTP ${response.status}`);
+      logger.warn(LOG_EVENTS.NOTIFICATION, {
+        ...notificationFields("slack", payload),
+        classification: "non-2xx",
+        status: response.status,
+      });
+    } else {
+      logger.debug(LOG_EVENTS.NOTIFICATION, {
+        ...notificationFields("slack", payload),
+        classification: "delivered",
+        status: response.status,
+      });
     }
   } catch (error) {
-    console.error(`[notifications] ${describeFailure(error, "Slack", timeoutMs)}`);
+    logger.warn(LOG_EVENTS.NOTIFICATION, {
+      ...notificationFields("slack", payload),
+      classification: classifyFailure(error),
+      timeoutMs,
+    });
   }
 }
 
@@ -102,7 +143,11 @@ export async function sendEmail(
   timeoutMs: number = NOTIFICATION_TIMEOUT_MS,
 ): Promise<void> {
   if (!apiKey || !from || !to) {
-    console.log("[notifications] Email skipped: provider configuration is incomplete");
+    logger.debug(LOG_EVENTS.NOTIFICATION, {
+      ...notificationFields("email", payload),
+      classification: "skipped",
+      reason: "not-configured",
+    });
     return;
   }
 
@@ -135,9 +180,23 @@ export async function sendEmail(
     );
 
     if (!response.ok) {
-      console.error(`[notifications] Email provider returned HTTP ${response.status}`);
+      logger.warn(LOG_EVENTS.NOTIFICATION, {
+        ...notificationFields("email", payload),
+        classification: "non-2xx",
+        status: response.status,
+      });
+    } else {
+      logger.debug(LOG_EVENTS.NOTIFICATION, {
+        ...notificationFields("email", payload),
+        classification: "delivered",
+        status: response.status,
+      });
     }
   } catch (error) {
-    console.error(`[notifications] ${describeFailure(error, "Email", timeoutMs)}`);
+    logger.warn(LOG_EVENTS.NOTIFICATION, {
+      ...notificationFields("email", payload),
+      classification: classifyFailure(error),
+      timeoutMs,
+    });
   }
 }

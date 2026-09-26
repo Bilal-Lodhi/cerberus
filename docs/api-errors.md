@@ -32,8 +32,28 @@ Beyond that, three fields appear where they are useful:
 | Field | Meaning | Present on |
 | --- | --- | --- |
 | `code` | The stable code. | Every error that a client can act on differently |
-| `correlationId` | Matches the `X-Correlation-Id` response header and the server log line | Most errors |
+| `correlationId` | Matches the `X-Correlation-Id` and `X-Request-Id` response headers, and the request log line | Every error, with one deliberate exception below |
 | `status` | The session status that caused a refusal | Session transition refusals |
+
+**Every route now returns the same value in `correlationId` as it does in the response
+headers.** That was not true before this cycle: `index.ts` set one
+`X-Correlation-Id` per response while `routes/guardian.ts`, `routes/review.ts`,
+`routes/reference.ts` and `routes/auditor.ts` each minted their own `randomUUID()` per
+handler, so for four of the five route groups the value in the body appeared in no
+header and in no log line an operator could key on. The full record is in
+[development/operability-model.md](development/operability-model.md) §4.
+
+The **one exception** is the authentication rejection: `UNAUTHENTICATED` carries no
+`correlationId`, because `docs/security/threat-model.md` §4 requires the
+missing-credential and wrong-credential responses to be **byte-identical**, and a
+per-request value would make them differ. Both still carry the request id in the
+response headers, so the request is still correlatable.
+
+An incoming `X-Request-Id` is accepted only when it is at most 128 characters and uses
+`A-Z a-z 0-9 . _ : -`. A value that fails that validation is **replaced with a
+generated one, not rejected**: an id is a correlation label, so a header the caller did
+not know existed must not turn into a client-visible failure, and no route needs to act
+differently. That is why there is no `INVALID_REQUEST_ID` code.
 
 Errors raised by the framework rather than by a route — a malformed request line, an
 unknown path — carry `code: "NOT_FOUND"` from the 404 handler or
@@ -66,7 +86,7 @@ meaning.
 | `SESSION_EXPIRED` | 409 | The session's monitoring window has closed: its last server-observed activity is at least `SESSION_TTL_SECONDS` old. Telemetry is refused. | `POST /api/v1/guardian/sessions/:id/reactivate`, or deploy a new session. **Evidence is retained** — the review surfaces still serve it. |
 | `SESSION_TERMINATED` | 409 | The session is `terminated`, which is irreversible. Returned by `reactivate` **and** by telemetry ingest. | Deploy a new session. Do not retry. |
 | `SESSION_CONFLICT` | 409 | The durable status changed between the read and the write, so the transition was applied to a state the caller did not see. **The write did not happen.** | Re-read the session, then retry if the transition is still wanted. |
-| `SESSION_NOT_FOUND` | 404 | No session document matches. | Check the id. |
+| `SESSION_NOT_FOUND` | 404 | No session document matches. Returned by every surface that can report it: the transition boundary, the live detail route, the review list's per-session read, the review detail route, and session deletion. | Check the id. |
 | `SESSION_STORE_UNAVAILABLE` | 503 | The persistence layer did not answer, or answered with a failure. **Nothing was changed.** | Retry with backoff. |
 | `INVALID_SESSION_TRANSITION` | 409 | The requested transition is not in the table for the session's current status, and the session is not terminal — which means the document holds a status the durable vocabulary cannot produce (`flagged`, `investigating`, `cleared`). | This is a data-integrity signal. Report it with the `correlationId`; do not retry. |
 
@@ -85,6 +105,7 @@ rather than reported. A refusal never changes the durable status.
 | `BATCH_TOO_LARGE` | 400 | More than `MAX_EVENTS_PER_BATCH` (1 000) events in one request | Split the batch. The response carries `maxEvents`. |
 | `MISSING_EVENT_ID` | 400 | An event has no non-empty `eventId`. `eventId` is the durable idempotency key, so an event without one cannot be deduplicated. | Fix the client. Every event needs one. |
 | `SESSION_STORE_UNAVAILABLE` | 503 | A `DELETE` could not reach the persistence layer, so **nothing was changed** | Retry with backoff. |
+| `SESSION_NOT_FOUND` | 404 | A `DELETE` matched no session, and the session was not in memory either | Treat as done. |
 
 A batch is **idempotent on `(sessionId, eventId)`**: re-sending it stores nothing new
 and does not inflate the counters. The response reports `acceptedCount` and
@@ -139,6 +160,7 @@ artefact is not lost, and the response does not pretend it was stored.
 | Code | HTTP | Meaning | Client action |
 | --- | --- | --- | --- |
 | `INVALID_REFERENCE_DOCUMENT` | 400 | A field is missing, empty, the wrong type, or over its bound | Fix the document. The message names the field and the bound. |
+| `REFERENCE_NOT_FOUND` | 404 | A delete matched no document with that `referenceId`. | Nothing to do — it is already gone. Distinguish this from `REFERENCE_STORE_UNAVAILABLE`, which is a retry. |
 | `REFERENCE_CORPUS_LIMIT_REACHED` | 409 | The corpus is at `MAX_REFERENCE_DOCUMENTS` (200) and this would be a **new** document. An update of an existing `referenceId` is always allowed. | Remove a document first. Retrying will not help. The response carries `limit`. |
 | `REFERENCE_STORE_UNAVAILABLE` | 503 | The corpus store did not answer. **Similarity matching degrades to no matches rather than failing an analysis.** | Retry. |
 

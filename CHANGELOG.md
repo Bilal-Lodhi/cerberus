@@ -21,16 +21,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   injection and the incoming-request-id validation that prevents it, why the request id is
   not a security control, and why structured logs are not a compliance claim. Retention
   belongs to the deployer.
+- **A dependency-free structured logger** — `apps/api/src/observability/`. Four levels,
+  two formats (`pretty` for a terminal, `json` for a shipper), one line per HTTP request
+  carrying the status, the latency, the matched route **template** and the stable error
+  code, and per-step detail at `debug` for MCP calls and provider attempts. No external
+  logging vendor and no OpenTelemetry.
+- **`CERBERUS_LOG_LEVEL` and `CERBERUS_LOG_FORMAT`.** An explicitly set but unusable value
+  is a startup `ConfigError`, not a silent fallback, for the same reason
+  `SESSION_TTL_SECONDS` is: a typo in a logging control must not quietly change what is
+  recorded.
+- **One request/correlation id per request**, accepted from `X-Request-Id` only when it is
+  at most 128 characters and uses `A-Z a-z 0-9 . _ : -`, echoed in both `X-Request-Id` and
+  `X-Correlation-Id`, recorded on the request line, and returned in every error body's
+  `correlationId`. A rejected id is replaced with a generated one rather than failing the
+  request, which is why there is no `INVALID_REQUEST_ID` code.
+- **`REFERENCE_NOT_FOUND`** (404) for a corpus delete that matched nothing, so a client can
+  tell "already gone" from "the store did not answer" — the first is done, the second is a
+  retry. Before this the route answered a bare 404 and left the distinction in prose.
+
+### Changed
+
+- **`SESSION_NOT_FOUND` is now returned by every surface that can report the condition**,
+  not only by the transition boundary: the live detail route, session deletion, and both
+  review routes. One condition, one code — a client no longer has to branch on message
+  prose, which `api-errors.md` §1 says is not a contract.
+- **The Hono development logger is gone.** It printed `METHOD path status - latency`
+  without the correlation id and only in development mode, so it could not be joined to
+  anything and left production with no request line at all. The structured request line
+  replaces it in every mode.
 
 ### Fixed
 
-- **Documented the correlation-id defect rather than leaving it implicit.**
-  `docs/api-errors.md` §2 promises that an error body's `correlationId` matches the
-  `X-Correlation-Id` response header and the server log line. Four of the five route groups
-  mint their own `randomUUID()` per handler, so for `guardian`, `review`, `reference` and
-  `auditor` that promise is false: the value in the body appears in no header and in no log
-  line an operator can key on. Recorded in `operability-model.md` §4 with the file each
-  claim is checked against.
+- **The documented `correlationId` promise was false for four of five route groups.**
+  `index.ts` set one `X-Correlation-Id` per response while `routes/guardian.ts`,
+  `routes/review.ts`, `routes/reference.ts` and `routes/auditor.ts` each minted their own
+  `randomUUID()` per handler, so the value in the error body appeared in no header and in
+  no log line an operator could key on — and `docs/api-errors.md` §2 said otherwise. One
+  identifier per request now flows from the middleware through an `AsyncLocalStorage`
+  context, so no service has to be handed one and none can invent one. Recorded in
+  `operability-model.md` §4.
+- **A log line can no longer carry a monitored workspace, a paste, a telemetry batch, a
+  provider prompt or a credential.** The first implementation of the redactor classified
+  keys only inside a nested object, so `logger.info("x", { currentCode: … })` — the shape
+  every call site uses — emitted the workspace verbatim. Found by the logger's own suite;
+  key classification now happens for every field.
+- **Logging a large field is no longer quadratic.** A 200 KB field took **32 seconds**,
+  because the private-key pattern scanned it quadratically with no match to stop it. The
+  pattern phase is bounded, the PEM block is stripped by a linear scan, and the userinfo
+  run in the connection-string pattern is bounded. Measured after the fix: 20 fields of
+  200 KB each in well under two seconds.
+- **The scenarios controller map is keyed on a server-generated value, not the request
+  id.** Accepting a caller-supplied `X-Request-Id` would otherwise let two concurrent
+  scenario requests collide in that map, so a cancel could abort the wrong generation.
+- **Secrets can no longer reach a log through a dependency error.** Every configured
+  secret is registered with the redactor at startup, and a `mongodb://user:pass@host` URI,
+  a `Bearer` token, a PEM block or a provider-style key is replaced by pattern. Asserted
+  by `apps/api/test/logging-secrets.test.ts`, which drives real requests at `debug`.
 
 ## [0.3.0] - 2026-09-26
 

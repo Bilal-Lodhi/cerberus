@@ -163,8 +163,9 @@ so container orchestrators can probe it.
   (ports 8080 and 5173 on `localhost` and `127.0.0.1`).
 - Allowed methods: `GET`, `POST`, `DELETE`, `OPTIONS`. Allowed headers:
   `Content-Type`, `Authorization`, `X-API-Key`, `X-Session-Token`,
-  `X-Generation-Request-Id`. Exposed header: `X-Correlation-Id`. Preflight
-  results are cached for 86400 seconds.
+  `X-Generation-Request-Id`, `X-Request-Id`. Exposed headers: `X-Request-Id` and
+  `X-Correlation-Id`, which carry the **same value** — one identifier per request.
+  Preflight results are cached for 86400 seconds.
 - The MCP adapter emits **no CORS headers at all** unless
   `CERBERUS_MCP_CORS_ORIGINS` is set, because it is a server-to-server
   interface. When set, it echoes the request origin only if it is on the list,
@@ -312,7 +313,11 @@ contain, what it must never contain, and what the guarantees are worth.
 
 The design is described in
 [development/operability-model.md](../development/operability-model.md) §5–§7, which
-also records, item by item, which parts are implemented.
+also records, item by item, which parts are implemented. As of this cycle the logging,
+correlation and redaction items are **implemented and asserted**:
+`apps/api/test/logging-secrets.test.ts` drives real requests with logging at `debug`
+and asserts the absence of every value in §9.2, and
+`apps/api/test/observability-redaction.test.ts` drives the redactor directly.
 
 ### 9.1 What is recorded
 

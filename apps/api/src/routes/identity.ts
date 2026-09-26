@@ -18,6 +18,8 @@
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
 import type { IdentityPayload, IdentityResponse } from "../types.js";
+import { LOG_EVENTS, logger } from "../observability/logger.js";
+import { currentRequestId } from "../observability/request-context.js";
 
 interface StoredIdentity {
   identity: IdentityPayload;
@@ -146,17 +148,23 @@ identityRouter.post("/set", async (c) => {
   for (const field of [displayName, employeeId, role, department]) {
     if (field.error) {
       return c.json(
-        { success: false, error: field.error, code: "INVALID_IDENTITY_FIELD" },
+        { success: false, error: field.error, code: "INVALID_IDENTITY_FIELD", correlationId: currentRequestId() },
         400,
       );
     }
   }
 
   if (!displayName.value) {
-    return c.json({ success: false, error: "displayName is required" }, 400);
+    return c.json(
+      { success: false, error: "displayName is required", correlationId: currentRequestId() },
+      400,
+    );
   }
   if (!employeeId.value) {
-    return c.json({ success: false, error: "employeeId is required" }, 400);
+    return c.json(
+      { success: false, error: "employeeId is required", correlationId: currentRequestId() },
+      400,
+    );
   }
 
   const identity: IdentityPayload = {
@@ -174,10 +182,9 @@ identityRouter.post("/set", async (c) => {
 
   const response: IdentityResponse = { success: true, identity, sessionToken };
 
-  console.log(
-    `[identity] registered operator "${identity.displayName}" (${identity.employeeId}) ` +
-      `handle=${sessionToken.slice(0, 8)}… registrySize=${identityStore.size}`,
-  );
+  // The display name, the employee id and the handle are all operator identifiers.
+  // Only the fact of registration and the registry's size are recorded.
+  logger.info(LOG_EVENTS.IDENTITY_REGISTERED, { registrySize: identityStore.size });
 
   return c.json(response, 201);
 });
@@ -190,14 +197,28 @@ identityRouter.get("/me", (c) => {
   const token = c.req.header("X-Session-Token");
 
   if (!token) {
-    return c.json({ success: false, error: "X-Session-Token header is required" }, 401);
+    return c.json(
+      {
+        success: false,
+        error: "X-Session-Token header is required",
+        correlationId: currentRequestId(),
+      },
+      401,
+    );
   }
 
   const entry = identityStore.get(token);
   if (!entry || isExpired(entry, Date.now())) {
     // Drop it while we are here, so an expired handle does not linger.
     if (entry) identityStore.delete(token);
-    return c.json({ success: false, error: "Unknown or expired operator handle" }, 401);
+    return c.json(
+      {
+        success: false,
+        error: "Unknown or expired operator handle",
+        correlationId: currentRequestId(),
+      },
+      401,
+    );
   }
 
   return c.json({ success: true, identity: entry.identity });
