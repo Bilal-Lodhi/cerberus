@@ -18,7 +18,12 @@
  *   { "key": "Tab" }                press a key
  *   { "wait": 1500 }                wait milliseconds
  *   { "eval": "expression" }        evaluate JS and print the result
+ *   { "viewport": [w, h] }          resize the emulated viewport
  *   { "console": true }             dump console messages collected so far
+ *
+ * `viewport` exists for the narrow-width pass: Flutter web reports an overflow to the
+ * console as `A RenderFlex overflowed by N pixels`, and an overflow is most likely to
+ * appear at a narrow width — which a headless window cannot be resized to by `resizeTo`.
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -131,6 +136,15 @@ for (const step of steps) {
     await send("Input.dispatchKeyEvent", { type: "keyDown", key: step.key, code: step.key });
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: step.key, code: step.key });
     console.log(`[qa] key ${step.key}`);
+  } else if (step.viewport) {
+    const [width, height] = step.viewport;
+    await send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    console.log(`[qa] viewport ${width}x${height}`);
   } else if (step.wait !== undefined) {
     await sleep(step.wait);
   } else if (step.eval) {

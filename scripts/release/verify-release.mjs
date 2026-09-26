@@ -156,6 +156,24 @@ const STEPS = [
     why: "the Flutter console analyses clean",
   },
   {
+    name: "console-smoke",
+    script: "verify:console-smoke",
+    why:
+      "the built console is driven in headless Chrome: it renders, the browser console " +
+      "reports no error, nothing overflows, and the screenshots a human must inspect are written",
+    gate: () => {
+      if (!hasDocker()) return "no Docker daemon, and the smoke needs a disposable database";
+      const flutter = spawnSync("flutter", ["--version"], {
+        encoding: "utf8",
+        shell: process.platform === "win32",
+      });
+      if (flutter.status !== 0) {
+        return "Flutter is not on PATH, so the web bundle cannot be built";
+      }
+      return null;
+    },
+  },
+  {
     name: "console-test",
     script: "console:test",
     why: "the Flutter widget and release-claim tests pass",

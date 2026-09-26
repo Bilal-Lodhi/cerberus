@@ -32,6 +32,7 @@
     "console:format": "cd apps/console && dart format --output=none --set-exit-if-changed .",
     "console:analyze": "cd apps/console && flutter analyze",
     "console:test": "cd apps/console && flutter test",
+    "verify:console-smoke": "node scripts/release/console-smoke.mjs",
     "verify:version": "node scripts/release/version-census.mjs",
     "verify:config": "node scripts/release/config-census.mjs",
     "verify:secrets": "node scripts/release/secret-guards.mjs",
