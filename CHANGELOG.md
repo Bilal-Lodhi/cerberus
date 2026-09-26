@@ -145,6 +145,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeout is abandoned; a crash between the provider's response and the record write leaves an
   **unknown outcome**, stated rather than hidden), and the eight assertions that would prove it.
   Nothing here claims exactly-once billing.
+- **`docs/operations/multi-replica.md` — running more than one replica.** What is safe with N
+  replicas and **why** (predicate-checked transitions, `(sessionId, eventId)` event identity, the
+  batch-delta counters, the reconciled live reads, `terminalContent` ownership, the migration
+  ledger), and what multiplies or does not work at all.
+
+  It records the **rate-limiting decision**: the limiter stays local, because a Mongo-backed
+  limiter would put a write on the hot path of every request — including ingestion, which the
+  console drives one event at a time — to enforce a bound that is explicitly a backstop, and
+  because per-caller limiting needs caller identity the OSS baseline does not have. The N-replica
+  multiplier is stated, along with the consequence that matters most: the `ai` bucket bounds spend,
+  so an operator running more than one replica should set that limit at the proxy.
+
+  It also states the rolling key-rotation rule (**the new key is everywhere before the old key is
+  anywhere retired**), the per-replica verification loop that makes it checkable — a replica that
+  missed the configuration is indistinguishable from a correct one until a client lands on it — the
+  MCP adapter's extra ordering constraint, and an explicit refusal to invent a key generation id or
+  a revocation list. Plus the two things that simply do not work across replicas: per-process
+  operator identity handles, and notification deduplication.
+- **`docs/security/threat-model.md` §8b — the multi-writer section.** Each change this cycle made
+  and its effect on the model, followed by the boundaries it did **not** move: one shared key still
+  grants equivalent authority to every replica, local rate limiting multiplies, idempotency reduces
+  duplicates rather than replay or authorization risk, a request id is observability only,
+  notifications remain undeduplicated, and there is no new monitored data and no compliance claim.
+- **`docs/operations/key-rotation.md` and `docs/operations/reverse-proxy.md`** now point at the
+  multi-replica procedure rather than leaving the single-process procedure to be read as complete.
 - **The process whose terminal transition applied owns `terminalContent`.**
   `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
   and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating

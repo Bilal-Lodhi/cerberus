@@ -305,6 +305,43 @@ implied: rate limiting remains a per-process backstop, and the two paid routes r
 non-idempotent, so a retry after a lost response re-spends. The condition that would change
 the latter is named in [api-errors.md](../api-errors.md) §11.1.
 
+## 8b. What the multi-writer cycle changed here
+
+Recorded for the same reason as §8a: a threat model that does not move when the code does is a
+document, not a model. The full record is in
+[development/multi-writer-model.md](../development/multi-writer-model.md), and the operational
+consequences are in [operations/multi-replica.md](../operations/multi-replica.md).
+
+| Change | Effect on this model |
+| --- | --- |
+| **The live list and live detail reconcile against durable truth on every request** | A session another replica terminated is no longer reported as live, and another replica's sessions are no longer absent from the page. This is a **truthfulness** property: two surfaces answering differently about one session was the failure, and it was reachable by any operator running a second replica |
+| **A live read repairs this process's cache toward the document, and only toward it** | The divergence converges rather than persisting, and the repair deliberately does not move the cached activity instant — a read must not extend a monitoring window as a side effect of looking at a session |
+| **The process whose terminal transition applied owns `terminalContent`** | A stale replica can no longer overwrite the workspace another replica preserved. It is a **reviewability** property: the field is the evidence of what the monitored workspace held when monitoring ended |
+| **Aggregate counters are a batch delta applied with `$inc`** | Two replicas accepting distinct events both count. Before, the durable total converged to the largest single replica's total, so a session's evidence could be under-reported on the review panel |
+| **`update_session_counts` and `update_session_terminal_content` gained optional compare-and-set gates** | Both are additive; the published behaviour with no gate is unchanged, so no existing MCP client is affected |
+
+### What this cycle did **not** change, stated as boundaries
+
+- **One shared key still grants equivalent authority to every replica.** Reconciling reads improved
+  correctness, not authorization. Replicas do not create per-user attribution, and there is still
+  no account, role, tenant, or operator-distinguishing audit trail.
+- **Local rate limiting multiplies across replicas.** The limiter remains a per-process backstop
+  whose ceiling is up to N × the configured limit. The decision to keep it local rather than put a
+  write on every request's hot path is in
+  [operations/multi-replica.md](../operations/multi-replica.md) §2.1; per-caller limiting stays a
+  reverse-proxy concern because it needs caller identity the baseline does not have.
+- **Idempotency reduces duplicates, not replay or authorization risk.** And on the two paid routes
+  it does not exist at all: the duplicate-spend exposure is **re-accepted with its cost measured**
+  in [development/idempotency-model.md](../development/idempotency-model.md).
+- **A request id is observability only.** It is never an identity, an authorization input, or a
+  deduplication key, on one replica or many.
+- **Notification delivery remains best-effort and undeduplicated.** Two replicas can each notify
+  for the same incident.
+- **No endpoint agent, and no new monitored data.** Telemetry still originates only from the
+  browser console, and the advisory posture is unchanged: a risk score is a signal for a human
+  reviewer, never a finding of intent.
+- **No compliance claim.** The session model is an engineering property, not a control.
+
 ## 9. Logging threat model
 
 Cerberus writes to `stdout` and `stderr` and nothing else. It does not ship logs,
