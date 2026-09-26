@@ -170,6 +170,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notifications remain undeduplicated, and there is no new monitored data and no compliance claim.
 - **`docs/operations/key-rotation.md` and `docs/operations/reverse-proxy.md`** now point at the
   multi-replica procedure rather than leaving the single-process procedure to be read as complete.
+- **`docs/development/multi-writer-checkpoint.md` — the cycle's record.** The eight merged pull
+  requests, the five defects and how each was found, the exit criteria with their state (**one
+  partially met and stated as such**), the verification at the checkpoint, the immutability proof
+  for the four published tags, and the eight limitations accepted rather than fixed.
+- **`docs/release/v0.5.0-release-notes.md` and `docs/release/v0.5.0-checklist.md` — the release
+  candidate.** **Prepared, not published**: no tag, no GitHub release, no package, no image. The
+  notes state the theme, the observable changes, the compatibility position and ten things the
+  release does not claim; the checklist records the eighteen gates verified in this cycle and the
+  publication steps deliberately left unrun.
 - **The process whose terminal transition applied owns `terminalContent`.**
   `POST /sessions/:sessionId/terminate` preserved the workspace **before** the status transition,
   and `update_session_terminal_content` was an unconditional `$set`. Two processes terminating

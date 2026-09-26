@@ -710,7 +710,7 @@ and is otherwise stated as not met.
 | M | Docker-dependent release evidence reproducible in CI/manual workflow | **Met** — same workflow, with a real `mongo:7` and a Docker build |
 | N | Live-state reconciliation has measured cost, no pathological query amplification | **Partially met.** The query count is bounded by construction and asserted: one `get_session_review` per live-detail request and one `list_sessions` per live-list request regardless of how many sessions are in memory, so there is no N+1 — `session-detail-fallback.test.ts` pins the detail at **exactly one** store call. The before/after **latency** has not been measured and is not claimed |
 | O | No known P0/P1 correctness or security defect remains | **Met for the session state paths.** The read paths reconcile, `terminalContent` has an owner, and counters cannot lose a concurrent writer's events. The two paid routes' duplicate-spend exposure is **re-accepted with its cost measured** rather than fixed — see G |
-| P | Docs, threat model and compatibility docs match implementation | In progress — the new docs state the gaps rather than describing the target as done |
-| Q | Published tags remain immutable | **Met** — verified at the checkpoint, and nothing in this phase rewrites history |
-| R | A coherent next release candidate can be described | Not met — deferred to the checkpoint |
+| P | Docs, threat model and compatibility docs match implementation | **Met** — `multi-writer-model.md` §6 is an enforcement table that marks each rule enforced or not, §8b of the threat model records what did **not** move, and `compatibility.md` §1b lists every observable change |
+| Q | Published tags remain immutable | **Met** — verified at the checkpoint: all four tag objects and targets are unchanged, and nothing in this phase rewrote history |
+| R | A coherent next release candidate can be described | **Met** — [release/v0.5.0-release-notes.md](../release/v0.5.0-release-notes.md), prepared and **not published**, with the gates in [release/v0.5.0-checklist.md](../release/v0.5.0-checklist.md) |
 
