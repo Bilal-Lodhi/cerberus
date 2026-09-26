@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **A release candidate is prepared and not published.** The theme, the observable changes,
+> the upgrade path and ten things it does not claim are in
+> [`docs/release/v0.4.0-release-notes.md`](docs/release/v0.4.0-release-notes.md); the gates
+> and the steps that *are* publication are in
+> [`docs/release/v0.4.0-checklist.md`](docs/release/v0.4.0-checklist.md); and the cycle's
+> record is
+> [`docs/development/operability-checkpoint.md`](docs/development/operability-checkpoint.md).
+> The version below is deliberately still `0.3.0` — the bump is part of publication, which
+> is not authorised. **No schema migration ships with this cycle.**
+
 ### Removed
 
 - **`cleared` from the session status vocabulary.** It had no producer at all: nothing

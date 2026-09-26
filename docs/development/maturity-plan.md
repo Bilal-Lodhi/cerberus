@@ -600,3 +600,44 @@ The release is published. The notes are
 were run for it — including the ones that must be re-run rather than assumed — are recorded
 with their results in
 [release/v0.3.0-checklist.md](../release/v0.3.0-checklist.md).
+
+## Operability phase: checkpoint reached
+
+**The checkpoint is reached. Nothing is published.** Ten pull requests, fourteen defects,
+and one question answered.
+
+The `v0.3.0` cycle left an *architecturally coherent* system that could not be **inspected**:
+a request could not be traced, a session detail answered `404` for a session that existed, a
+partial deletion was reported as complete, and the release gates lived in a session — with
+one of them verified against a stale container image.
+
+This cycle was about seeing and re-running what the system already does. Its record is
+[operability-checkpoint.md](operability-checkpoint.md): the ten merged pull requests, the
+fourteen defects and how each was found, the exit criteria with their state, the
+verification, the immutability proof for the three published tags, and the eight limitations
+accepted rather than fixed.
+
+The four documents that carry the work:
+
+- [operability-model.md](operability-model.md) — every request path against nine operability
+  columns, the logging design, and the two-layer redaction guarantee.
+- [read-model.md](read-model.md) — the four surfaces that answer for one session, the three
+  vocabularies that must not be conflated, and the six read-integrity defects comparing them
+  found.
+- [console-smoke.md](console-smoke.md) — the browser pass, what it automates and what only a
+  human can judge.
+- [../release/verification-harness.md](../release/verification-harness.md) — the sixteen-step
+  non-publishing harness, and the four gates that are specific to a release.
+
+The release candidate is
+[release/v0.4.0-release-notes.md](../release/v0.4.0-release-notes.md), **prepared and not
+published**, with the gates and the steps that *are* publication in
+[release/v0.4.0-checklist.md](../release/v0.4.0-checklist.md).
+
+### What the next cycle inherits
+
+Accepted rather than fixed, and each with its reason in the checkpoint's §8: rate limiting
+is per-process; the two paid routes remain non-idempotent; the console embeds the operator
+key in its bundle; backups have no scheduling, off-host storage, encryption or
+point-in-time recovery; the live surfaces report the status this process holds in memory;
+and the browser smoke's terminology pass is a human reading screenshots.
