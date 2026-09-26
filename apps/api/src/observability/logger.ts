@@ -406,6 +406,31 @@ export const LOG_EVENTS = {
   /** An audit query failed. */
   AUDITOR_FAILURE: "auditor.query.failure",
 
+  // ── Paid-operation claims ──────────────────────────────────────
+  //
+  // Seven events, one per decision a claim can produce. Every line carries the request id,
+  // the route family, the state, the elapsed time, `replay`, and a **truncated digest** of
+  // the idempotency key — never the key, never a request body, never a provider result.
+  // See docs/development/paid-operation-state-model.md §3.13.
+  /** This process won the claim and will execute. */
+  IDEMPOTENCY_CLAIMED: "idempotency.claimed",
+  /** This process reclaimed a stale or retryable claim and will execute. */
+  IDEMPOTENCY_RECLAIMED: "idempotency.reclaimed",
+  /** A completed — or definitively failed — record answered the request. */
+  IDEMPOTENCY_REPLAYED: "idempotency.replayed",
+  /** The same key was used for a different request. */
+  IDEMPOTENCY_CONFLICT: "idempotency.conflict",
+  /** A fresh pending claim answered the request with 409. */
+  IDEMPOTENCY_PENDING: "idempotency.pending",
+  /** The completion write matched the claim. */
+  IDEMPOTENCY_COMPLETED: "idempotency.completed",
+  /** The completion write matched nothing, so a second execution exists. */
+  IDEMPOTENCY_COMPLETION_LOST: "idempotency.completion_lost",
+  /** A failure was recorded against the claim. */
+  IDEMPOTENCY_FAILED: "idempotency.failed",
+  /** The claim store could not be reached, so nothing was claimed and nothing was spent. */
+  IDEMPOTENCY_STATE_UNAVAILABLE: "idempotency.state_unavailable",
+
   // ── Reference corpus ───────────────────────────────────────────
   /** The corpus is at its ceiling, so a new document was refused. */
   REFERENCE_CORPUS_FULL: "reference.corpus.full",

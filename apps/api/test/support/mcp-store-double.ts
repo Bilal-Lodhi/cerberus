@@ -62,6 +62,14 @@ import {
   type ToolHandler,
 } from "../../../../packages/mcp-mongodb/src/tools.js";
 import { MCP_TOOL_NAMES } from "../../../../packages/mcp-mongodb/src/tool-names.js";
+import {
+  isRetryableFailure,
+  type ClaimPaidOperationInput,
+  type CompletePaidOperationInput,
+  type FailPaidOperationInput,
+  type PaidOperationClaimOutcome,
+  type PaidOperationResult,
+} from "../../../../packages/mcp-mongodb/src/operation-claims.js";
 
 /** A stored document. Plain objects, no BSON. */
 export type StoredDocument = Record<string, unknown>;
@@ -700,6 +708,173 @@ export class McpStoreDouble {
 
   async deleteReferenceDocument(referenceId: string): Promise<boolean> {
     return this.referenceDocuments.delete(referenceId);
+  }
+
+  // ─── Paid-operation claims ──────────────────────────────────────────
+
+  /**
+   * The claim records, keyed on `routeFamily` + `keyHash` — which is exactly what the
+   * unique index in the real store enforces.
+   *
+   * ── What this models, and what it cannot ─────────────────────────────
+   *
+   * It models every *decision*: the first insert wins, a second insert for the same pair
+   * meets the existing record, a stale `pending` or a retryable `failed` record is
+   * reclaimed only when the fingerprint matches, and completion is conditional on the
+   * claim id.
+   *
+   * It **cannot** model the race itself. A single-threaded double never has two claims in
+   * flight at once, so "exactly one of two concurrent claimants wins" is not assertable
+   * here — it is asserted against a real MongoDB, where the interleaving is real, by
+   * `test/integration/multi-process-idempotency.test.ts`. A double that pretended to model
+   * the race would be the exact failure `docs/development/test-double-contract.md` records:
+   * a stand-in that agrees with the code and disagrees with the database.
+   */
+  readonly operationClaims = new Map<string, StoredDocument>();
+
+  /** The identity the unique index enforces. `\u0000` cannot appear in a key hash. */
+  private claimKey(routeFamily: string, keyHash: string): string {
+    return `${routeFamily}\u0000${keyHash}`;
+  }
+
+  async claimPaidOperation(
+    input: ClaimPaidOperationInput,
+  ): Promise<PaidOperationClaimOutcome> {
+    const key = this.claimKey(input.routeFamily, input.keyHash);
+    const now = new Date();
+    const claimId = randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + input.leaseMs);
+    const expiresAt = new Date(now.getTime() + input.ttlMs);
+
+    const existing = this.operationClaims.get(key);
+
+    if (!existing) {
+      this.operationClaims.set(key, {
+        routeFamily: input.routeFamily,
+        keyHash: input.keyHash,
+        fingerprint: input.fingerprint,
+        fingerprintVersion: input.fingerprintVersion,
+        status: "pending",
+        claimId,
+        createdAt: now,
+        updatedAt: now,
+        leaseExpiresAt,
+        expiresAt,
+      });
+      return { outcome: "claimed", claimId };
+    }
+
+    const storedLease = existing["leaseExpiresAt"];
+    // `<=`, mirroring the real store's `$lte`: a lease that expires at this instant has
+    // expired, and a zero-length lease is therefore reclaimable without sleeping.
+    const leaseExpired =
+      storedLease instanceof Date ? storedLease.getTime() <= now.getTime() : true;
+
+    // The same predicate the real store puts in its `findOneAndUpdate` filter: the
+    // fingerprint, the status, and the expiry. The fingerprint is in it deliberately — a
+    // stale record belonging to a *different* request must not be reclaimed by this one.
+    const reclaimable =
+      existing["fingerprint"] === input.fingerprint &&
+      input.fingerprintVersion === existing["fingerprintVersion"] &&
+      ((existing["status"] === "pending" && leaseExpired) ||
+        (existing["status"] === "failed" && existing["retryable"] === true));
+
+    if (reclaimable) {
+      this.operationClaims.set(key, {
+        ...existing,
+        status: "pending",
+        claimId,
+        updatedAt: now,
+        leaseExpiresAt,
+        expiresAt,
+        // The previous attempt's outcome is cleared, so a reclaimed record is never
+        // simultaneously pending and carrying a result.
+        result: undefined,
+        resultOmitted: undefined,
+        errorCategory: undefined,
+        retryable: undefined,
+      });
+      return { outcome: "reclaimed", claimId };
+    }
+
+    if (existing["fingerprint"] !== input.fingerprint) {
+      return { outcome: "conflict" };
+    }
+
+    if (existing["status"] === "completed" || existing["status"] === "failed") {
+      const result = existing["result"] as PaidOperationResult | undefined;
+      return {
+        outcome: "replay",
+        state: existing["status"],
+        result: result ?? null,
+        ...(typeof existing["resultOmitted"] === "string"
+          ? { resultOmitted: existing["resultOmitted"] }
+          : {}),
+      };
+    }
+
+    const remainingMs = leaseExpired ? 1_000 : (storedLease as Date).getTime() - now.getTime();
+    return {
+      outcome: "pending",
+      retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+    };
+  }
+
+  async completePaidOperation(input: CompletePaidOperationInput): Promise<boolean> {
+    const key = this.claimKey(input.routeFamily, input.keyHash);
+    const existing = this.operationClaims.get(key);
+
+    // Conditional on the claim id, exactly as the real store's `updateOne` filter is. A
+    // process whose lease expired must not be able to overwrite a record a reclaimer owns.
+    if (!existing || existing["claimId"] !== input.claimId || existing["status"] !== "pending") {
+      return false;
+    }
+
+    const now = new Date();
+    this.operationClaims.set(key, {
+      ...existing,
+      status: "completed",
+      updatedAt: now,
+      expiresAt: new Date(now.getTime() + input.ttlMs),
+      result: input.result,
+      ...(input.resultOmitted ? { resultOmitted: input.resultOmitted } : {}),
+      errorCategory: undefined,
+      retryable: undefined,
+    });
+    return true;
+  }
+
+  async failPaidOperation(input: FailPaidOperationInput): Promise<boolean> {
+    const retryable = isRetryableFailure(input.errorCategory);
+
+    // The real store's invariant, reproduced rather than corrected: a non-retryable failure
+    // describes an operation Cerberus saw the provider complete, so there is no
+    // re-execution to offer and the recorded failure *is* the answer to a same-key retry.
+    // A record saying "do not retry" with nothing to replay would leave the caller with no
+    // answer at all.
+    if (!retryable && !input.result) {
+      throw new Error(
+        `A non-retryable failure ('${input.errorCategory}') must carry the response to replay.`,
+      );
+    }
+
+    const key = this.claimKey(input.routeFamily, input.keyHash);
+    const existing = this.operationClaims.get(key);
+    if (!existing || existing["claimId"] !== input.claimId || existing["status"] !== "pending") {
+      return false;
+    }
+
+    const now = new Date();
+    this.operationClaims.set(key, {
+      ...existing,
+      status: "failed",
+      errorCategory: input.errorCategory,
+      retryable,
+      updatedAt: now,
+      expiresAt: new Date(now.getTime() + input.ttlMs),
+      ...(input.result ? { result: input.result } : {}),
+    });
+    return true;
   }
 
   async ping(): Promise<boolean> {

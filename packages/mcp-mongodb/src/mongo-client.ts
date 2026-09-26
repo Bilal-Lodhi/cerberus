@@ -17,6 +17,14 @@ import {
   DEFAULT_DATABASE_NAME,
 } from "./tool-names.js";
 import { ensureOperationClaimIndexes } from "./operation-claims.js";
+import {
+  isRetryableFailure,
+  type ClaimPaidOperationInput,
+  type CompletePaidOperationInput,
+  type FailPaidOperationInput,
+  type PaidOperationClaimOutcome,
+  type PaidOperationResult,
+} from "./operation-claims.js";
 import { runMigrations, type MigrationRunResult } from "./migrations.js";
 
 export interface MongoCollections {
@@ -1107,6 +1115,234 @@ export class MongoStore {
 
     await this.releaseReferenceDocumentSlot();
     return true;
+  }
+
+  // ─── Paid-Operation Claims ─────────────────────────────────────
+
+  /**
+   * Claims a paid operation, or reports what an existing claim says.
+   *
+   * ── The unique index is the whole of the mutual exclusion ─────────────
+   *
+   * Two API processes racing one `Idempotency-Key` both call this. Both attempt the insert;
+   * the unique index on `(routeFamily, keyHash)` lets exactly one through and raises
+   * `E11000` for the other. The loser does **not** call the provider — it reads the winner's
+   * record and answers from it. There is no lock, no lease service and no transaction, which
+   * is what makes this work on the documented single-node deployment.
+   *
+   * ── Reclaim, and why the filter is the predicate ──────────────────────
+   *
+   * A record may be reclaimed in exactly two cases: a `pending` claim whose lease has
+   * expired (the process that owned it is gone), or a `failed` claim marked retryable (the
+   * operation produced nothing to replay). The reclaim is one `findOneAndUpdate` whose
+   * **filter** carries the whole predicate — the fingerprint, the status and the expiry — so
+   * MongoDB applies it atomically to one document. Two processes reclaiming together both
+   * run it; one applies, and the loser's predicate no longer matches, so it falls through to
+   * the read path and sees a fresh `pending`. Exactly one reclaimer executes.
+   *
+   * The **fingerprint is in the filter**, which is what stops a stale or retryable record
+   * belonging to a *different* request from being reclaimed by this one. Without it, a key
+   * reused for another request would silently re-execute rather than being reported as a
+   * conflict.
+   *
+   * ── The clock ─────────────────────────────────────────────────────────
+   *
+   * The lease predicate is evaluated against this process's clock, so a replica whose clock
+   * is materially behind could reclaim a live lease. {@link deriveLeaseMs} keeps that window
+   * a fraction of a provider call rather than a fixed guess, and the limitation is recorded
+   * in `docs/development/paid-operation-state-model.md` §11 rather than hidden.
+   */
+  async claimPaidOperation(
+    input: ClaimPaidOperationInput,
+  ): Promise<PaidOperationClaimOutcome> {
+    const claims = this.collection("operationClaims");
+
+    // A bounded loop rather than a single pass. The only way to need a second pass is a
+    // record that expires between the failed insert and the read that follows it — a window
+    // of microseconds that requires the TTL monitor to fire at exactly that moment. It is
+    // handled because the alternative is answering from a record that no longer exists.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const now = new Date();
+      const claimId = randomUUID();
+      const leaseExpiresAt = new Date(now.getTime() + input.leaseMs);
+      const expiresAt = new Date(now.getTime() + input.ttlMs);
+
+      try {
+        await claims.insertOne({
+          routeFamily: input.routeFamily,
+          keyHash: input.keyHash,
+          fingerprint: input.fingerprint,
+          fingerprintVersion: input.fingerprintVersion,
+          status: "pending",
+          claimId,
+          createdAt: now,
+          updatedAt: now,
+          leaseExpiresAt,
+          expiresAt,
+        });
+        return { outcome: "claimed", claimId };
+      } catch (error) {
+        // Classified from the driver's error code, not by matching a message. Any other
+        // failure must surface: a store that is unreachable is not a store that says
+        // "someone else owns this".
+        if (!isDuplicateKeyError(error)) throw error;
+      }
+
+      const reclaimed = await claims.findOneAndUpdate(
+        {
+          routeFamily: input.routeFamily,
+          keyHash: input.keyHash,
+          fingerprint: input.fingerprint,
+          fingerprintVersion: input.fingerprintVersion,
+          $or: [
+            // `$lte`, not `$lt`: a lease that expires *at* this instant has expired. It also
+            // makes a zero-length lease deterministically reclaimable, which is what a test
+            // uses to reach the stale-claim path without sleeping.
+            { status: "pending", leaseExpiresAt: { $lte: now } },
+            { status: "failed", retryable: true },
+          ],
+        },
+        {
+          $set: {
+            status: "pending",
+            claimId,
+            updatedAt: now,
+            leaseExpiresAt,
+            expiresAt,
+          },
+          // The previous attempt's outcome is cleared, so a reclaim cannot leave a record
+          // that is simultaneously `pending` and carrying a completed result.
+          $unset: { result: "", resultOmitted: "", errorCategory: "", retryable: "" },
+        },
+        { returnDocument: "after" },
+      );
+
+      if (reclaimed) return { outcome: "reclaimed", claimId };
+
+      const existing = await claims.findOne({
+        routeFamily: input.routeFamily,
+        keyHash: input.keyHash,
+      });
+
+      // Expired or removed between the insert attempt and the read. Loop and try to claim
+      // it again; if that also loses, the final iteration falls through below.
+      if (!existing) continue;
+
+      if (existing["fingerprint"] !== input.fingerprint) {
+        return { outcome: "conflict" };
+      }
+
+      if (existing["status"] === "completed" || existing["status"] === "failed") {
+        return {
+          outcome: "replay",
+          state: existing["status"],
+          result: (existing["result"] as PaidOperationResult | undefined) ?? null,
+          ...(typeof existing["resultOmitted"] === "string"
+            ? { resultOmitted: existing["resultOmitted"] }
+            : {}),
+        };
+      }
+
+      // `pending` and still inside its lease: someone is working on it.
+      const leaseExpiresAtStored = existing["leaseExpiresAt"] as Date | undefined;
+      const remainingMs =
+        leaseExpiresAtStored instanceof Date
+          ? leaseExpiresAtStored.getTime() - now.getTime()
+          : input.leaseMs;
+      return {
+        outcome: "pending",
+        retryAfterSeconds: Math.max(1, Math.ceil(remainingMs / 1000)),
+      };
+    }
+
+    // Two passes and no determinable record. Conservatively report "in progress" rather
+    // than claiming ownership of something that may be live: the caller is told to retry,
+    // which cannot double-spend, whereas an optimistic `claimed` could.
+    return { outcome: "pending", retryAfterSeconds: 1 };
+  }
+
+  /**
+   * Records a completed operation and the response to replay.
+   *
+   * Conditional on `claimId`, so a process whose lease expired cannot overwrite a record
+   * that a reclaimer now owns. `matchedCount === 0` therefore means **a second execution
+   * exists**, which the caller must report rather than swallow — see the route's
+   * `idempotency.completion_lost` log line.
+   *
+   * `expiresAt` is refreshed here rather than left from the claim, so the retention window
+   * is measured from the end of the operation rather than from its start. A slow operation
+   * would otherwise have a shortened window.
+   */
+  async completePaidOperation(input: CompletePaidOperationInput): Promise<boolean> {
+    const now = new Date();
+    const result = await this.collection("operationClaims").updateOne(
+      {
+        routeFamily: input.routeFamily,
+        keyHash: input.keyHash,
+        claimId: input.claimId,
+        status: "pending",
+      },
+      {
+        $set: {
+          status: "completed",
+          updatedAt: now,
+          expiresAt: new Date(now.getTime() + input.ttlMs),
+          result: input.result,
+          ...(input.resultOmitted ? { resultOmitted: input.resultOmitted } : {}),
+        },
+        $unset: { errorCategory: "", retryable: "" },
+      },
+    );
+
+    return result.matchedCount === 1;
+  }
+
+  /**
+   * Records a failed operation.
+   *
+   * Two shapes, and the difference is the whole point of the failure model:
+   *
+   *   - **Retryable** (`provider-unavailable`, `provider-rejected`) — the provider produced
+   *     nothing usable, so a same-key retry **re-executes**. No result is stored, because a
+   *     reclaim discards it anyway.
+   *   - **Not retryable** (`result-persist-failed`, `result-too-large`) — Cerberus observed
+   *     the provider **succeed** and then failed to record it. The money is already spent, so
+   *     a same-key retry replays the recorded failure instead. That requires a result, and
+   *     this method refuses to write a non-retryable failure without one: a record saying
+   *     "do not retry" with nothing to replay would leave the caller with no answer at all.
+   */
+  async failPaidOperation(input: FailPaidOperationInput): Promise<boolean> {
+    const retryable = isRetryableFailure(input.errorCategory);
+
+    if (!retryable && !input.result) {
+      throw new Error(
+        `A non-retryable failure ('${input.errorCategory}') must carry the response to ` +
+          `replay. Without it a same-key retry has no answer: the operation cannot be ` +
+          `re-executed, because Cerberus observed the provider complete it.`,
+      );
+    }
+
+    const now = new Date();
+    const set: Document = {
+      status: "failed",
+      errorCategory: input.errorCategory,
+      retryable,
+      updatedAt: now,
+      expiresAt: new Date(now.getTime() + input.ttlMs),
+    };
+    if (input.result) set["result"] = input.result;
+
+    const result = await this.collection("operationClaims").updateOne(
+      {
+        routeFamily: input.routeFamily,
+        keyHash: input.keyHash,
+        claimId: input.claimId,
+        status: "pending",
+      },
+      { $set: set },
+    );
+
+    return result.matchedCount === 1;
   }
 
   // ─── Health Check ──────────────────────────────────────────────

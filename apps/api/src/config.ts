@@ -19,6 +19,11 @@ import {
   type LogFormat,
   type LogLevel,
 } from "./observability/logger.js";
+import {
+  DEFAULT_IDEMPOTENCY_TTL_SECONDS,
+  MAX_IDEMPOTENCY_TTL_SECONDS,
+  MIN_IDEMPOTENCY_TTL_SECONDS,
+} from "./services/idempotency-limits.js";
 
 /**
  * Default maximum accepted request body size, in bytes (8 MiB).
@@ -44,7 +49,29 @@ export interface AppConfig {
   cors: CorsConfig;
   security: SecurityConfig;
   rateLimit: RateLimitConfig;
+  idempotency: IdempotencyConfig;
   log: LogConfig;
+}
+
+/**
+ * Paid-operation idempotency.
+ *
+ * One setting, deliberately. The **lease** — how long a `pending` claim blocks a retry — is
+ * derived from `openai.requestTimeoutMs` rather than configured here, because a lease set
+ * shorter than a provider call would let a second process reclaim a *healthy* operation and
+ * spend again. Deriving it makes that state unrepresentable. See
+ * `docs/development/paid-operation-state-model.md` §3.10.
+ */
+export interface IdempotencyConfig {
+  /**
+   * How long a claim record is retained, in seconds.
+   *
+   * Bounded on both sides and validated fail-closed: too short and a caller's ordinary
+   * retry stops being recognised, too long and the collection outlives its usefulness. The
+   * bound is enforced by a MongoDB TTL index, which sweeps approximately rather than on a
+   * deadline, so nothing depends on exact wall-clock expiry.
+   */
+  ttlSeconds: number;
 }
 
 /**
@@ -225,6 +252,42 @@ function readPositiveInt(name: string, fallback: number, unit: string): number {
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new ConfigError(
       `${name} must be a positive integer ${unit} (got "${raw}"). ` +
+        `Leave it unset to use the default of ${fallback}.`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Reads a strictly positive whole number within an inclusive range.
+ *
+ * Fails closed in both directions, for the reason {@link readPositiveInt} fails closed at
+ * all: a retention window outside its documented bounds is not a preference, it is a
+ * misconfiguration that silently changes what a retry means. A value below the floor would
+ * expire claims before an ordinary retry arrives; a value above the ceiling would let a
+ * collection of caller-supplied keys outlive its usefulness.
+ */
+function readBoundedPositiveInt(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+  unit: string,
+): number {
+  const raw = readEnv(name);
+  if (!raw) return fallback;
+
+  if (!/^\d+$/.test(raw)) {
+    throw new ConfigError(
+      `${name} must be a whole number ${unit} (got "${raw}"). ` +
+        `Leave it unset to use the default of ${fallback}.`,
+    );
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new ConfigError(
+      `${name} must be a whole number ${unit} between ${min} and ${max} (got "${raw}"). ` +
         `Leave it unset to use the default of ${fallback}.`,
     );
   }
@@ -413,6 +476,19 @@ export function loadConfig(): AppConfig {
     format: readEnum("CERBERUS_LOG_FORMAT", LOG_FORMATS, "pretty"),
   };
 
+  const idempotency: IdempotencyConfig = {
+    // Bounded on both sides: too short and an ordinary retry stops being recognised, too
+    // long and a collection of caller-supplied keys outlives its usefulness. Enforced by a
+    // MongoDB TTL index, which sweeps approximately rather than on a deadline.
+    ttlSeconds: readBoundedPositiveInt(
+      "CERBERUS_IDEMPOTENCY_TTL_SECONDS",
+      DEFAULT_IDEMPOTENCY_TTL_SECONDS,
+      MIN_IDEMPOTENCY_TTL_SECONDS,
+      MAX_IDEMPOTENCY_TTL_SECONDS,
+      "of seconds",
+    ),
+  };
+
   // ── Startup banner: never prints secret material ──
   console.log(
     `[config] mode=${devMode ? "development" : "production"} ` +
@@ -426,6 +502,7 @@ export function loadConfig(): AppConfig {
       `sessionTtl=${security.sessionTTLSeconds}s ` +
       `maxBody=${security.maxRequestBodyBytes}B ` +
       `rateLimit=${rateLimit.enabled ? `on (ai=${rateLimit.aiRequestsPerMinute}/min)` : "off"} ` +
+      `idempotencyTtl=${idempotency.ttlSeconds}s ` +
       `log=${log.level}/${log.format}`,
   );
 
@@ -445,6 +522,7 @@ export function loadConfig(): AppConfig {
     cors,
     security,
     rateLimit,
+    idempotency,
     log,
   };
 }

@@ -13,6 +13,48 @@ deployment. This is an experimental research system and is not production ready.
 
 ### Added
 
+- **Durable idempotency for `POST /api/v1/scenarios`.** The route accepts an optional
+  `Idempotency-Key` header and, when one is supplied, claims the operation **before** the
+  first paid call. A retry with the same key and the same request replays the first response
+  and never reaches the provider; the same key with a different request is
+  `409 IDEMPOTENCY_CONFLICT` and spends nothing; a live claim answers
+  `409 IDEMPOTENCY_IN_PROGRESS` with `Retry-After`; an unreachable claim store answers
+  `503 IDEMPOTENCY_STATE_UNAVAILABLE` with **nothing claimed and nothing spent**. A caller
+  that sends no key gets exactly the behaviour it had before — the change is additive.
+  Verified with 19 cases through the real route, counting provider calls at the stub:
+  reordered bodies and equivalently-scaled severity mixes replay, a changed field conflicts,
+  a classifier rejection is recorded as a completed outcome so a retry replays it for free,
+  a provider outage is recorded retryably so a retry re-executes, and a replayed response
+  carries the **current** request's correlation id rather than the original's.
+- **`claim_paid_operation`, `complete_paid_operation` and `fail_paid_operation` — three MCP
+  tools and the store methods behind them.** The claim is a single-document atomic insert and
+  the unique index is the whole of the mutual exclusion. Reclaim is one `findOneAndUpdate`
+  whose **filter carries the whole predicate** — fingerprint, status and lease expiry — so two
+  processes reclaiming together produce exactly one reclaimer, and a stale record belonging to
+  a *different* request cannot be taken. Completion and failure are conditional on the claim
+  id, and a completion that matches nothing is reported as `completed: false` rather than
+  swallowed, because that is the one state in which a second execution exists. Eleven contract
+  cases run against the in-process double **and** a real MongoDB.
+- **`CERBERUS_IDEMPOTENCY_TTL_SECONDS`** — how long a claim record is retained, default 24
+  hours, bounded 60–604 800 seconds and validated fail-closed. There is deliberately **no
+  lease setting**: the lease is derived from `OPENAI_REQUEST_TIMEOUT_MS`
+  (`clamp(2 × timeout + 30 s, 60 s, 30 min)`), because a lease shorter than a provider call
+  would let a second process reclaim a *healthy* operation and spend again. Deriving it makes
+  that misconfiguration unrepresentable.
+- **`apps/api/src/services/paid-operation.ts` — the claim decision, in one place.** Both paid
+  routes must answer identically, so the decision is a discriminated result rather than a
+  boolean: `execute`, `replay`, `pending`, `conflict`, `unavailable`. A boolean would make
+  "someone else is working on it" and "your key was reused for a different request" both look
+  like `false`, and a route that mishandled either would spend. **Money is spent only on
+  `execute`.**
+- **Failure semantics that distinguish "we do not know whether it spent" from "we know it
+  spent".** A provider outage or a cancellation is recorded `retryable`, so a same-key retry
+  re-executes. A failure where Cerberus **observed the provider succeed** and could not record
+  the result is recorded non-retryable with the failure to replay, so a same-key retry answers
+  from the record instead of spending again — and a caller who wants a different outcome uses
+  a new key, a deliberate act rather than a silent second charge. The store refuses to write a
+  non-retryable failure with nothing to replay, because that would leave the caller with no
+  answer at all.
 - **`apps/api/src/services/idempotency-key.ts` — the `Idempotency-Key` contract.** Reads the
   header, validates it, and derives the only form of it that is ever stored. The charset is
   `\x21`–`\x7E` — printable ASCII with **no space** — because a key reaches a log line, a

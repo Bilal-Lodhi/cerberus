@@ -135,6 +135,37 @@ Security notes:
 | `CERBERUS_DEV_MODE` | boolean | `false` | No | `true`, `1`, `yes` or `on` enable it. |
 | `CERBERUS_RATE_LIMIT_ENABLED` | boolean | `true` | No | In-process token-bucket limiting. An unrecognised value is a startup error rather than a silent `false`, so a typo cannot turn the control off. |
 | `CERBERUS_AI_REQUESTS_PER_MINUTE` | positive integer | `10` | No | Ceiling on the AI-backed endpoints (`POST /api/v1/scenarios`, `POST /api/v1/auditor/query`). |
+| `CERBERUS_IDEMPOTENCY_TTL_SECONDS` | whole number of seconds, `60`–`604800` | `86400` (24 h) | No | How long a paid-operation claim record is retained, so a retry of `POST /api/v1/scenarios` or `POST /api/v1/auditor/query` with the same `Idempotency-Key` is recognised. Swept by a MongoDB TTL index, which deletes **approximately** rather than on a deadline. A value outside the bounds is a startup `ConfigError`: too short and an ordinary retry stops being recognised, too long and a collection of caller-supplied keys outlives its usefulness. |
+
+### Paid-operation idempotency
+
+`POST /api/v1/scenarios` and `POST /api/v1/auditor/query` are the two routes that spend
+money. Both accept an optional **`Idempotency-Key`** request header. A caller that sends one
+gets a durable guarantee: a retry with the same key and the same request replays the first
+response instead of paying for a second operation, and the same key with a *different*
+request is refused with `409 IDEMPOTENCY_CONFLICT`. A caller that sends no key gets exactly
+the behaviour it got before — the change is additive.
+
+`CERBERUS_IDEMPOTENCY_TTL_SECONDS` is the only setting, and it is deliberately the only one.
+The **lease** — how long an in-progress claim blocks a retry — is derived from
+`OPENAI_REQUEST_TIMEOUT_MS` rather than configured beside it:
+
+```
+lease = clamp(2 × OPENAI_REQUEST_TIMEOUT_MS + 30 s, 60 s, 30 min)
+```
+
+The doubling covers the fact that each paid route makes **two** provider calls back to back,
+each of which may take the full timeout. Deriving it makes one specific misconfiguration
+unrepresentable: a lease shorter than a provider call would let a second process reclaim a
+*healthy* operation and spend again. An operator who raises `OPENAI_REQUEST_TIMEOUT_MS` to
+ten minutes gets a twenty-minute lease without having to know this rule exists.
+
+The record stores `sha256(Idempotency-Key)`, never the key. It stores the response to
+replay, because neither route persists a result a replay could point at; it stores no
+prompt, no question and no provider message. See
+[development/paid-operation-state-model.md](development/paid-operation-state-model.md) for
+the full state machine, including the crash window that **cannot** be closed and the
+explicit statement that this is not an exactly-once guarantee.
 
 ### Rate limiting
 

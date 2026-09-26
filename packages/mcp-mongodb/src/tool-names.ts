@@ -27,6 +27,18 @@ export const MCP_TOOL_NAMES = {
   STORE_REFERENCE_DOCUMENT: "store_reference_document",
   LIST_REFERENCE_DOCUMENTS: "list_reference_documents",
   DELETE_REFERENCE_DOCUMENT: "delete_reference_document",
+  /**
+   * The three tools that make a paid operation retry-safe.
+   *
+   * `claim_paid_operation` is the mutual exclusion: it inserts a claim, or reports that one
+   * already exists — completed, failed, or in progress. `complete_paid_operation` records
+   * the response to replay, and `fail_paid_operation` records why the operation did not
+   * finish. All three are conditional on a `claimId`, so a process whose lease expired
+   * cannot overwrite a record a reclaimer now owns.
+   */
+  CLAIM_PAID_OPERATION: "claim_paid_operation",
+  COMPLETE_PAID_OPERATION: "complete_paid_operation",
+  FAIL_PAID_OPERATION: "fail_paid_operation",
   HEALTH_CHECK: "health_check",
 } as const;
 

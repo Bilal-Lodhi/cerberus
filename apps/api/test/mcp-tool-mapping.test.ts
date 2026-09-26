@@ -30,6 +30,28 @@ import {
   ToolArgumentError,
   createToolRegistry,
 } from "../../../packages/mcp-mongodb/src/tools.js";
+import {
+  DEFAULT_IDEMPOTENCY_TTL_SECONDS as MCP_DEFAULT_IDEMPOTENCY_TTL_SECONDS,
+  MAX_IDEMPOTENCY_TTL_SECONDS as MCP_MAX_IDEMPOTENCY_TTL_SECONDS,
+  MAX_STORED_RESULT_BYTES as MCP_MAX_STORED_RESULT_BYTES,
+  MIN_IDEMPOTENCY_TTL_SECONDS as MCP_MIN_IDEMPOTENCY_TTL_SECONDS,
+  OPERATION_FAILURE_CATEGORIES as MCP_OPERATION_FAILURE_CATEGORIES,
+  PAID_ROUTE_FAMILIES as MCP_PAID_ROUTE_FAMILIES,
+  RETRYABLE_FAILURE_CATEGORIES as MCP_RETRYABLE_FAILURE_CATEGORIES,
+  deriveLeaseMs as MCP_deriveLeaseMs,
+} from "../../../packages/mcp-mongodb/src/operation-claims.js";
+import {
+  DEFAULT_IDEMPOTENCY_TTL_SECONDS as API_DEFAULT_IDEMPOTENCY_TTL_SECONDS,
+  MAX_IDEMPOTENCY_TTL_SECONDS as API_MAX_IDEMPOTENCY_TTL_SECONDS,
+  MAX_STORED_RESULT_BYTES as API_MAX_STORED_RESULT_BYTES,
+  MIN_IDEMPOTENCY_TTL_SECONDS as API_MIN_IDEMPOTENCY_TTL_SECONDS,
+} from "../src/services/idempotency-limits.js";
+import {
+  OPERATION_FAILURE_CATEGORIES as API_OPERATION_FAILURE_CATEGORIES,
+  PAID_ROUTE_FAMILIES as API_PAID_ROUTE_FAMILIES,
+  RETRYABLE_FAILURE_CATEGORIES as API_RETRYABLE_FAILURE_CATEGORIES,
+  deriveLeaseMs as API_deriveLeaseMs,
+} from "../src/services/paid-operation.js";
 
 describe("tool name agreement", () => {
   test("the API and the MCP server declare an identical name set", () => {
@@ -188,6 +210,61 @@ describe("server identity", () => {
       API_REFERENCE_CORPUS_LIMIT_CODE,
       new ReferenceCorpusLimitToolError(1, 1).code,
     );
+  });
+});
+
+describe("paid-operation vocabulary agreement", () => {
+  // The API does not depend on the MCP package at runtime — the two services are
+  // independently deployable — so the claim vocabulary is declared on both sides. A copy
+  // that drifted is a real defect: the API would validate a family or a failure category
+  // the store rejects, and the route would answer 503 for a request it could have served.
+  // A copy with a test is a contract; a copy without one is a coincidence.
+
+  test("the route families agree", () => {
+    assert.deepEqual(
+      [...API_PAID_ROUTE_FAMILIES].sort(),
+      [...MCP_PAID_ROUTE_FAMILIES].sort(),
+    );
+  });
+
+  test("the failure categories agree", () => {
+    assert.deepEqual(
+      [...API_OPERATION_FAILURE_CATEGORIES].sort(),
+      [...MCP_OPERATION_FAILURE_CATEGORIES].sort(),
+    );
+  });
+
+  test("the retryable failure categories agree", () => {
+    // The most consequential list of the three: it decides whether a same-key retry spends
+    // again or replays a recorded failure. Two sides that disagreed would mean the store and
+    // the route telling a caller different things about whether money is about to be spent.
+    assert.deepEqual(
+      [...API_RETRYABLE_FAILURE_CATEGORIES].sort(),
+      [...MCP_RETRYABLE_FAILURE_CATEGORIES].sort(),
+    );
+  });
+
+  test("the retention bounds agree", () => {
+    assert.equal(API_DEFAULT_IDEMPOTENCY_TTL_SECONDS, MCP_DEFAULT_IDEMPOTENCY_TTL_SECONDS);
+    assert.equal(API_MIN_IDEMPOTENCY_TTL_SECONDS, MCP_MIN_IDEMPOTENCY_TTL_SECONDS);
+    assert.equal(API_MAX_IDEMPOTENCY_TTL_SECONDS, MCP_MAX_IDEMPOTENCY_TTL_SECONDS);
+  });
+
+  test("the stored-result ceiling agrees", () => {
+    assert.equal(API_MAX_STORED_RESULT_BYTES, MCP_MAX_STORED_RESULT_BYTES);
+  });
+
+  test("the lease derivation agrees", () => {
+    // The lease is derived on the API side and written into the record; the store only
+    // compares it. Both declare the derivation so a reader of either service finds it, and
+    // the two must produce the same number for the same provider timeout.
+    for (const timeout of [1_000, 5_000, 180_000, 600_000, 3_600_000]) {
+      assert.equal(
+        API_deriveLeaseMs(timeout),
+        MCP_deriveLeaseMs(timeout),
+        `the two lease derivations disagree at a provider timeout of ${timeout} ms`,
+      );
+    }
   });
 });
 
