@@ -304,7 +304,104 @@ implied: rate limiting remains a per-process backstop, and the two paid routes r
 non-idempotent, so a retry after a lost response re-spends. The condition that would change
 the latter is named in [api-errors.md](../api-errors.md) §11.1.
 
-## 9. Reporting a vulnerability
+## 9. Logging threat model
+
+Cerberus writes to `stdout` and `stderr` and nothing else. It does not ship logs,
+store them, rotate them or expire them. This section states what a log line may
+contain, what it must never contain, and what the guarantees are worth.
+
+The design is described in
+[development/operability-model.md](../development/operability-model.md) §5–§7, which
+also records, item by item, which parts are implemented.
+
+### 9.1 What is recorded
+
+One line per HTTP request, plus lifecycle and failure lines. The fields are
+enumerated in `operability-model.md` §5.2. In threat-model terms, the categories
+are:
+
+| Category | Recorded? | Note |
+| --- | --- | --- |
+| Request method and **route template** | yes | The template (`/api/v1/guardian/sessions/:sessionId`), not the concrete path, so a session id is not a route. |
+| Response status, latency, stable error code | yes | |
+| Request/correlation id | yes | Caller-supplied when it passes validation, otherwise generated. |
+| Dependency category and provider attempt count | yes | `mcp`, `provider`, `notification`; a count, not a payload. |
+| Session id | **only where it is already the request's subject** | A session id identifies a monitored person's session. It is not needed to answer "which request failed", and it is not logged for list, probe or corpus paths. |
+| Timestamps | yes | UTC, ISO-8601. |
+
+### 9.2 What is never recorded
+
+The full list is `operability-model.md` §7.1. The load-bearing entries:
+
+- the `Authorization` header, `X-API-Key` and `X-Session-Token` values, in any
+  spelling;
+- `CERBERUS_API_KEY`, `CERBERUS_API_KEY_PREVIOUS`, `CERBERUS_MCP_TOKEN`,
+  `OPENAI_API_KEY`, `SENDGRID_API_KEY`;
+- `SLACK_WEBHOOK_URL` — a webhook URL **is** a credential: anyone holding it can
+  post into the channel;
+- a `MONGODB_URI` that carries a userinfo section;
+- **full telemetry bodies** — keystroke characters, paste content, copied text,
+  code deltas, terminal snapshots;
+- `currentCode`, `terminalContent` and `codeSnapshot` — the reconstructed
+  workspace, the most sensitive artefact the system holds;
+- full provider prompts and responses, and any pasted or copied content;
+- raw exception objects, which can carry a request object, a connection string or an
+  authorization header.
+
+### 9.3 The redaction guarantee, and its limits
+
+Two independent layers, because neither is sufficient alone:
+
+1. **A known-secret registry.** Every configured secret is registered with the
+   logger at startup, and any log string containing one is emitted with it
+   replaced. This does not depend on recognising the shape of the surrounding text.
+2. **Pattern scrubbing.** A `mongodb://user:pass@host` URI has its userinfo removed,
+   a `Bearer <token>` has its token removed, and a provider-style key is replaced.
+   This catches a value that reached a log through a path nobody registered.
+
+The honest limits:
+
+- A secret **never present in configuration** cannot be caught by layer 1, and layer
+  2 only catches shapes it has been taught. A secret that arrives inside monitored
+  content — a password a monitored operator pastes — is content, and the answer to
+  it is §9.2's rule that content is not logged at all, not a redaction pattern.
+- Redaction applies to **what the logger is asked to emit**. It is not a filter on
+  the process's output, so code that writes directly to the stream with
+  `console.log` would bypass it. Keeping every call site on the logger is therefore
+  part of the guarantee, and the test suite asserts it rather than assuming it.
+
+### 9.4 Log injection
+
+A caller-supplied `X-Request-Id` is untrusted input. An identifier containing a
+newline forges a second log line, which is how a caller manufactures evidence that
+an operator then reads. The validation rules — maximum length, an allowed character
+set, and a rejection of control characters — exist for this reason, and a rejected
+identifier is **replaced rather than echoed**, so a caller cannot learn the rules
+from a response or smuggle a rejected value into the logs.
+
+### 9.5 The request id is not a security control
+
+It is a correlation label. It is **not** used for authentication, authorization,
+replay detection, idempotency or rate-limit keying, and no code may branch on it. A
+caller can choose it, so treating it as an identity would hand that identity to the
+caller.
+
+### 9.6 Retention, and what structured logs do not claim
+
+- Log retention, access control, shipping and the legal basis for keeping request
+  metadata belong entirely to the deployer. Cerberus ships no retention policy.
+- **Structured logs do not imply compliance.** A JSON log line is not an audit
+  trail, an immutable record, or evidence of control effectiveness. Nothing in this
+  repository should be quoted as one.
+- A log line records that a request happened, not what it contained. It is not a
+  substitute for the durable artefacts that do carry review value —
+  `micro_events`, `risk_assessments`, `monitored_sessions.terminalContent` — and it
+  is deliberately not a copy of them.
+- The deployer is the data controller for anything the logs do contain. Session ids
+  and employee ids are personal data in most jurisdictions, which is why the
+  recorded set is deliberately small.
+
+## 10. Reporting a vulnerability
 
 See [SECURITY.md](../../SECURITY.md) at the repository root for the private
 reporting process, scope, and expected response times. Do not open a public

@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **`docs/development/operability-model.md`** — every request path mapped against nine
+  operability columns (auth, request id, logs, dependencies, durable writes, response
+  status, stable error code, degraded behaviour, fields that must never be logged), the
+  design for structured logging and request correlation, the two-layer secret-redaction
+  guarantee, and the operational-diagnostics and degraded-state matrices. §10 records
+  which parts of the design are implemented, so the document cannot drift into describing
+  a design as behaviour.
+- **`docs/security/threat-model.md` §9 — the logging threat model.** What request metadata
+  is recorded, the never-recorded list, the redaction guarantee and its honest limits, log
+  injection and the incoming-request-id validation that prevents it, why the request id is
+  not a security control, and why structured logs are not a compliance claim. Retention
+  belongs to the deployer.
+
+### Fixed
+
+- **Documented the correlation-id defect rather than leaving it implicit.**
+  `docs/api-errors.md` §2 promises that an error body's `correlationId` matches the
+  `X-Correlation-Id` response header and the server log line. Four of the five route groups
+  mint their own `randomUUID()` per handler, so for `guardian`, `review`, `reference` and
+  `auditor` that promise is false: the value in the body appears in no header and in no log
+  line an operator can key on. Recorded in `operability-model.md` §4 with the file each
+  claim is checked against.
 
 ## [0.3.0] - 2026-09-26
 
