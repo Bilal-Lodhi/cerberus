@@ -226,7 +226,8 @@ void main() {
 
     expect(added, isFalse);
     expect(harness.corpus.error, contains('full'));
-    expect(harness.corpus.error, contains('200'));
+    // The console words this itself, from the code, rather than echoing API prose.
+    expect(harness.corpus.error, contains('Remove a document'));
   });
 
   test('an over-long label is rejected without sending a request', () async {
@@ -366,9 +367,11 @@ void main() {
       // unhandled exception would take the whole dashboard down with it.
       await harness.corpus.load();
 
+      // The console words this itself, from `REFERENCE_STORE_UNAVAILABLE`, rather than
+      // echoing the API's prose — which `docs/api-errors.md` does not treat as a contract.
       expect(
         harness.corpus.error,
-        'The reference corpus is currently unavailable.',
+        contains('reference corpus is unavailable'),
       );
       expect(harness.corpus.isLoading, isFalse);
       expect(harness.corpus.documents, isEmpty);
@@ -376,7 +379,7 @@ void main() {
   );
 
   test(
-    'a rejected add surfaces the server message and keeps the corpus',
+    'a rejected add shows the console text plus the server detail, and keeps the corpus',
     () async {
       final harness = build(
         handler: (_) async => json({
@@ -392,7 +395,11 @@ void main() {
       );
 
       expect(added, isFalse);
-      expect(harness.corpus.error, "Field 'label' must not be empty");
+      // The code supplies the lead sentence, so the console's framing does not depend on API
+      // prose; the server's message supplies the field, which is the actionable part.
+      // Neither concern is traded away — see `codesThatCarryDetail`.
+      expect(harness.corpus.error, contains('rejected'));
+      expect(harness.corpus.error, contains("Field 'label' must not be empty"));
       expect(harness.corpus.documents, isEmpty);
     },
   );

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'api_error_codes.dart';
 
 import '../models/health_model.dart';
 import '../models/scenario_model.dart';
@@ -106,7 +107,7 @@ class ApiService {
     }
     throw ApiException(
       response.statusCode,
-      (responseBody['error'] as String?) ?? 'Identity registration failed',
+      describeApiError(responseBody, fallback: 'Identity registration failed'),
     );
   }
 
@@ -251,7 +252,7 @@ class ApiService {
     }
     throw ApiException(
       response.statusCode,
-      (body['error'] as String?) ?? 'Micro-event ingestion failed',
+      describeApiError(body, fallback: 'Micro-event ingestion failed'),
     );
   }
 
@@ -283,7 +284,7 @@ class ApiService {
     }
     throw ApiException(
       response.statusCode,
-      (body['error'] as String?) ?? 'Guardrail deployment failed',
+      describeApiError(body, fallback: 'Guardrail deployment failed'),
     );
   }
 
@@ -606,7 +607,7 @@ class ApiService {
     if (response.statusCode != 200) {
       throw ApiException(
         response.statusCode,
-        (body['error'] as String?) ?? 'Reference corpus fetch failed',
+        describeApiError(body, fallback: 'Reference corpus fetch failed'),
       );
     }
 
@@ -644,7 +645,7 @@ class ApiService {
     }
     throw ApiException(
       response.statusCode,
-      (body['error'] as String?) ?? 'Reference document store failed',
+      describeApiError(body, fallback: 'Reference document store failed'),
     );
   }
 
@@ -657,15 +658,14 @@ class ApiService {
 
     if (response.statusCode == 200) return;
 
-    // A rejected delete can arrive with an empty or non-JSON body (a gateway
-    // error, for instance), so the server's message is used only when it parses.
+    // A rejected delete can arrive with an empty or non-JSON body (a gateway error, for
+    // instance), so the parsed body is used only when it parses. `describeApiError`
+    // prefers the stable `code` and falls back to the server's message, then to the
+    // generic text — so the console's wording no longer depends on the API's prose.
     String message = 'Reference document delete failed';
     try {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      final serverMessage = body['error'] as String?;
-      if (serverMessage != null && serverMessage.isNotEmpty) {
-        message = serverMessage;
-      }
+      message = describeApiError(body, fallback: message);
     } catch (_) {
       // Keep the generic message.
     }

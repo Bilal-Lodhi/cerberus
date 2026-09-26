@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The architecture-integrity checkpoint record** —
+  `docs/development/architecture-integrity-checkpoint.md`. The merged changes, the twelve
+  defects the cycle found and how each was found, the exit criteria with their state, the
+  verification at the checkpoint, and what remains accepted.
+- **`docs/release/v0.3.0-release-notes.md` and `docs/release/v0.3.0-checklist.md`**, both
+  marked **draft**. The notes state the theme, the observable changes, the upgrade path and —
+  plainly — what the release does not claim. The checklist records the gates to work through
+  when authorising a release, every box unchecked. **Nothing is published.**
+- **`docs/api-errors.md` §11: the retry and idempotency contract for every mutation route.**
+  Which are retry-safe, which are idempotent and on what key, which are non-idempotent, and
+  which carry duplicate-spend risk. It records why **no `Idempotency-Key` was added** to the
+  two paid routes — what a key would cost, what the evidence says, and the condition that
+  would change the decision — rather than leaving the gap implicit.
+- **The console words errors from the stable `code`, not the server's prose.**
+  `docs/api-errors.md` §1 states the rule: a code is a contract, a message is not. The
+  console used to show the server's `error` string verbatim, so its operator-facing wording
+  depended on API prose that the compatibility policy explicitly does not freeze.
+  `apps/console/lib/services/api_error_codes.dart` maps the 24 documented codes to the
+  console's own text and falls back to the server's message for a code it does not know.
+
+  For three codes — `INVALID_REFERENCE_DOCUMENT`, `INVALID_IDENTITY_FIELD` and
+  `MISSING_EVENT_ID` — the server's message carries detail the console cannot supply (which
+  field, which bound). For those it shows **its own lead sentence and then the server's
+  detail**, so the console's framing does not depend on API prose *and* the operator still
+  gets the specific field. Neither concern is traded away.
+
 - **`npm run check:docs` — a documentation link and anchor checker, gated in CI.** Every
   relative link in every tracked `*.md` is resolved against the filesystem, and every
   in-repo `#anchor` against the target file's headings. `docs/` is a deliverable, and a
