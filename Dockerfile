@@ -42,6 +42,32 @@ RUN test -f packages/mcp-mongodb/dist/http-adapter.js || (echo "ERROR: packages/
 # ═══════════════════════════════════════════════════════════════════════════════
 FROM node:22-alpine AS runtime
 
+# ── Build provenance ──────────────────────────────────────────────────────────
+#
+# The `v0.3.0` verification ran against a **stale image**: nothing compared what the
+# image was built from against the source it was supposed to be built from, so an
+# image from an earlier commit was verified as though it were the release.
+#
+# These are labels rather than an API response on purpose. `/health` is public and
+# unauthenticated, and publishing the exact commit a deployment runs tells an attacker
+# which build to look up — so the provenance lives in the image's own metadata, where
+# `docker inspect` reads it and no client can.
+#
+# Nothing here may carry a secret: these two values are a version and a commit SHA, and
+# `scripts/release/verify-image.mjs` asserts that they are exactly that.
+ARG CERBERUS_VERSION=unknown
+ARG CERBERUS_COMMIT=unknown
+
+LABEL org.opencontainers.image.title="cerberus" \
+      org.opencontainers.image.version="${CERBERUS_VERSION}" \
+      org.opencontainers.image.revision="${CERBERUS_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/Bilal-Lodhi/cerberus"
+
+# Also as environment variables, so a runtime can be asked what it is without Docker:
+# `docker exec <container> printenv CERBERUS_COMMIT`.
+ENV CERBERUS_BUILD_VERSION=${CERBERUS_VERSION}
+ENV CERBERUS_BUILD_COMMIT=${CERBERUS_COMMIT}
+
 RUN apk add --no-cache dumb-init curl && rm -rf /var/cache/apk/*
 
 # Run as a non-root user.

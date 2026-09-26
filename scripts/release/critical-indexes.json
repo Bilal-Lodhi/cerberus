@@ -1,0 +1,51 @@
+{
+  "//": [
+    "The uniqueness guarantees a restore must preserve.",
+    "",
+    "A count comparison cannot see these. `mongorestore` exits 0 whether or not it restored",
+    "the indexes, and a dump taken with `--noIndexRestore`, or one restored that way, comes",
+    "back with every document and none of the constraints — so two rows sharing a",
+    "`riskAssessmentId` would be accepted by a database that is supposed to forbid it. The",
+    "restore script verifies this list after every restore, and the backup/restore drill",
+    "creates exactly this list so the verification has something to find.",
+    "",
+    "These are the unique indexes `MongoStore.ensureIndexes()` creates. That is asserted in",
+    "both directions against a real MongoDB by",
+    "`apps/api/test/release/critical-indexes.test.ts`: every entry here must exist on the",
+    "real store, and the store must not create a unique index this list omits. Without the",
+    "second direction a new uniqueness guarantee could be added and never verified after a",
+    "restore."
+  ],
+  "indexes": [
+    {
+      "collection": "monitored_sessions",
+      "key": { "sessionId": 1 },
+      "why": "one document per session id; a duplicate would split a session's history in two"
+    },
+    {
+      "collection": "micro_events",
+      "key": { "sessionId": 1, "eventId": 1 },
+      "why": "the durable telemetry idempotency key; without it a replayed batch is stored twice"
+    },
+    {
+      "collection": "risk_assessments",
+      "key": { "riskAssessmentId": 1 },
+      "why": "one row per incident; without it a re-analysis double-counts in review"
+    },
+    {
+      "collection": "reference_documents",
+      "key": { "referenceId": 1 },
+      "why": "an upsert target; without it a re-submitted document is duplicated and double-counts in similarity scoring"
+    },
+    {
+      "collection": "threat_scenarios",
+      "key": { "metadata.matrixId": 1 },
+      "why": "one document per authored matrix"
+    },
+    {
+      "collection": "schema_migrations",
+      "key": { "migrationId": 1 },
+      "why": "what stops two runners recording the same migration twice; without it a restored database could apply a migration twice"
+    }
+  ]
+}
