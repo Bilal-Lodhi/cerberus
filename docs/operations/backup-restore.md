@@ -128,6 +128,35 @@ MCP adapter first (it owns migrations and indexes), then the API.
 Each of those is a way to lose data with one typo, so each is a stop rather than a
 prompt.
 
+### The uniqueness guarantees, which a count cannot see
+
+A count comparison is blind to indexes, and `mongorestore` exits 0 whether or not it
+restored them. A dump taken with `--noIndexRestore` — or restored that way — comes back
+with every document and none of the constraints, so two rows sharing a
+`riskAssessmentId` would be accepted by a database that is supposed to forbid it, and
+nothing would say so until the next write that should have been rejected.
+
+So the restore verifies the critical indexes too:
+
+```
+[restore] verifying the critical indexes
+  unique indexes found: micro_events:sessionId+eventId, monitored_sessions:sessionId, …
+  ok   monitored_sessions:sessionId
+  ok   micro_events:sessionId+eventId
+  ok   risk_assessments:riskAssessmentId
+  ok   reference_documents:referenceId
+  ok   threat_scenarios:metadata.matrixId
+  ok   schema_migrations:migrationId
+
+[restore] OK - cerberus_restored matches the backup, with its uniqueness guarantees
+```
+
+The list lives in `scripts/release/critical-indexes.json`, and
+`apps/api/test/release/critical-indexes.test.ts` asserts it against a real store in
+**both** directions: every entry must be an index the product creates, and the product
+must not create a unique index the list omits. Without the second direction a new
+uniqueness guarantee could be added and never verified after a restore.
+
 ## Why the verification step is the important one
 
 `mongorestore` **exits 0 when it restores nothing.** Point it at the wrong
@@ -146,6 +175,9 @@ ok   monitored_sessions       expected 2        got 2
 Restore verification failed for: micro_events. The restore is NOT usable.
 exit code: 1
 ```
+
+The **drill** below does exactly that tampering, as one of its checks, so the property is
+verified on demand rather than only when someone happens to try it.
 
 That is the check that makes this procedure worth having.
 
@@ -185,6 +217,8 @@ the code would be older than the data. See
 Run this before you need it. It is the only way to know the procedure works in your
 environment.
 
+**By hand**, against your own deployment:
+
 ```powershell
 # 1. Back up
 ./scripts/backup-cerberus.ps1 -Container cerberus-mongo
@@ -202,6 +236,31 @@ docker exec cerberus-mongo mongosh cerberus_restore --quiet --eval 'db.dropDatab
 
 Step 3 matters: counts can match while the content is wrong, and reading one
 document back is what rules that out.
+
+**As one command**, with no dependence on your own deployment:
+
+```bash
+npm run verify:backup
+```
+
+`scripts/release/backup-restore-drill.mjs` creates its own disposable `mongo:7` container,
+seeds a documented fixture — **one empty collection**, five non-empty ones, the critical
+indexes, and a migration ledger — and then walks the whole procedure, judging every step on
+the scripts' own output rather than on an exit code:
+
+| Check | Why it is judged on the output |
+| --- | --- |
+| The backup succeeds and writes a manifest | A missing manifest is only visible in what it printed |
+| The manifest counts every collection, including the empty one | The 0-byte case above |
+| The manifest carries no connection string | A manifest sits next to the data it describes |
+| The restore succeeds and verifies counts **and** indexes | `mongorestore` exits 0 when it restores nothing |
+| The restored database holds the documents | Counts can match while the content is wrong |
+| Restoring over the source is refused | Judged on the message, not just a non-zero exit |
+| Restoring over a non-empty target without `-Drop` is refused | Same |
+| A manifest whose counts disagree with the dump is refused | The verification is what makes a restore *verifiable* rather than merely *successful* |
+
+It is also a step in `npm run verify:release`. It removes its container whatever happened;
+`--keep` leaves it for inspection.
 
 ## Why a 0-byte collection file is not a failure
 

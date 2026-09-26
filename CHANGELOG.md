@@ -22,6 +22,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`npm run verify:backup` — a repeatable backup/restore drill.** It creates its own
+  disposable `mongo:7` container, seeds a documented fixture (one **empty** collection, five
+  non-empty ones, the critical indexes, a migration ledger), and walks the whole procedure:
+  backup, restore into a scratch database, count verification, index verification, a tampered
+  manifest, a non-empty target, and the same-source refusal. Every step is judged on the
+  scripts' own output rather than on an exit code, because `mongorestore` exits **0** when it
+  restores nothing.
+- **Critical-index verification in the restore script.** A count comparison is blind to
+  indexes, and `mongorestore` exits 0 whether or not it restored them — so a restore could
+  come back with every document and none of the constraints, accepting duplicates the product
+  forbids. The list lives in `scripts/release/critical-indexes.json`, and
+  `apps/api/test/release/critical-indexes.test.ts` asserts it against a real store in **both**
+  directions: every entry must exist, and the store must not create a unique index the list
+  omits. The second direction immediately found one — `schema_migrations.migrationId`.
+- **`npm run verify:image` — the stale-image defence.** The `v0.3.0` verification reused an
+  **old container image**, because nothing compared what the image was built from against the
+  source it was supposed to be built from. The image is now built `--no-cache`, tagged
+  uniquely per run, and given its version and commit as build arguments that the `Dockerfile`
+  bakes into labels and environment; the check compares those with the working tree **and**
+  with the running container's `/health`, and asserts the metadata carries no secret. The
+  provenance is in image labels rather than in `/health` on purpose: `/health` is public, and
+  publishing the exact commit a deployment runs tells an attacker which build to look up.
 - **The upgrade gate: a published release's database, migrated by this build.**
   `npm run test:migrations` seeds a database in the shape `v0.2.0` or `v0.3.0` left it and
   walks the documented upgrade against a **real MongoDB** — dry run, migrate, validate,

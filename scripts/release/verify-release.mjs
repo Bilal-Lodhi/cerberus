@@ -44,6 +44,15 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
 
+/** True when a Docker daemon answers. Both container steps create their own resources. */
+function hasDocker() {
+  const result = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], {
+    encoding: "utf8",
+    shell: process.platform === "win32",
+  });
+  return result.status === 0 && (result.stdout ?? "").trim().length > 0;
+}
+
 /**
  * The plan.
  *
@@ -112,6 +121,29 @@ const STEPS = [
     name: "secret-guards",
     script: "verify:secrets",
     why: "no tracked credential file, no retired identity, and no publishing command here",
+  },
+  {
+    name: "backup-restore-drill",
+    script: "verify:backup",
+    why:
+      "a disposable database is backed up, restored into a scratch database, and verified — " +
+      "counts, uniqueness guarantees, and every refusal",
+    gate: () =>
+      hasDocker()
+        ? null
+        : "no Docker daemon, and the drill creates its own disposable database rather than " +
+          "depending on yours",
+  },
+  {
+    name: "stale-image-defence",
+    script: "verify:image",
+    why:
+      "the image is built --no-cache from this tree, and its recorded version and commit are " +
+      "compared with the source and with the running container",
+    gate: () =>
+      hasDocker()
+        ? null
+        : "no Docker daemon, and this check builds and runs the image it verifies",
   },
   {
     name: "console-format",

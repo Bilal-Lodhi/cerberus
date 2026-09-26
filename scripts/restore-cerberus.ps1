@@ -170,7 +170,80 @@ if ($failures.Count -gt 0) {
     throw "Restore verification failed for: $($failures -join ', '). The restore is NOT usable."
 }
 
+# ── Verify the uniqueness guarantees the counts cannot see ───────────────────
+#
+# A count comparison is blind to indexes. `mongorestore` exits 0 whether or not it restored
+# them, and a dump taken with `--noIndexRestore` — or restored that way — comes back with
+# every document and none of the constraints. Two rows sharing a `riskAssessmentId` would
+# then be accepted by a database that is supposed to forbid it, and nothing would say so
+# until the next write that should have been rejected.
+#
+# The list lives in `scripts/release/critical-indexes.json`, shared with the
+# backup/restore drill and asserted against the real store by
+# `apps/api/test/release/critical-indexes.test.ts` — so it cannot name an index the product
+# does not create, and the product cannot add a unique index the list omits.
 Write-Host ''
-Write-Host "[restore] OK - $TargetDatabase matches the backup"
+Write-Host '[restore] verifying the critical indexes'
+
+$criticalPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'release/critical-indexes.json'
+if (-not (Test-Path $criticalPath)) {
+    throw "The critical-index list is missing at '$criticalPath', so a restore cannot be checked for its uniqueness guarantees. Restore it, or fix the path."
+}
+$critical = (Get-Content $criticalPath -Raw | ConvertFrom-Json).indexes
+
+# A here-string rather than a one-line nested-arrow expression: the one-liner had an
+# unbalanced parenthesis, which mongosh reported as `Unexpected token, expected ","` and
+# which the verification then read as "no unique indexes at all" — a false failure on a
+# perfectly good restore. Readable and balanced beats compact.
+$indexScript = @'
+db.getCollectionNames().sort().forEach(function (collection) {
+  db.getCollection(collection).getIndexes().forEach(function (index) {
+    if (index.unique) print(collection, Object.keys(index.key).join("+"));
+  });
+});
+'@
+
+
+function Get-UniqueIndexes([string]$database) {
+    $raw = if ($localTools) {
+        & mongosh "$Uri/$database" --quiet --eval $indexScript
+    }
+    else {
+        docker exec $Container mongosh "$database" --quiet --eval $indexScript
+    }
+    # An array, not a HashSet: PowerShell **unrolls** a collection returned from a
+    # function, so a HashSet comes back as an array of its elements and a `.Contains()`
+    # call on it fails. `-contains` works on a scalar or an array, so `@(...)` around the
+    # call makes this correct however many indexes there are.
+    $result = @()
+    foreach ($line in @($raw)) {
+        $parts = "$line".Trim() -split '\s+'
+        if ($parts.Count -eq 2) { $result += "$($parts[0]):$($parts[1])" }
+    }
+    return $result
+}
+
+$restoredIndexes = @(Get-UniqueIndexes $TargetDatabase)
+$missingIndexes = @()
+
+Write-Host "  unique indexes found: $(if ($restoredIndexes.Count -gt 0) { $restoredIndexes -join ', ' } else { 'none' })"
+
+foreach ($entry in $critical) {
+    # The key pattern is compared as the driver reports it: field names in order, joined
+    # with '+'. `{ sessionId: 1, eventId: 1 }` becomes `sessionId+eventId`.
+    $keys = ($entry.key.PSObject.Properties.Name) -join '+'
+    $needle = "$($entry.collection):$keys"
+    $present = $restoredIndexes -contains $needle
+    $mark = if ($present) { 'ok  ' } else { 'FAIL' }
+    Write-Host ("  {0} {1}" -f $mark, $needle)
+    if (-not $present) { $missingIndexes += $needle }
+}
+
+if ($missingIndexes.Count -gt 0) {
+    throw "The restore is missing these unique indexes: $($missingIndexes -join ', '). Every document came back, but the constraints that keep them unique did not — the restored database would accept duplicates the product forbids. Do not use this restore."
+}
+
+Write-Host ''
+Write-Host "[restore] OK - $TargetDatabase matches the backup, with its uniqueness guarantees"
 Write-Host "[restore] drop the scratch database when the drill is done:"
 Write-Host "          mongosh `"$Uri`" --eval 'db.getSiblingDB(`"$TargetDatabase`").dropDatabase()'"

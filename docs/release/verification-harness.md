@@ -45,6 +45,8 @@ command.
 | `version-census` | Every version declaration agrees with `package.json` | `npm run verify:version` |
 | `config-census` | Every environment variable read is documented, and every one documented is read | `npm run verify:config` |
 | `secret-guards` | No tracked credential file, no retired deployment identity, and no publishing command in this directory | `npm run verify:secrets` |
+| `backup-restore-drill` | A disposable database is backed up, restored into a scratch database, and verified — counts, uniqueness guarantees, and every refusal | `npm run verify:backup` |
+| `stale-image-defence` | The image is built `--no-cache` from this tree, and its recorded version and commit match the source and the running container | `npm run verify:image` |
 | `console-format` | The Flutter sources are formatted, which `flutter analyze` does not check | `npm run console:format` |
 | `console-analyze` | The Flutter console analyses clean | `npm run console:analyze` |
 | `console-test` | The Flutter widget and release-claim tests pass | `npm run console:test` |
@@ -120,6 +122,29 @@ A name that is legitimately read outside the scanned trees (the Flutter console'
 `--dart-define` values, the test suite's own database URI) is listed in `READ_ELSEWHERE` in
 the script **with its reason**, so the exemption is a claim rather than a silent gap. An
 entry that becomes unnecessary fails the check too.
+
+## The stale-image defence
+
+The `v0.3.0` verification reused an **old container image**. Nothing compared what the image
+was built from against the source it was supposed to be built from, so an image from an
+earlier commit was verified as though it were the release — and every check passed, because
+every check was about the old image.
+
+`npm run verify:image` closes that:
+
+1. builds the image with **`--no-cache`**, so no layer can come from an earlier source tree;
+2. tags it uniquely per run, so nothing can pick up a previous tag by accident;
+3. passes the working tree's version and commit in as build arguments, which the `Dockerfile`
+   bakes into the image's **labels** and environment;
+4. reads the labels back from the built image and compares them with the working tree;
+5. starts the container and asks its `/health` what version it reports, so the **running
+   process** is checked rather than only its metadata;
+6. asserts the metadata carries nothing but a version and a commit.
+
+The provenance lives in image labels rather than in the `/health` response on purpose:
+`/health` is public and unauthenticated, and publishing the exact commit a deployment runs
+tells an attacker which build to look up. An operator with `docker inspect`, or with
+`docker exec <container> printenv CERBERUS_BUILD_COMMIT`, can still read it.
 
 ## The upgrade gate
 
