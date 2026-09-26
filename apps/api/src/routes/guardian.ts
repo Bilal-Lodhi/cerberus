@@ -79,7 +79,9 @@ import {
   type DurableSessionView,
 } from "../services/session-read-model.js";
 import {
+  reconcileLiveDetail,
   reconcileLiveList,
+  type LocalLiveDetail,
   type LocalLiveSession,
 } from "../services/session-reconciliation.js";
 import {
@@ -915,77 +917,102 @@ export function createGuardianRouter(
    * answer reports those as empty and `null` rather than inventing them, and the two
    * flags say so. The numeric risk scores **are** durable and are reported.
    */
+  /**
+   * This process's view of one session's detail, as the reconciler's input.
+   *
+   * `null` when this process holds nothing for the session. The two maps contribute
+   * different things: `sessionStore` holds the counters, the reconstructed workspace and the
+   * latest payload; the registry holds identity, the deployment instant and the status the
+   * transition boundary last wrote.
+   */
+  function localLiveDetail(
+    sessionId: string,
+    session: SessionState | undefined,
+    active: ActiveSession | undefined,
+  ): LocalLiveDetail | null {
+    if (!session && !active) return null;
+
+    return {
+      sessionId,
+      employeeId: session?.employeeId || active?.employeeId || "unknown",
+      matrixId: session?.auditId || active?.matrixId || "",
+      targetSystem: active?.targetSystem ?? "",
+      // The registry, when it holds the session, is what the transition boundary last wrote
+      // from the durable outcome.
+      status: active?.status ?? session?.status ?? "active",
+      deployedAt: active?.deployedAt ?? session?.events[0]?.timestamp ?? toISOStringLocal(),
+      lastActivityAt:
+        session?.lastActivityAt ?? active?.lastActivityAt ?? active?.deployedAt,
+      // The score this process holds. The reconciler takes the larger of this and the durable
+      // peak, so a payload this process has produced but not yet persisted is not discarded.
+      riskIndex: session?.lastRiskPayload?.overallRiskScore ?? active?.riskIndex ?? 0,
+      eventCount: session ? Math.max(session.events.length, session.eventCount) : 0,
+      pasteCount: session?.pasteCount ?? 0,
+      tabSwitchCount: session?.tabSwitchCount ?? 0,
+      focusLossCount: session?.focusLossCount ?? 0,
+      copyAttemptCount: session?.copyAttemptCount ?? 0,
+      currentCode: session?.currentCode ?? "",
+      lastRiskPayload: session?.lastRiskPayload ?? null,
+      // The reconstructed workspace and the latest payload exist only in the process that
+      // ingested the events. A registry-only session has neither.
+      ephemeralStateAvailable: session !== undefined,
+    };
+  }
+
   guardianRouter.get("/sessions/:sessionId", async (c) => {
     const sessionId = c.req.param("sessionId");
     const requestId = currentRequestId();
     const session = sessionStore.get(sessionId);
     const activeSession = activeSessions.get(sessionId);
 
-    // Derived, never persisted. `status` stays the historical durable value —
-    // an auto-locked session reads as `locked` with `liveness: "expired"`,
-    // which says "this lock happened" without claiming it is still live.
-    const liveness = sessionLiveness(sessionId);
-
-    if (session) {
-      return c.json({
-        success: true,
-        session: {
-          sessionId: session.sessionId,
-          employeeId: session.employeeId,
-          auditId: session.auditId,
-          matrixId: activeSession?.matrixId ?? session.auditId,
-          // The hydrated lifetime total, not just what this process has seen.
-          eventCount: Math.max(session.events.length, session.eventCount),
-          pasteCount: session.pasteCount,
-          tabSwitchCount: session.tabSwitchCount,
-          focusLossCount: session.focusLossCount,
-          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-          // console or script reading the old name keeps working.
-          fullscreenExitCount: session.focusLossCount,
-          copyAttemptCount: session.copyAttemptCount,
-          currentCodeLength: session.currentCode.length,
-          currentCode: session.currentCode,
-          lastRiskPayload: session.lastRiskPayload,
-          riskIndex: session.lastRiskPayload?.overallRiskScore ?? 0,
-          overallRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
-          peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
-          startedAt: activeSession?.deployedAt ?? "",
-          deployedAt: activeSession?.deployedAt ?? "",
-          status: activeSession?.status ?? session.status ?? "active",
-          liveness,
-          lastActivityAt: session.lastActivityAt ?? activeSession?.deployedAt ?? "",
-          targetSystem: activeSession?.targetSystem ?? "",
-          // This process ingested events for the session, so it holds the workspace and
-          // the latest payload. That is what `ephemeralStateAvailable` means.
-          source: "memory" as const,
-          ephemeralStateAvailable: true,
-        },
-      });
-    }
-
-    // No in-memory session state. The durable document is the authority for every
-    // durable field; the registry contributes only what the document cannot.
+    // The durable document is read on **every** detail request, including when this process
+    // holds the session. Gating that read on empty memory is what let a session another
+    // process had terminated keep reading as `active` here while the review surfaces, which
+    // read MongoDB, said `terminated` about the same session.
+    //
+    // One read, for the document only — `eventsLimit: 0, includeAssessments: false` — so the
+    // detail costs one session document rather than a session's history.
     const durable = await readDurableSessionDocument(sessionId, requestId);
 
-    if (durable.kind === "unavailable") {
-      if (activeSession) {
-        // The registry can still answer for a session this process deployed, and
-        // answering is better than refusing: it is the process's own record.
+    // Durable wins for every durable-authoritative field; this process answers for the
+    // workspace and the latest payload, and says so through `ephemeralStateAvailable`.
+    const reconciliation = reconcileLiveDetail(
+      localLiveDetail(sessionId, session, activeSession),
+      durable,
+      { ttlSeconds, nowMs: clock.now(), alertThreshold: AUTO_LOCK_THRESHOLD },
+    );
+
+    if (reconciliation) {
+      // One-directional: a read may correct the cache, never the document.
+      if (reconciliation.repair) {
+        transitionCache.reconcileStatus(
+          reconciliation.repair.sessionId,
+          reconciliation.repair.status,
+          reconciliation.repair.durable,
+        );
+      }
+
+      if (durable.kind === "unavailable") {
+        // This process's own record is served rather than refusing — answering is better
+        // than a 503 for a session the process itself deployed or ingested — but the status
+        // is labelled `process-local` rather than presented as durable truth.
         logger.warn(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
           sessionId,
-          source: "registry",
+          source: reconciliation.session.source,
           dependency: "mcp",
           classification: "store-unavailable",
-        });
-        return c.json({
-          success: true,
-          session: registrySessionView(sessionId, activeSession, liveness),
+          claimed: "process-local status, labelled",
         });
       }
 
-      // Nothing can be claimed about whether the session exists, so nothing is. A
-      // `404` here would assert something the process cannot verify — which is the
-      // wrong answer this route used to give for an unreachable store.
+      return c.json({ success: true, session: reconciliation.session });
+    }
+
+    // Neither source holds the session, so which answer is right depends on **why**.
+    if (durable.kind === "unavailable") {
+      // Nothing can be claimed about whether the session exists, so nothing is. A `404` here
+      // would assert something the process cannot verify — the wrong answer this route used
+      // to give for an unreachable store.
       logger.error(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
         sessionId,
         dependency: "mcp",
@@ -1006,79 +1033,17 @@ export function createGuardianRouter(
       );
     }
 
-    if (durable.kind === "absent") {
-      if (activeSession) {
-        // Deployed by this process, with no durable document: `create_session` did not
-        // reach the store, which the deploy response already reported as `local-only`.
-        return c.json({
-          success: true,
-          session: registrySessionView(sessionId, activeSession, liveness),
-        });
-      }
-
-      return c.json(
-        {
-          success: false,
-          error: `Session '${sessionId}' not found`,
-          // One condition, one code, across every surface that can report it.
-          code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
-          sessionId,
-          correlationId: requestId,
-        },
-        404,
-      );
-    }
-
-    const view = durable.view;
-    logger.debug(LOG_EVENTS.GUARDIAN_DETAIL_FALLBACK, {
-      sessionId,
-      source: "durable",
-      status: view.status,
-    });
-
-    return c.json({
-      success: true,
-      session: {
-        sessionId: view.sessionId,
-        employeeId: view.employeeId,
-        auditId: view.matrixId,
-        matrixId: view.matrixId,
-        eventCount: view.eventCount,
-        pasteCount: view.pasteCount,
-        tabSwitchCount: view.tabSwitchCount,
-        focusLossCount: view.focusLossCount,
-        fullscreenExitCount: view.focusLossCount,
-        copyAttemptCount: view.copyAttemptCount,
-        // Not reconstructable here, and reported as absent rather than as zero-valued
-        // facts: this process holds no workspace for the session. The review surface
-        // (`GET /api/v1/sessions/:id`) is where the durable workspace is served.
-        currentCodeLength: 0,
-        currentCode: "",
-        lastRiskPayload: null,
-        // These three *are* durable: the store maintains `peakRiskScore` with `$max` on
-        // every ingest, so it survives a restart. The scores are reported; the payload
-        // they came from is not reconstructed.
-        riskIndex: view.riskScore,
-        overallRiskScore: view.riskScore,
-        peakRiskScore: view.riskScore,
-        startedAt: view.deployedAt,
-        deployedAt: view.deployedAt,
-        status: view.status,
-        // Derived from the **durable** activity instant, not from the empty in-memory
-        // maps. Computing it the other way reported `active` for a session whose durable
-        // window had closed, which is the same class of restart-dependent answer this
-        // fallback exists to remove.
-        liveness: resolveLiveness(
-          { lastActivityAt: null, persistedUpdatedAt: view.lastActivityAt },
-          ttlSeconds,
-          clock,
-        ),
-        lastActivityAt: view.lastActivityAt,
-        targetSystem: view.targetSystem,
-        source: "durable" as const,
-        ephemeralStateAvailable: false,
+    return c.json(
+      {
+        success: false,
+        error: `Session '${sessionId}' not found`,
+        // One condition, one code, across every surface that can report it.
+        code: SESSION_TRANSITION_CODES.SESSION_NOT_FOUND,
+        sessionId,
+        correlationId: requestId,
       },
-    });
+      404,
+    );
   });
 
   // ═══════════════════════════════════════════════════════════════
@@ -1779,7 +1744,7 @@ export function createGuardianRouter(
     sessionId: string,
     requestId: string,
   ): Promise<
-    | { kind: "document"; view: DurableSessionView }
+    | { kind: "document"; view: DurableSessionView; document: Record<string, unknown> }
     | { kind: "absent" }
     | { kind: "unavailable" }
   > {
@@ -1800,49 +1765,13 @@ export function createGuardianRouter(
     const document = response.data.session ?? null;
     if (!document) return { kind: "absent" };
 
-    return { kind: "document", view: readDurableSessionView(document, sessionId) };
-  }
-
-  /**
-   * The view for a session this process deployed whose durable document cannot supply
-   * the answer.
-   *
-   * Counters are reported as zero, and that is truthful **for this process**: nothing has
-   * been ingested here. `source: "memory"` with `ephemeralStateAvailable: false` says
-   * exactly that — the registry is the source and it holds no workspace.
-   */
-  function registrySessionView(
-    sessionId: string,
-    active: ActiveSession,
-    liveness: SessionLiveness,
-  ): Record<string, unknown> {
+    // The raw document travels with the view so a read-path cache repair does not need a
+    // second read: `reconcileStatus` seeds nothing, but the caller must be able to name the
+    // durable value it is repairing toward.
     return {
-      sessionId,
-      employeeId: active.employeeId,
-      auditId: active.matrixId,
-      matrixId: active.matrixId,
-      eventCount: 0,
-      pasteCount: 0,
-      tabSwitchCount: 0,
-      focusLossCount: 0,
-      // Deprecated alias for `focusLossCount`. Same value, kept so an existing
-      // console or script reading the old name keeps working.
-      fullscreenExitCount: 0,
-      copyAttemptCount: 0,
-      currentCodeLength: 0,
-      currentCode: "",
-      lastRiskPayload: null,
-      riskIndex: active.riskIndex,
-      overallRiskScore: active.riskIndex,
-      peakRiskScore: active.riskIndex,
-      startedAt: active.deployedAt,
-      deployedAt: active.deployedAt,
-      status: active.status,
-      liveness,
-      lastActivityAt: active.deployedAt,
-      targetSystem: active.targetSystem,
-      source: "memory" as const,
-      ephemeralStateAvailable: false,
+      kind: "document",
+      view: readDurableSessionView(document, sessionId),
+      document,
     };
   }
 

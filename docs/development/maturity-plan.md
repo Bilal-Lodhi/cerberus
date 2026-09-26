@@ -695,10 +695,10 @@ and is otherwise stated as not met.
 
 | # | Condition | State |
 | --- | --- | --- |
-| A | Live session reads reconcile against durable lifecycle state | **Met for the live list** — one batched durable query per request, durable wins, and a durably-terminated session is dropped in the same request that would have reported it. **Not met for the live detail** |
-| B | Stale in-memory status cannot override newer durable status on read | **Met for the live list**, including once the store stops answering, because the previous read repaired the cache toward the document. **Not met for the live detail** |
-| C | Two processes can safely observe/transition the same session under supported flows | Partially met — transitions are safe, and the live list is now safe to observe; the live detail is not |
-| D | Stale process caches are detected and reconciled deterministically | **Met for the live list** — the merge returns a repair, applied through `reconcileStatus`, which is one-directional and does not move the cached activity instant. **Not met for the live detail** |
+| A | Live session reads reconcile against durable lifecycle state | **Met on both live surfaces** — the list issues one batched durable query per request and the detail reads the document on every request; durable wins, and a durably-terminated session is dropped from the list in the same request that would have reported it |
+| B | Stale in-memory status cannot override newer durable status on read | **Met on both live surfaces**, including once the store stops answering, because the previous read repaired the cache toward the document |
+| C | Two processes can safely observe/transition the same session under supported flows | **Met for observation and transitions.** Both live read surfaces reconcile, and the transition boundary was already predicate-checked. The two-process harness against a real MongoDB (charter §9) is still outstanding |
+| D | Stale process caches are detected and reconciled deterministically | **Met on both live surfaces** — the merge returns a repair, applied through `reconcileStatus`, which is one-directional and does not move the cached activity instant |
 | E | Live-list semantics stay bounded and performant after durable reconciliation | **Met** — one durable query per list request regardless of how many sessions are in memory, so there is no N+1. The measured cost is still outstanding (N) |
 | F | Route-level multi-writer behaviour is documented | **Met** — [multi-writer-model.md](multi-writer-model.md) §4 |
 | G | Paid-route duplicate-spend risk reduced or explicitly re-accepted with stronger evidence | Not met — no decision recorded yet |
@@ -708,8 +708,8 @@ and is otherwise stated as not met.
 | K | `@cerberus/mcp-mongodb` hardened against accidental publication | **Met** — `private: true`, plus `npm run verify:packages` |
 | L | Full release verification runnable through CI, not only a developer machine | **Met** — `.github/workflows/release-verification.yml` on `workflow_dispatch` |
 | M | Docker-dependent release evidence reproducible in CI/manual workflow | **Met** — same workflow, with a real `mongo:7` and a Docker build |
-| N | Live-state reconciliation has measured cost, no pathological query amplification | Not met — nothing added yet to measure |
-| O | No known P0/P1 correctness or security defect remains | Not met — §5.1 and §5.3 of the model are open |
+| N | Live-state reconciliation has measured cost, no pathological query amplification | Not met — the query count is bounded by construction (one read per request on each live surface, no N+1), but the measured before/after latency is still outstanding |
+| O | No known P0/P1 correctness or security defect remains | Not met — the read paths are closed; §5.3 of the model (`terminalContent` ownership) is open |
 | P | Docs, threat model and compatibility docs match implementation | In progress — the new docs state the gaps rather than describing the target as done |
 | Q | Published tags remain immutable | **Met** — verified at the checkpoint, and nothing in this phase rewrites history |
 | R | A coherent next release candidate can be described | Not met — deferred to the checkpoint |

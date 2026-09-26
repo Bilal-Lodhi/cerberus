@@ -56,6 +56,10 @@ interface DetailBody {
     targetSystem: string;
     source: "memory" | "durable";
     ephemeralStateAvailable: boolean;
+    /** Additive: which source answered for `status`. */
+    statusSource: "durable" | "process-local";
+    /** Additive: whether the store answered for the durable fields. */
+    reconciled: boolean;
   };
   error?: string;
   code?: string;
@@ -141,17 +145,24 @@ describe("before a restart — the in-memory path is unchanged", () => {
     );
   });
 
-  test("does not consult the store at all, so the hot path pays nothing", async () => {
-    await ingest(app, "d-no-read", [keystroke("d-no-read")]);
+  test("costs exactly one bounded document read, and not a session's history", async () => {
+    await ingest(app, "d-one-read", [keystroke("d-one-read")]);
     const before = mcp.calls.length;
 
-    await detail(app, "d-no-read");
+    await detail(app, "d-one-read");
 
+    // The in-memory path used to consult the store **not at all**, and that is precisely what
+    // made the live detail process-local-authoritative: a session another process had
+    // terminated kept reading as `active` here while the review surface said `terminated`.
+    // It now costs one read of the session document — and only the document, because
+    // `eventsLimit: 0, includeAssessments: false` skips those queries, so the detail does not
+    // become work proportional to a session's history.
     assert.equal(
       mcp.calls.length,
-      before,
-      "the in-memory path made a persistence call it does not need",
+      before + 1,
+      "the detail should cost exactly one store call, not zero and not many",
     );
+    assert.equal(mcp.calls[before], "get_session_review");
   });
 });
 
@@ -430,9 +441,16 @@ describe("an unreachable store", () => {
 });
 
 describe("a stale cache against a newer durable document", () => {
-  test("the live surfaces report their own status, and the review surface reports the durable one", async () => {
+  test("the live detail reconciles to the durable status, and repairs its cache", async () => {
     // This process holds the session as `active`. Another writer terminates it durably,
-    // without going through this process — so no cache is repaired.
+    // without going through this process — so no transition ran here and nothing repaired the
+    // cache.
+    //
+    // This is the multi-writer case the live detail used to get wrong. It answered from
+    // `sessionStore` whenever it held the session and never read the document, so it reported
+    // `active` here while the review surface reported `terminated` about the same session.
+    // That division was recorded as an accepted limitation in `operability-model.md` §3.7;
+    // it is closed now.
     await ingest(app, "d-stale", [keystroke("d-stale")]);
     await mcp.setSessionStatus("d-stale", "terminated");
 
@@ -440,27 +458,45 @@ describe("a stale cache against a newer durable document", () => {
     assert.ok(body.session);
     assert.equal(
       body.session.status,
-      "active",
-      "the in-memory path reports what this process holds; see the note below",
+      "terminated",
+      "the live detail reported a status the durable document contradicts",
     );
+    assert.equal(body.session.statusSource, "durable");
 
-    // The review surface reads the durable document directly, so it is the surface a
-    // caller can trust for status at this instant. That division is deliberate and is
-    // stated in `docs/development/operability-model.md` §3.7.
+    // The review surface reads the durable document directly, and the two now agree.
     const review = await app.request("/api/v1/sessions/d-stale", {
       headers: authorizedHeaders(),
     });
     const reviewBody = (await review.json()) as { data: { status: string } };
     assert.equal(reviewBody.data.status, "terminated");
 
-    // And a transition reconciles the cache from the durable value, which is what closes
-    // the window rather than leaving it open indefinitely.
-    await app.request("/api/v1/guardian/sessions/d-stale/reactivate", {
-      method: "POST",
-      headers: authorizedHeaders(),
-    });
-    const reconciled = await detail(app, "d-stale");
-    assert.equal(reconciled.body.session?.status, "terminated");
+    // The read repaired this process's cache toward the document, so the next read does not
+    // have to rediscover the divergence — including when the store cannot answer at all.
+    // Without the repair this would report `active` again.
+    mcp.failToolTransport("get_session_review");
+    const afterRepair = await detail(app, "d-stale");
+    assert.equal(
+      afterRepair.body.session?.status,
+      "terminated",
+      "a stale cache resurrected a terminated session once the store stopped answering",
+    );
+    // And it is labelled: this status is now this process's own, not durable truth.
+    assert.equal(afterRepair.body.session?.reconciled, false);
+    assert.equal(afterRepair.body.session?.statusSource, "process-local");
+  });
+
+  test("a refused transition still reconciles the cache from the durable value", async () => {
+    await ingest(app, "d-stale-refused", [keystroke("d-stale-refused")]);
+    await mcp.setSessionStatus("d-stale-refused", "terminated");
+
+    const refused = await app.request(
+      "/api/v1/guardian/sessions/d-stale-refused/reactivate",
+      { method: "POST", headers: authorizedHeaders() },
+    );
+    assert.equal(refused.status, 409);
+
+    const { body } = await detail(app, "d-stale-refused");
+    assert.equal(body.session?.status, "terminated");
   });
 
   test("the durable document decides when the cache holds nothing for the session", async () => {

@@ -69,6 +69,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Three additive response fields: `reconciled` on the body, and `statusSource` and
   `ephemeralStateAvailable` on each row. See `docs/compatibility.md` §1b.
+- **The live session detail reconciles against durable truth on every request.**
+  `GET /api/v1/guardian/sessions/:sessionId` answered from `sessionStore` whenever it held the
+  session and **never read the document**. With one process that was free, because the process
+  holding the session was also the only writer. With two it was a false statement: a session
+  another process had terminated kept reading as `active` here while the review surface, which
+  reads MongoDB, said `terminated` about the same session. `session-detail-fallback.test.ts`
+  used to assert exactly that division and record it as deliberate.
+
+  The document is now read on every detail request and the same merge applies — status,
+  counters and peak risk from the document or `max(local, durable)`, identity from the
+  document, `liveness` from the more recent of the two activity instants, and the reconstructed
+  workspace and latest payload from this process, labelled `ephemeralStateAvailable`. The read
+  asks for the document only (`eventsLimit: 0, includeAssessments: false`), so a detail does
+  not become work proportional to a session's history.
+
+  Two additive fields on the session object: `statusSource` and `reconciled`. The cost is one
+  bounded read on a path that previously paid none — the same read the restart-recovery path
+  already made.
+- **`riskIndex`, `overallRiskScore` and `peakRiskScore` are the reconciled maximum.** They were
+  already reported from one value on every surface; the change is that a session another process
+  scored no longer reads as `0`. `peakRiskScore` is a peak, so the maximum is its documented
+  meaning, and the other two follow it because they always have. See `docs/compatibility.md`
+  §1b.
 - **A live read repairs this process's cache toward the document, and only toward it.**
   `SessionTransitionCache.reconcileStatus` is deliberately not `apply`: `apply` stamps the
   cached activity instant to the transition instant, which is right for a transition and wrong

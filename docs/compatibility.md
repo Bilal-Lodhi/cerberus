@@ -68,8 +68,8 @@ Explicitly **not** public, and changeable without notice:
 
 ## 1b. What the multi-writer cycle added to the public surface
 
-Mostly **additive**. The live session list gained two fields and no field changed meaning.
-The record is in
+Mostly **additive**. The two live read surfaces gained fields; one value changed meaning, and
+it is recorded below. The record is in
 [development/multi-writer-model.md](development/multi-writer-model.md) and
 [development/live-read-consistency.md](development/live-read-consistency.md).
 
@@ -78,20 +78,29 @@ The record is in
 | `GET /api/v1/guardian/sessions` | response gains `reconciled: boolean` — false when the store did not answer, so the page could not be reconciled against the durable documents | added |
 | `GET /api/v1/guardian/sessions` rows | each row gains `statusSource: "durable" \| "process-local"` | added |
 | `GET /api/v1/guardian/sessions` rows | each row gains `ephemeralStateAvailable: boolean`, matching the field the detail surface already reports | added |
+| `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `statusSource: "durable" \| "process-local"` | added |
+| `GET /api/v1/guardian/sessions/:sessionId` | the session object gains `reconciled: boolean` | added |
 
-Two changes are **observable** rather than additive, and both are corrections to a
-statement that was false:
+Three changes are **observable** rather than additive, and each is a correction to a statement
+that was false:
 
 - **The live list now includes sessions this process did not deploy or ingest.** It was
   previously built from this process's own memory and consulted the database only when that
   memory was empty, so a session another API process was monitoring was absent from the page.
-- **A session another process terminated stops appearing immediately.** It previously stayed
-  on the list until its TTL elapsed, a transition happened to run through this process, or
-  the process restarted.
+- **A session another process terminated stops appearing immediately, on both live surfaces.**
+  The list previously kept it until its TTL elapsed, a transition happened to run through this
+  process, or the process restarted; the detail reported `active` for it while the review
+  surface reported `terminated`.
+- **`riskIndex`, `overallRiskScore` and `peakRiskScore` are now the reconciled maximum** of
+  this process's latest score and the durable peak, rather than this process's latest score
+  alone. All three were already reported from a single value on every surface; the change is
+  that a session another process scored no longer reads as `0` here. `peakRiskScore` is a peak,
+  so the maximum is its documented meaning, and the other two follow it because they always
+  have.
 
-Neither changes a field name, a type, or a status vocabulary, so an existing client needs no
-change: it sees more rows and two new fields it can ignore. A client that needs to know
-whether a page is durable truth should require `reconciled: true`.
+No field name, type or status vocabulary changes, so an existing client needs no change: it
+sees more rows, a corrected risk score, and new fields it can ignore. A client that needs to
+know whether a response was checked against durable truth should require `reconciled: true`.
 
 Still explicitly **not** public, and changeable without notice:
 

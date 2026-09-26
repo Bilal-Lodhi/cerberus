@@ -122,20 +122,25 @@ entry for a session this process does not otherwise hold.
 
 The rule: **read the document, then let durable win for durable-authoritative fields.**
 
-**Not yet implemented.** The route returns from `sessionStore` whenever it has the session
-and does not read MongoDB at all. The change is to read the document unconditionally and
-merge, exactly as the list does:
+**Implemented.** The document is read on every detail request, including when this process
+holds the session, and the same merge is applied. The session object gains the additive
+`statusSource` and `reconciled` fields.
 
 | Field group | Winner |
 | --- | --- |
 | `status`, counters, `peakRiskScore`, `deployedAt`, `targetSystem`, `lastActivityAt` | durable |
-| `liveness` | derived from the durable activity instant |
+| `liveness` | derived from the **more recent** of the local and durable activity instants |
 | `currentCode`, `lastRiskPayload` | this process, labelled `ephemeralStateAvailable: true` |
-| `eventCount` | `max(local hydrated total, durable)` |
+| `eventCount` and the other counters | `max(local, durable)` |
 
-This costs one durable round trip on the memory path that previously cost none. It is the
-price of the answer being true, and it is the same round trip the fallback path already
-pays.
+`ephemeralStateAvailable` is taken from the local view's **own** flag, not from "a local view
+exists": a session this process merely *deployed* is in the registry — present locally, holding
+no workspace — and reporting `true` for it would claim a workspace that does not exist.
+
+This costs one durable round trip on the memory path that previously cost none. It is the price
+of the answer being true, and it is the same round trip the fallback path already paid. The
+read asks for the document only (`eventsLimit: 0, includeAssessments: false`), so a detail does
+not become work proportional to a session's history.
 
 ### When the store does not answer
 
