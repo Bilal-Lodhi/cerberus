@@ -80,6 +80,9 @@ const LIST_SESSIONS_PROJECTION = [
   "eventCount",
   "pasteCount",
   "tabSwitchCount",
+  // Both spellings, mirroring the real projection: a document written before migration
+  // 0003 still carries the legacy field.
+  "focusLossCount",
   "fullscreenExitCount",
   "copyAttemptCount",
   "peakRiskScore",

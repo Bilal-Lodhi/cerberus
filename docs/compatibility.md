@@ -20,6 +20,7 @@ a breaking change, not a refactor:
 | MCP tool names and their argument names | `packages/mcp-mongodb/src/tool-names.ts`, mirrored in `apps/api/src/services/mcp-tool-names.ts` |
 | MongoDB collection names | `COLLECTION_NAMES` in `packages/mcp-mongodb/src/tool-names.ts` |
 | Session status values (`active`, `locked`, `terminated`) | `SESSION_STATUSES` in the same module |
+| Session counter field names in API responses and MCP arguments | the route modules and `packages/mcp-mongodb/src/tools.ts` |
 | The console's build contract: the `--dart-define` names it reads and the output directory it writes | `apps/console/lib/main.dart`, [configuration.md](configuration.md) |
 
 Explicitly **not** public, and changeable without notice:

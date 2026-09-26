@@ -127,7 +127,7 @@ export interface SessionState {
   pasteCount: number;
   keystrokeDeltas: number[];
   tabSwitchCount: number;
-  fullscreenExitCount: number;
+  focusLossCount: number;
   copyAttemptCount: number;
   lastRiskPayload: RiskAssessmentPayload | null;
   /**
@@ -509,7 +509,7 @@ export function createGuardianRouter(
             // Previously omitted, so MongoDB never learned this counter and a
             // restart reset it to 0 — which silently disabled the fullscreen-exit
             // analysis trigger and its score penalty.
-            fullscreenExitCount: session.fullscreenExitCount,
+            focusLossCount: session.focusLossCount,
             copyAttemptCount: session.copyAttemptCount,
             peakRiskScore: session.lastRiskPayload?.overallRiskScore ?? 0,
           },
@@ -525,7 +525,7 @@ export function createGuardianRouter(
         hasLargePaste ||
         session.pasteCount > config.security.maxPasteEventsPerSession ||
         session.tabSwitchCount > 3 ||
-        session.fullscreenExitCount > 0 ||
+        session.focusLossCount > 0 ||
         session.copyAttemptCount > 2 ||
         hasAnomalousKeystrokes(session.keystrokeDeltas, config);
 
@@ -589,7 +589,7 @@ export function createGuardianRouter(
           const pastePenalty = Math.min(session.pasteCount * 5, 30);
           const tabPenalty = Math.min(session.tabSwitchCount * 4, 16);
           const copyPenalty = Math.min(session.copyAttemptCount * 6, 18);
-          const fullscreenPenalty = session.fullscreenExitCount > 0 ? 10 : 0;
+          const focusLossPenalty = session.focusLossCount > 0 ? 10 : 0;
           const keystrokePenalty = hasAnomalousKeystrokes(
             session.keystrokeDeltas,
             config,
@@ -598,7 +598,7 @@ export function createGuardianRouter(
             : 0;
 
           const behaviouralBoost =
-            pastePenalty + tabPenalty + copyPenalty + fullscreenPenalty + keystrokePenalty;
+            pastePenalty + tabPenalty + copyPenalty + focusLossPenalty + keystrokePenalty;
 
           const blendedScore = clampScore(
             semanticScore * 0.85 + behaviouralBoost * 0.15,
@@ -668,12 +668,15 @@ export function createGuardianRouter(
 
           riskPayload.behavioralContext = {
             totalPasteEvents: session.pasteCount,
-            totalFocusBreaches: session.tabSwitchCount + session.fullscreenExitCount,
+            totalFocusBreaches: session.tabSwitchCount + session.focusLossCount,
             totalCopyAttempts: session.copyAttemptCount,
             totalDevToolsOpens: session.events.filter(
               (event) => event.eventType === "DEVELOPER_TOOLS_OPEN",
             ).length,
-            totalFullscreenExits: session.fullscreenExitCount,
+            totalFocusLosses: session.focusLossCount,
+            // Deprecated alias for 	otalFocusLosses, kept because this payload is persisted and
+            // read back by review surfaces that may predate the rename. Same value.
+            totalFullscreenExits: session.focusLossCount,
           };
 
           riskPayload.keystrokeMetrics = {
@@ -829,7 +832,10 @@ export function createGuardianRouter(
           eventCount: Math.max(session.events.length, session.eventCount),
           pasteCount: session.pasteCount,
           tabSwitchCount: session.tabSwitchCount,
-          fullscreenExitCount: session.fullscreenExitCount,
+          focusLossCount: session.focusLossCount,
+          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+          // console or script reading the old name keeps working.
+          fullscreenExitCount: session.focusLossCount,
           copyAttemptCount: session.copyAttemptCount,
           currentCodeLength: session.currentCode.length,
           currentCode: session.currentCode,
@@ -858,6 +864,9 @@ export function createGuardianRouter(
           eventCount: 0,
           pasteCount: 0,
           tabSwitchCount: 0,
+          focusLossCount: 0,
+          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+          // console or script reading the old name keeps working.
           fullscreenExitCount: 0,
           copyAttemptCount: 0,
           currentCodeLength: 0,
@@ -1037,7 +1046,10 @@ export function createGuardianRouter(
           eventCount: Math.max(state.events.length, state.eventCount),
           pasteCount: state.pasteCount,
           tabSwitchCount: state.tabSwitchCount,
-          fullscreenExitCount: state.fullscreenExitCount,
+          focusLossCount: state.focusLossCount,
+          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+          // console or script reading the old name keeps working.
+          fullscreenExitCount: state.focusLossCount,
           copyAttemptCount: state.copyAttemptCount,
           alertTriggered:
             (state.lastRiskPayload?.overallRiskScore ?? 0) >= AUTO_LOCK_THRESHOLD,
@@ -1070,6 +1082,9 @@ export function createGuardianRouter(
         eventCount: 0,
         pasteCount: 0,
         tabSwitchCount: 0,
+        focusLossCount: 0,
+        // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+        // console or script reading the old name keeps working.
         fullscreenExitCount: 0,
         copyAttemptCount: 0,
         alertTriggered: false,
@@ -1147,7 +1162,10 @@ export function createGuardianRouter(
           eventCount: Number(doc["eventCount"] ?? 0),
           pasteCount: Number(doc["pasteCount"] ?? 0),
           tabSwitchCount: Number(doc["tabSwitchCount"] ?? 0),
-          fullscreenExitCount: Number(doc["fullscreenExitCount"] ?? 0),
+          focusLossCount: readFocusLossCount(doc),
+          // Deprecated alias for `focusLossCount`. Same value, kept so an existing
+          // console or script reading the old name keeps working.
+          fullscreenExitCount: readFocusLossCount(doc),
           copyAttemptCount: Number(doc["copyAttemptCount"] ?? 0),
           alertTriggered: riskScore >= AUTO_LOCK_THRESHOLD,
         });
@@ -1445,6 +1463,22 @@ export function createGuardianRouter(
   }
 
   /**
+   * Reads the focus-loss counter, tolerating the deprecated field name.
+   *
+   * The counter used to be stored as `fullscreenExitCount`, which described one of the
+   * two events that incremented it — `WINDOW_BLUR` counted as a fullscreen exit. Migration
+   * `0003` renames it. This fallback means a deployment that has not run the migration
+   * still reports the right number rather than zero, and takes the **larger** of the two
+   * so a document holding both cannot lose the higher total.
+   */
+  function readFocusLossCount(durable: Record<string, unknown> | null): number {
+    return Math.max(
+      readDurableCounter(durable, "focusLossCount"),
+      readDurableCounter(durable, "fullscreenExitCount"),
+    );
+  }
+
+  /**
    * Seeds in-memory session state from its durable document.
    *
    * A restart empties `sessionStore`, so without this the first batch after a
@@ -1480,7 +1514,7 @@ export function createGuardianRouter(
       pasteCount,
       keystrokeDeltas: [],
       tabSwitchCount: readDurableCounter(durable, "tabSwitchCount"),
-      fullscreenExitCount: readDurableCounter(durable, "fullscreenExitCount"),
+      focusLossCount: readFocusLossCount(durable),
       copyAttemptCount: readDurableCounter(durable, "copyAttemptCount"),
       lastRiskPayload: null,
       eventCount,
@@ -1571,7 +1605,7 @@ export function createGuardianRouter(
         pasteCount: 0,
         keystrokeDeltas: [],
         tabSwitchCount: 0,
-        fullscreenExitCount: 0,
+        focusLossCount: 0,
         copyAttemptCount: 0,
         lastRiskPayload: null,
         eventCount: 0,
@@ -1772,7 +1806,7 @@ export function applyEventToSession(session: SessionState, event: MicroEvent): v
       break;
     case "WINDOW_BLUR":
     case "FULLSCREEN_EXIT":
-      session.fullscreenExitCount++;
+      session.focusLossCount++;
       break;
     case "COPY_ATTEMPT":
       session.copyAttemptCount++;
@@ -1903,7 +1937,7 @@ function buildIncidentSummary(
       `${session.copyAttemptCount} copy attempt${session.copyAttemptCount > 1 ? "s" : ""}`,
     );
   }
-  if (session.fullscreenExitCount > 0) parts.push("fullscreen exit detected");
+  if (session.focusLossCount > 0) parts.push("focus lost");
   if (hasAnomalousKeystrokes(session.keystrokeDeltas, config)) {
     parts.push("anomalous keystroke rhythm");
   }

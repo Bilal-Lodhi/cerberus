@@ -1261,9 +1261,11 @@ class _BehaviorContextGrid extends StatelessWidget {
         ),
         _BehaviorChip(
           icon: Icons.fullscreen_exit,
-          label: 'Fullscreen Exit',
-          value: bc.totalFullscreenExits,
-          color: bc.totalFullscreenExits > 0 ? Colors.red : Colors.green,
+          // "Focus Loss", not "Fullscreen Exit": the counter is incremented by a window
+          // blur as well, and a blur is not a fullscreen exit.
+          label: 'Focus Loss',
+          value: bc.totalFocusLosses,
+          color: bc.totalFocusLosses > 0 ? Colors.red : Colors.green,
         ),
       ],
     );

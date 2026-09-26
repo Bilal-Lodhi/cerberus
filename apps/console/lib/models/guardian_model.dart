@@ -131,14 +131,16 @@ class BehavioralContext {
   final int totalFocusBreaches;
   final int totalCopyAttempts;
   final int totalDevToolsOpens;
-  final int totalFullscreenExits;
+  /// Focus-loss events — window blur and fullscreen exit together. Browser telemetry
+  /// cannot distinguish the two, so this is what the counter has always measured.
+  final int totalFocusLosses;
 
   const BehavioralContext({
     required this.totalPasteEvents,
     required this.totalFocusBreaches,
     required this.totalCopyAttempts,
     required this.totalDevToolsOpens,
-    required this.totalFullscreenExits,
+    required this.totalFocusLosses,
   });
 
   factory BehavioralContext.fromJson(Map<String, dynamic> json) {
@@ -147,7 +149,11 @@ class BehavioralContext {
       totalFocusBreaches: json['totalFocusBreaches'] as int? ?? 0,
       totalCopyAttempts: json['totalCopyAttempts'] as int? ?? 0,
       totalDevToolsOpens: json['totalDevToolsOpens'] as int? ?? 0,
-      totalFullscreenExits: json['totalFullscreenExits'] as int? ?? 0,
+      // The truthful name, falling back to the deprecated one so an older server's
+      // payload still reads. Same value under either name.
+      totalFocusLosses: json['totalFocusLosses'] as int? ??
+          json['totalFullscreenExits'] as int? ??
+          0,
     );
   }
 }

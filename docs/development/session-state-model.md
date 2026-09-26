@@ -47,7 +47,7 @@ and field that holds the authoritative value, if any.
 | `pasteCount` | A | `monitored_sessions.pasteCount` | `update_session_counts` per ingest | analysis triggers, review, list | Preserved |
 | `keystrokeDeltas` | C | — (derived metrics are durable in `risk_assessments.keystrokeMetrics`) | `applyEventToSession` | keystroke metrics, anomaly detection | Lost. Rebuilt only from new events; the durable metrics recorded at each analysis survive |
 | `tabSwitchCount` | A | `monitored_sessions.tabSwitchCount` | `update_session_counts` | analysis triggers, review, list | Preserved |
-| `fullscreenExitCount` | A | `monitored_sessions.fullscreenExitCount` | `update_session_counts` | analysis triggers, `fullscreenPenalty`, `behavioralContext`, incident summary | Preserved (see §5 for the history) |
+| `focusLossCount` | A | `monitored_sessions.focusLossCount` | `update_session_counts` | analysis triggers, the focus-loss penalty, `behavioralContext`, incident summary | Preserved (see §5 for the history). Renamed from `fullscreenExitCount` by migration `0003`; the old name is read as a fallback |
 | `copyAttemptCount` | A | `monitored_sessions.copyAttemptCount` | `update_session_counts` | analysis triggers, review, list | Preserved |
 | `lastRiskPayload` | B | `risk_assessments` (latest by `generatedAt`) | `store_risk_assessment` | session detail, review, notifications | Reconstructed on read; the in-memory copy is empty until the next analysis |
 | `eventCount` | A | `monitored_sessions.eventCount` | `update_session_counts`, from the hydrated lifetime total | list, review | Preserved. Hydrated from the durable document and incremented per accepted event |
@@ -176,16 +176,24 @@ twice reports `accepted=2 duplicate=0` then `accepted=0 duplicate=2`, the durabl
 Costs at most one redundant paid analysis per session after a restart. It cannot
 lose or corrupt evidence, so it is recorded here rather than prioritised.
 
-### 5.7 `WINDOW_BLUR` increments the fullscreen-exit counter
+### 5.7 `WINDOW_BLUR` incremented the fullscreen-exit counter — fixed
 
-`applyEventToSession()` treats `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically.
-The counter therefore means "focus was lost", not "fullscreen was exited", which
-is why `behavioralContext` reports it as `totalFullscreenExits` and the summary
-says "fullscreen exit detected" for what may have been a window blur.
+`applyEventToSession()` treated `WINDOW_BLUR` and `FULLSCREEN_EXIT` identically and
+incremented one counter, which was named `fullscreenExitCount`. The counter therefore
+meant "focus was lost", not "fullscreen was exited" — so `behavioralContext` reported
+it as `totalFullscreenExits` and the summary said "fullscreen exit detected" for what
+may have been a window blur.
 
-Recorded, not changed: the scoring and the console's wording both depend on the
-current meaning, and renaming it is a contract change rather than a durability
-fix. It belongs with the telemetry-contract work, not here.
+**Fixed.** The counter is `focusLossCount`, which is what it measures, and migration
+`0003` renames the durable field. `behavioralContext` carries `totalFocusLosses`
+alongside the deprecated `totalFullscreenExits`, the summary says "focus lost", and
+the console panel says **Focus Loss**.
+
+The score did not change. The penalty was gated on the counter being positive, which
+is "focus was lost", never on which event produced it — so the rename corrects a name
+rather than a behaviour. A test asserts that a `WINDOW_BLUR` and a `FULLSCREEN_EXIT`
+produce identical scores, because a silent scoring change would be the worst possible
+outcome of a rename.
 
 ## 6. What MongoDB owns today
 

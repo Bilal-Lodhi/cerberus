@@ -55,7 +55,7 @@ function makeSession(): SessionState {
     pasteCount: 0,
     keystrokeDeltas: [],
     tabSwitchCount: 0,
-    fullscreenExitCount: 0,
+    focusLossCount: 0,
     copyAttemptCount: 0,
     lastRiskPayload: null,
     eventCount: 0,

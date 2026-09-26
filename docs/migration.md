@@ -43,7 +43,7 @@ turn a repairable database into one that will not start.
 | --- | --- | --- |
 | `0001-dedupe-micro-event-identity` | yes | Removes `micro_events` documents that share `(sessionId, eventId)` **and are otherwise identical**, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
 | `0002-dedupe-risk-assessment-identity` | yes | Removes `risk_assessments` documents that share a `riskAssessmentId` **and are otherwise identical** apart from `_generatedAt`, so the unique identity index can be created. Refuses, having written nothing, if any pair's copies disagree. |
-
+| `0003-rename-fullscreen-exit-to-focus-loss` | yes | Renames `monitored_sessions.fullscreenExitCount` to `focusLossCount`. The counter was incremented by **both** `WINDOW_BLUR` and `FULLSCREEN_EXIT`, so its name described one of the two events that produced it; browser telemetry cannot distinguish them, so it has always measured focus loss. A document holding both fields keeps the **larger**, so a mixed database cannot lose the higher total. **No score moves** — the penalty was gated on the counter being positive, never on which event produced it. |
 The volatile field differs by collection — `_ingestedAt` for an event, `_generatedAt`
 for an assessment — so `classifyDuplicateGroups` takes the ignored fields as a
 parameter. Passing the wrong one turns a repairable duplicate into a refusal.

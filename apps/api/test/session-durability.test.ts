@@ -256,7 +256,7 @@ describe("terminal content recovery after a restart", () => {
   });
 });
 
-describe("fullscreenExitCount durability", () => {
+describe("focusLossCount durability", () => {
   let stub: FetchStub;
   let mcp: McpStoreDouble;
   let app: ReturnType<typeof createApp>;
@@ -294,9 +294,9 @@ describe("fullscreenExitCount durability", () => {
 
     const counts = (countsCall!.body as { counts: Record<string, unknown> }).counts;
     assert.equal(
-      counts["fullscreenExitCount"],
+      counts["focusLossCount"],
       1,
-      "fullscreenExitCount is missing from the durable counts payload",
+      "focusLossCount is missing from the durable counts payload",
     );
   });
 
@@ -314,7 +314,7 @@ describe("fullscreenExitCount durability", () => {
       call.url.endsWith("/tools/update_session_counts"),
     );
     const counts = (countsCall!.body as { counts: Record<string, unknown> }).counts;
-    assert.equal(counts["fullscreenExitCount"], 1);
+    assert.equal(counts["focusLossCount"], 1);
   });
 
   test("a restarted process reports the durable counter from the session list", async () => {
@@ -324,7 +324,7 @@ describe("fullscreenExitCount durability", () => {
       sessionId: "ses-durable-fs",
       status: "active",
       employeeId: "op-trader-001",
-      fullscreenExitCount: 3,
+      focusLossCount: 3,
       eventCount: 12,
       deployedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
@@ -339,7 +339,7 @@ describe("fullscreenExitCount durability", () => {
     const entry = body.data.find((s) => s["sessionId"] === "ses-durable-fs");
 
     assert.ok(entry, "the session was not recovered from MongoDB");
-    assert.equal(entry!["fullscreenExitCount"], 3);
+    assert.equal(entry!["focusLossCount"], 3);
   });
 
   test("the review list reports the durable counter too", async () => {
@@ -347,7 +347,7 @@ describe("fullscreenExitCount durability", () => {
       sessionId: "ses-review-fs",
       status: "active",
       employeeId: "op-trader-001",
-      fullscreenExitCount: 2,
+      focusLossCount: 2,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -357,7 +357,7 @@ describe("fullscreenExitCount durability", () => {
     const entry = body.data.find((s) => s["sessionId"] === "ses-review-fs");
 
     assert.ok(entry);
-    assert.equal(entry!["fullscreenExitCount"], 2);
+    assert.equal(entry!["focusLossCount"], 2);
   });
 });
 
@@ -374,7 +374,7 @@ describe("counter hydration across a restart", () => {
     eventCount: 40,
     pasteCount: 20,
     tabSwitchCount: 8,
-    fullscreenExitCount: 3,
+    focusLossCount: 3,
     copyAttemptCount: 5,
     peakRiskScore: 61,
   };
@@ -449,7 +449,7 @@ describe("counter hydration across a restart", () => {
     );
     assert.equal(counts["pasteCount"], DURABLE.pasteCount);
     assert.equal(counts["tabSwitchCount"], DURABLE.tabSwitchCount);
-    assert.equal(counts["fullscreenExitCount"], DURABLE.fullscreenExitCount);
+    assert.equal(counts["focusLossCount"], DURABLE.focusLossCount);
     assert.equal(counts["copyAttemptCount"], DURABLE.copyAttemptCount);
   });
 
@@ -531,7 +531,7 @@ describe("counter hydration across a restart", () => {
       "eventCount",
       "pasteCount",
       "tabSwitchCount",
-      "fullscreenExitCount",
+      "focusLossCount",
       "copyAttemptCount",
     ] as const) {
       assert.ok(
