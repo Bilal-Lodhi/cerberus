@@ -709,7 +709,7 @@ done?".
 | Retention bound, TTL index and `CERBERUS_IDEMPOTENCY_TTL_SECONDS` | **Implemented** | `operation-claims.ts` (`expireAfterSeconds: 0`), migration `0004`, `config.ts` (bounded, fail-closed), `config.test.ts`, `critical-indexes.test.ts` |
 | Migration from a `v0.5.0` database | **Implemented** | `release-fixture.ts` (`v0.5.0` shape), `migration-from-previous-release.test.ts` |
 | Backup/restore covers the collection and both indexes | **Implemented** | `backup-restore-drill.mjs` (11 checks, including a refused duplicate claim after restore), `restore-cerberus.ps1` |
-| Release harness and CI coverage | **Design** | `verify-release.mjs`, `.github/workflows/ci.yml` |
+| Release harness and CI coverage | **Implemented** | `verify:idempotency` (a named harness step, database-free), plus the harness's `test`, `test-integration` and `migrations-previous-release` steps, and the CI integration job that asserts nothing was skipped |
 
 **Both paid routes are protected, and the race is proven by two processes.** `operation_claims`
 exists with both indexes, migration `0004` creates them, `CERBERUS_IDEMPOTENCY_TTL_SECONDS`
@@ -732,11 +732,16 @@ particular pair of statuses. An earlier version asserted `[201, 409]` and was fl
 whenever the second claim arrived during the first execution and failed whenever it arrived
 after. It was run four consecutive times after the correction.
 
-One row remains **Design**, and it is about *naming* rather than *building*:
+**No row remains Design.** Every capability above is in `main` with something that fails if it
+stops being true, and every one is named in the release harness: the mechanism by the four
+idempotency suites the harness's `test` and `test-integration` steps run, the upgrade path by
+`migrations-previous-release`, the restore guarantee by `backup-restore-drill` and
+`restore-cerberus.ps1`, and the two indexes by the database-free `idempotency-guard` step.
 
-1. **Release-harness and CI coverage.** These suites run inside `npm test`, which CI runs and
-   which the harness's `test` and `test-integration` steps both invoke, so they are gated
-   already. What is not yet done is making the harness *say so* — see the next pull request.
+That last one is deliberately the weakest check of the set and is still worth having: it needs
+no database, so it cannot skip. The stronger index check runs against a real MongoDB and
+therefore *does* skip on a machine without one — and a skip at the moment someone is deciding
+whether to publish is exactly when the guarantee should not be quietly unverified.
 
 **One behaviour changed rather than being added**, and it is recorded here because it is the
 kind of change that should not be discovered from a diff: a failed `list_sessions` on the

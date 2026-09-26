@@ -34,6 +34,10 @@ command.
 
 ## What it runs
 
+**Nineteen steps**, in the order below. The list is the plan `npm run verify:release -- --list`
+prints, and it is what the harness actually executes — the two are the same array, so the
+documentation cannot describe a step the harness does not run.
+
 | Step | What it proves | npm script |
 | --- | --- | --- |
 | `build` | The TypeScript compiles, and the entrypoints the `Dockerfile` expects exist | `npm run build` |
@@ -53,6 +57,7 @@ command.
 | `stale-image-defence` | The image is built `--no-cache` from this tree, and its recorded version and commit match the source and the running container | `npm run verify:image` |
 | `console-format` | The Flutter sources are formatted, which `flutter analyze` does not check | `npm run console:format` |
 | `console-analyze` | The Flutter console analyses clean | `npm run console:analyze` |
+| `console-smoke` | The built console is driven in headless Chrome: it renders, the browser console reports no error, nothing overflows, and the screenshots a human must inspect are written | `npm run verify:console-smoke` |
 | `console-test` | The Flutter widget and release-claim tests pass | `npm run console:test` |
 
 Every step is an npm script, so the harness and a maintainer run the same thing. Adding a

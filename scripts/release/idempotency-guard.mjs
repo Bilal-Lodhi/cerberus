@@ -176,7 +176,9 @@ if (process.argv.includes("--json")) {
     `\n${checks.length - failed} passed, ${failed} failed.\n\n` +
       "  This guard is the database-free half of the idempotency gates. The stronger half\n" +
       "  asserts the indexes against a real MongoDB in critical-indexes.test.ts, and the\n" +
-      "  mechanism itself in the four idempotency suites.\n",
+      "  mechanism itself in the four idempotency suites. The two release suites are named\n" +
+      "  here because they are the upgrade and restore gates: a database upgraded by this\n" +
+      "  build must carry both indexes, and a restore must preserve them.\n",
   );
   console.log(
     failed === 0
