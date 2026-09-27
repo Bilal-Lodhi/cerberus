@@ -168,6 +168,7 @@ concern, and the audit found no over-polling that a server change would be maski
 | The benchmark's MCP double ignored `eventsLimit`/`includeAssessments`, inflating every ingest and live-detail figure | P2 — measurement integrity | Reading the double against the tool registry while building the real-Mongo benchmark |
 | The published 38× live-detail ratio and the "ingest plateaus because of the review fetch" explanation were artifacts of that double | P2 — documentation accuracy | Re-running the stubbed benchmark after correcting the double |
 | `terminate racing auto-lock` asserted a specific winner in a `Promise.all` race and failed for a correct system | P2 — a gate that lies | CI: passed on #87, failed on #88 with `409 !== 200` |
+| The attribution guard assumed `origin/main` exists, so the manual release drill was red for a reason unrelated to attribution | P2 — a release gate that could not run | Running `npm run verify:release` through its own `workflow_dispatch`, which is the shape CI does not use |
 
 **Found and not fixed** (recorded above and in the maturity plan): the unbounded durable list
 query.
@@ -193,7 +194,15 @@ the negative result is worth as much as the positive:
 
 ## 7. Verification at the checkpoint
 
-See [release/v0.7.0-checklist.md](../release/v0.7.0-checklist.md) for every gate with its result.
+| | |
+| --- | --- |
+| `npm run verify:release` (local, real MongoDB) | **19 passed, 0 failed, 0 skipped** |
+| `Release verification` `workflow_dispatch` | **19 passed, 0 failed, 0 skipped** — after the attribution-guard defect above was fixed. The first run was 18/1, and that is how the defect was found |
+| `npm test` with `CERBERUS_TEST_MONGODB_URI` set | **1 140 API + 21 MCP, 0 failed, 0 skipped** |
+| `flutter test` | **55 passed** |
+| CI on every pull request | green |
+
+Every gate with its result is in [release/v0.7.0-checklist.md](../release/v0.7.0-checklist.md).
 
 ## 8. Tag immutability
 
