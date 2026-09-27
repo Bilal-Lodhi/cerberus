@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] - 2026-09-27
+
 The theme is **durable idempotency and side-effect safety** for the two routes that spend
-money. **Nothing is published**: no tag, no npm package, no container image and no hosted
-deployment. This is an experimental research system and is not production ready.
+money. Both paid routes accept an optional `Idempotency-Key`, and a retry with one replays the
+first response instead of spending again.
+
+Published as a GitHub **pre-release**. Nothing else was published: no npm package, no container
+image and no hosted deployment, and nothing marked stable or latest. This is an experimental
+research system and is not production ready.
+
+The mechanism is a new `operation_claims` collection whose **unique index on
+`(routeFamily, keyHash)` is the whole of the mutual exclusion** — no lock service, no Redis, no
+replica set, no transaction. Migration `0004` creates that index and a TTL index on `expiresAt`;
+it rewrites no data. Four real defects were found and fixed in the cycle, and two previously
+open limitations were closed with measurements rather than prose: the reconciliation latency
+baseline, and one class of duplicate notification.
+
+See [docs/release/v0.6.0-release-notes.md](docs/release/v0.6.0-release-notes.md) for the full
+scope and, stated plainly, ten things the release does not claim.
 
 ### Fixed
 
