@@ -104,6 +104,22 @@ export interface DurableSessionView {
  * plausible instant is a smaller problem than a missing one on a display surface. The
  * live list has always done this; sharing the reader is what makes the surfaces agree.
  *
+ * ── Why the fallback instant is a parameter ───────────────────────────
+ *
+ * That last fallback used to read the wall clock a second time, inside a function whose whole
+ * purpose is to derive a value from the document. The value it produces is the **request
+ * instant** — the same instant the reconciler already evaluates expiry against — so reading
+ * `Date.now()` again made the reconciler impure for a reason nothing depended on, and made
+ * two reads of one document at different microseconds produce different
+ * `deployedAt` values. For a document that carries no timestamp at all, that is the
+ * difference between "the page is a function of `(documents, now)`" and "the page is a
+ * function of `(documents, now, when the loop reached this row)`".
+ *
+ * Callers that have an injected clock pass it, so the list and detail paths are now exactly
+ * a function of the instant they were given. Callers that do not keep the previous behaviour
+ * through the default. The observable difference is sub-millisecond and confined to
+ * documents with no `deployedAt`, no `createdAt` and no usable `updatedAt`.
+ *
  * The returned `riskScore` is `peakRiskScore` when the document holds it. That field is
  * maintained with `$max` on every ingest, so it is monotonic and survives a restart —
  * which is why it, and not a re-derived maximum over the assessments, is the durable
@@ -112,9 +128,14 @@ export interface DurableSessionView {
 export function readDurableSessionView(
   document: Record<string, unknown>,
   sessionId: string,
+  /**
+   * The instant a document with no timestamp at all is dated to. Defaults to the wall
+   * clock, which is what every caller that has no injected clock wants.
+   */
+  nowMs: number = Date.now(),
 ): DurableSessionView {
   const deployedAt = String(
-    document["deployedAt"] ?? document["createdAt"] ?? toISOStringLocal(),
+    document["deployedAt"] ?? document["createdAt"] ?? toISOStringLocal(new Date(nowMs)),
   );
 
   return {
