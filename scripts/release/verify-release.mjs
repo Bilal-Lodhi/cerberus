@@ -94,13 +94,47 @@ const STEPS = [
     name: "migrations-previous-release",
     script: "test:migrations",
     why:
-      "a published release's database is upgraded by this build — dry run, migrate, " +
-      "validate, re-run — against a real MongoDB",
+      "a published release's database is upgraded by this build — dry run, migrate, validate, " +
+      "re-run — against a real MongoDB, including migration 0005's normal form and its accounting",
     env: { CERBERUS_TEST_MONGODB_URI: process.env["CERBERUS_TEST_MONGODB_URI"] ?? "" },
     gate: () =>
       (process.env["CERBERUS_TEST_MONGODB_URI"] ?? "").trim().length > 0
         ? null
         : "CERBERUS_TEST_MONGODB_URI is not set, so the upgrade gate cannot run",
+  },
+  {
+    name: "live-list-equivalence",
+    script: "verify:live-list",
+    why:
+      "the bounded live-list query is equivalent to the unbounded one: the case table, the " +
+      "generated fixtures, the mirror against the server, the query plan, and two processes " +
+      "racing a terminate against a list",
+    env: { CERBERUS_TEST_MONGODB_URI: process.env["CERBERUS_TEST_MONGODB_URI"] ?? "" },
+    gate: () =>
+      (process.env["CERBERUS_TEST_MONGODB_URI"] ?? "").trim().length > 0
+        ? null
+        : "CERBERUS_TEST_MONGODB_URI is not set, so the live-list gates cannot run",
+  },
+  {
+    name: "live-list-benchmark",
+    script: "verify:live-list-bench",
+    why:
+      "the bounded list's cost does not track the collection: the previous build's query " +
+      "collect-scans, the bounded one does not, and it examines the live set rather than the store",
+    env: {
+      CERBERUS_BENCH_MONGODB_URI:
+        process.env["CERBERUS_BENCH_MONGODB_URI"] ??
+        process.env["CERBERUS_TEST_MONGODB_URI"] ??
+        "",
+    },
+    gate: () =>
+      (process.env["CERBERUS_BENCH_MONGODB_URI"] ??
+        process.env["CERBERUS_TEST_MONGODB_URI"] ??
+        ""
+      ).trim().length > 0
+        ? null
+        : "neither CERBERUS_BENCH_MONGODB_URI nor CERBERUS_TEST_MONGODB_URI is set, so there " +
+          "is no real MongoDB to measure against",
   },
   {
     name: "docs",
