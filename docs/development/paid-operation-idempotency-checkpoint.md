@@ -20,6 +20,10 @@ response spent again. This cycle built the mechanism.
 
 ## 2. The merged pull requests
 
+**Nine**, `#74` through `#82` inclusive. Every one was green on every required check before it was
+squash-merged, and the count is stated so it can be checked against the history rather than counted
+by eye: `git log --oneline b2c0e00..391fd3f`.
+
 | PR | What it did |
 | --- | --- |
 | #74 | The paid-operation state model, and the auditor call-count correction |
@@ -30,6 +34,7 @@ response spent again. This cycle built the mechanism.
 | #79 | A failed completion write no longer leaves a claim `pending` |
 | #80 | The database-free idempotency guard, and a named harness step |
 | #81 | An alert per stored assessment, and the reconciliation latency baseline |
+| #82 | The console error mapping, the maturity plan, and the v0.6.0 release candidate |
 
 ## 3. The defects it found
 
@@ -126,7 +131,7 @@ again.
 | --- | --- | --- |
 | `v0.1.0` | `55329b5e378cb890c9b9775647396ea57fd7bdc7` | `ef98f962530fb62340cf213b408f1cd715755c01` |
 | `v0.2.0` | `c987767494f4d1c624005f6f498334e658d2c1bc` | `a355f310eefb5345ddafe8af53cfec805eb21c64` |
-| `v0.3.0` | `af22236626019352bddebe8798a659151af7ec4f` | `95b57836b4d8797666ad94953323ce5811f50041a` |
+| `v0.3.0` | `af22236626019352bddebe8798a659151af7ec4f` | `95b57836b4d879766ad94953323ce5811f50041a` |
 | `v0.4.0` | `78fdce26c517ee65cb2bf77fceb379306d36dc30` | `ed14728f9dfeaace841474b909ecfba15cd6feb3` |
 | `v0.5.0` | `a635862e7a726f6362029e3aa711d630551a757f` | `000ac1a7ddd837d35790a434a22969d3f6073189` |
 
