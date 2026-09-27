@@ -28,6 +28,7 @@
     "backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup-cerberus.ps1",
     "restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restore-cerberus.ps1",
     "bench": "npm run build:api && node scripts/bench/run-bench.mjs",
+    "bench:read-path": "npm run build && node scripts/bench/run-read-path-bench.mjs",
     "check:docs": "node scripts/check-docs.mjs",
     "console:format": "cd apps/console && dart format --output=none --set-exit-if-changed .",
     "console:analyze": "cd apps/console && flutter analyze",

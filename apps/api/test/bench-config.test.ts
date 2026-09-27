@@ -3,12 +3,12 @@
  *
  * ── Why this exists ───────────────────────────────────────────────────
  *
- * `scripts/bench/run-bench.mjs` builds its own `AppConfig` literal rather than calling
- * `loadConfig()`, because a benchmark must not depend on an operator's environment. That is
- * the right call, and it has a failure mode that was live for four releases:
+ * The benchmarks build their own `AppConfig` literal rather than calling `loadConfig()`,
+ * because a benchmark must not depend on an operator's environment. That is the right call,
+ * and it has a failure mode that was live for four releases:
  *
  *   `createApp` reads `config.log.level` unconditionally. The operability cycle added
- *   structured logging to `AppConfig` and the bench's literal was not updated, so
+ *   structured logging to `AppConfig` and the benchmark's literal was not updated, so
  *   `npm run bench` — the command `docs/development/performance-baseline.md` documents as the
  *   reproducible way to produce the baseline — threw `Cannot read properties of undefined`
  *   before a single case ran. It had been broken from `v0.4.0` onward and nothing noticed,
@@ -19,9 +19,17 @@
  * anything. So the literal is now asserted against the shape the application actually needs,
  * by comparing its top-level keys with `makeConfig()`'s.
  *
- * This is a structural check, not a behavioural one — the bench still calls `createApp` and
- * would fail loudly if the shape were wrong in a way this cannot see. Its job is to catch the
- * drift that actually happened: a field added to `AppConfig` and forgotten here.
+ * ── Why the literal lives in its own module ───────────────────────────
+ *
+ * The read-path cycle added a second benchmark (`run-read-path-bench.mjs`, against a real
+ * MongoDB). A second copy of the literal would reintroduce the same outage one file over, and
+ * the key comparison above would not notice, because it reads one file. So the literal moved
+ * to `scripts/bench/bench-config.mjs`, both scripts import it, and this file additionally
+ * asserts that neither declares its own.
+ *
+ * This is a structural check, not a behavioural one — each benchmark still calls `createApp`
+ * and would fail loudly if the shape were wrong in a way this cannot see. Its job is to catch
+ * the drift that actually happened: a field added to `AppConfig` and forgotten here.
  */
 
 import { test, describe } from "node:test";
@@ -33,7 +41,17 @@ import { fileURLToPath } from "node:url";
 import { makeConfig } from "./helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BENCH = join(here, "..", "..", "..", "scripts", "bench", "run-bench.mjs");
+const BENCH_DIR = join(here, "..", "..", "..", "scripts", "bench");
+const BENCH = join(BENCH_DIR, "bench-config.mjs");
+
+/**
+ * Every benchmark script that drives the application.
+ *
+ * Listed explicitly rather than globbed, because a glob that silently matched nothing would
+ * make the "imports the shared literal" check below pass while checking nothing — the same
+ * vacuity this file already guards against in its own extraction.
+ */
+const BENCH_SCRIPTS = ["run-bench.mjs", "run-read-path-bench.mjs"];
 
 /** The top-level keys of the object literal `benchConfig()` returns. */
 function benchConfigKeys(): string[] {
@@ -104,7 +122,7 @@ describe("the benchmark's configuration literal", () => {
     assert.deepEqual(
       missing,
       [],
-      `scripts/bench/run-bench.mjs is missing ${missing.join(", ")} from its config literal. ` +
+      `scripts/bench/bench-config.mjs is missing ${missing.join(", ")} from its config literal. ` +
         "createApp reads these unconditionally, so the benchmark would throw before its " +
         "first case ran — which is exactly what happened for four releases after " +
         "`log` was added to AppConfig.",
@@ -121,7 +139,7 @@ describe("the benchmark's configuration literal", () => {
     assert.deepEqual(
       extra,
       [],
-      `scripts/bench/run-bench.mjs declares ${extra.join(", ")}, which AppConfig does not ` +
+      `scripts/bench/bench-config.mjs declares ${extra.join(", ")}, which AppConfig does not ` +
         "have — either a typo, or a field that was removed from the application and left here",
     );
   });
@@ -135,5 +153,37 @@ describe("the benchmark's configuration literal", () => {
       `only ${actual.length} key(s) were extracted from the bench config literal, so the ` +
         "extraction is broken rather than the literal being correct",
     );
+  });
+
+  // ── One literal, every benchmark ────────────────────────────────────
+  //
+  // The drift this file exists to catch is a benchmark whose config literal falls behind
+  // `AppConfig`. Moving the literal into a module fixes that for the scripts that import it
+  // and does nothing for a script that declares its own — so a second copy is what the two
+  // tests below forbid. Without them, the next benchmark reintroduces the four-release
+  // outage one file over, and the guard above would not notice.
+  for (const script of BENCH_SCRIPTS) {
+    test(`${script} imports the shared config literal rather than declaring its own`, () => {
+      const source = readFileSync(join(BENCH_DIR, script), "utf8");
+
+      // Both forms are accepted: a static `from "./bench-config.mjs"` and a dynamic
+      // `await import("./bench-config.mjs")`, which is what the scripts use because the
+      // compiled application is itself imported dynamically.
+      assert.ok(
+        /["']\.\/bench-config\.mjs["']/.test(source),
+        `${script} does not import ./bench-config.mjs, so its AppConfig literal is its own ` +
+          "and nothing checks it against makeConfig()",
+      );
+      assert.ok(
+        !/function\s+benchConfig\s*\(/.test(source),
+        `${script} declares its own benchConfig(). There is exactly one literal, in ` +
+          "scripts/bench/bench-config.mjs, and every benchmark imports it — a second copy is " +
+          "how a benchmark silently stops matching the application's config shape.",
+      );
+    });
+  }
+
+  test("the benchmark-script list is not empty, so the loop above cannot pass vacuously", () => {
+    assert.ok(BENCH_SCRIPTS.length >= 2, "only one benchmark script is checked");
   });
 });
