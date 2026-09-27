@@ -789,7 +789,7 @@ proves it — a test, a workflow run, or a measured number.
 | Inherited limitation | This phase |
 | --- | --- |
 | The two paid routes are non-idempotent | **Closed.** Both accept an optional `Idempotency-Key`; the exposure was re-measured first (§2.3 of the state model corrected the auditor's call count from one to two) |
-| Reconciliation has no before/after baseline | **Closed.** Measured, and the answer is a 38× p50 increase on the live detail — the cost of the correctness the previous phase bought |
+| Reconciliation has no before/after baseline | **Closed, and the figure it produced was wrong.** Measured, and reported as a 38× p50 increase on the live detail. The read-path cycle found that the benchmark's own MCP double was ignoring the read bounds the API sends, so the ratio measured the double. Corrected: 0.04 ms against 0.10 ms. See §"Read-path freshness phase" |
 | Notifications duplicate | **Reduced where a durable anchor exists**, and re-accepted with the reason it cannot be extended |
 | Rate limiting is per-process | Unchanged, and now stated alongside the idempotency order so the two cannot be confused |
 | The console embeds the operator key | Unchanged. Still a documented consequence of the single-key model |
@@ -807,6 +807,102 @@ gates are in [release/v0.6.0-checklist.md](../release/v0.6.0-checklist.md).
 
 ### What the next cycle inherits
 
-The measured 38× live-detail cost, and the question it raises: is a durable read on every live
-detail request the right trade, or does the surface want a short-lived cache with a stated staleness
-bound? That is a design question with a number attached now, which is what this cycle was for.
+The measured live-detail cost, and the question it raises: is a durable read on every live detail
+request the right trade, or does the surface want a short-lived cache with a stated staleness
+bound?
+
+**Both the number and the question were wrong, and the read-path cycle is what found that out.**
+The 38× was the benchmark's double. See the next section.
+
+## Read-path freshness phase: checkpoint reached
+
+The cycle that answered the question above. Its record is
+[read-path-freshness-checkpoint.md](read-path-freshness-checkpoint.md).
+
+### What it changed
+
+| Change | Why |
+| --- | --- |
+| A real-MongoDB read-path benchmark (`npm run bench:read-path`) | The stubbed benchmark cannot price a durable read, because its persistence layer is a closure. Every read surface is now measured against a real driver and a real server, with **persistence calls per request** reported alongside latency |
+| [live-read-freshness-policy.md](live-read-freshness-policy.md) | The freshness contract, written before any implementation: four terms, a per-surface maximum staleness, six states that may never be served stale, and the eight-clause gate a bounded cache must pass |
+| The benchmark's MCP double now honours the read bounds | It had ignored `eventsLimit`/`includeAssessments` for four releases, so every ingest and live-detail read carried 500 event documents the real store never returns |
+| `bench-double.test.ts` | Compares the benchmark's double against the real tool registry for seven bound combinations. Nine of its ten cases fail against the pre-fix double |
+| A flaky race gate fixed and strengthened | It asserted a specific winner in a `Promise.all` race, so it failed for a correct system — and invited the remedy of weakening it |
+| [console-polling-audit.md](console-polling-audit.md) | What the console actually polls, which is not what the cycle assumed |
+
+### The decision, and why
+
+**No cache. The live detail keeps its durable read per request, and the freshness contract stays
+`DURABLE_CURRENT` at zero staleness on every surface.** The full reasoning is
+[live-read-freshness-policy.md](live-read-freshness-policy.md) §9; in short:
+
+1. The cost is **one bounded round trip** — 1.00 persistence calls per request, 1.36 ms p50
+   against a loopback `mongod` — and it is **flat in the size of the store**, because it is a
+   lookup on a unique index.
+2. **The console does not poll the live detail.** It polls the *review* detail, at 12
+   requests/minute. Its steady-state load on the live detail is zero, and the review surface is
+   kept durable on purpose because it is the evidentiary surface.
+3. The headroom is four orders of magnitude, and the complexity a cache adds is not local.
+
+### What it found that it did not fix
+
+**The live list does not scale, and that is a query-shape problem, not a staleness one.**
+`MongoStore.listSessions` issues `find({})` with no filter and no limit, so every request reads
+every session document ever created — including the terminated and long-expired ones the
+reconciler then discards.
+
+| Stored sessions | Live rows | Live list p50 | Live detail p50 |
+| --- | --- | --- | --- |
+| 20 | 20 | 2.53 ms | 1.45 ms |
+| 520 | 120 | 10.21 ms | 1.17 ms |
+| 5 020 | 1 020 | **75.58 ms** | **0.98 ms** |
+
+The live detail is flat; the live list is linear in the store. A deployment with a few hundred
+monitored sessions a day accumulates `active`-but-expired documents indefinitely, because expiry
+is derived and never persisted.
+
+**It is not fixed in this cycle, deliberately.** The obvious filter — `status` in the monitored
+set, and `updatedAt` within the TTL window — is not exactly equivalent to the reconciler's rule,
+and the difference is a session that silently disappears from the live list:
+
+- `normalizeStatus` maps **any** unrecognised status, and a missing one, onto `active`, so
+  "monitored" is `$ne: "terminated"` — which is not an index-friendly predicate, and any
+  conservative `$or` branch that covers the legacy values forces a collection scan, which is the
+  cost being removed;
+- `isExpired` treats a **missing or unparseable** timestamp as *not expired* — deliberately, so
+  an unreadable timestamp cannot hide a session — so a recency bound would exclude documents the
+  current code lists.
+
+So the fix is a bounded query **plus** a data-normalisation migration (0005) that makes the
+vocabulary total: set `status: "active"` where it is missing or outside the three durable values,
+and set `updatedAt` from `createdAt` where it is missing or not a date. Then
+`{ status: { $in: ["active","locked"] }, updatedAt: { $gte: cutoff } }` is exactly equivalent,
+with an index on `{ status: 1, updatedAt: -1 }` behind it, and a two-query shape for the local
+sessions' documents. It needs the equivalence proved by a test that reconciles the same fixture
+through both the bounded and the unbounded query and asserts the pages are identical.
+
+That is the next cycle's first item, not this one's. It is a correctness-critical read path and
+it wants the migration, the index, the equivalence proof and a two-process terminal-safety test
+together rather than a partial bound landed to make a number smaller.
+
+### The release
+
+**Prepared, not published.** The recommendation is
+[release/v0.7.0-release-notes.md](../release/v0.7.0-release-notes.md): *Cerberus v0.7.0 —
+Freshness Contracts & Read-Path Efficiency*. The one observable behaviour change is a correction
+to a flaky test; nothing in the API changed. A case exists for shipping this as `v0.6.1` instead,
+and it is stated in the release notes rather than hidden.
+
+### What the next cycle inherits
+
+1. **The bounded live-list query**, designed above, with its migration and its equivalence proof.
+2. **The console's polling model**: no visibility guard, no in-flight guard, two concurrent
+   identical detail requests per session selection, and `stopStreaming` not awaiting
+   cancellation — all recorded in [console-polling-audit.md](console-polling-audit.md) and none
+   of them fixed here.
+3. **A `v0.4.0` worktree** at `E:\CODE\Cerberus-AI\cerberus-v040` was used for the before/after
+   and should be removed (`git worktree remove`).
+4. **The `updatedAt` reader asymmetry**: the store writes `updatedAt` as a BSON `Date` and the
+   reconciler reads it with a string-only reader, which is correct **only** because the MCP
+   adapter serialises dates to ISO strings on the wire. It is verified in the benchmark and is not
+   a live defect, but it is a coupling worth removing.
