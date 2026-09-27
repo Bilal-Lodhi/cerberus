@@ -55,7 +55,22 @@ jobs:
       CERBERUS_TEST_MONGODB_URI: mongodb://127.0.0.1:27017
 
     steps:
+      # ── The history, not just the ref ───────────────────────────────
+      #
+      # `fetch-depth: 0` is load-bearing, and it was missing. The default checkout fetches
+      # one ref and no remote-tracking branches, so `origin/main` does not exist inside the
+      # runner — and the attribution guard's default range is `origin/main..HEAD`. It exited
+      # 128 with an unhandled stack trace, so this drill was red for a reason that had
+      # nothing to do with attribution. Locally the guard passed, because a developer's
+      # clone has the remote-tracking ref; only the manual drill ran in the shape that
+      # exposed it.
+      #
+      # The guard now resolves what it can and fails with a diagnosis rather than a crash,
+      # and this fetches the history so that what it resolves is the whole range being
+      # released rather than the tip alone.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

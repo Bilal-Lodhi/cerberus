@@ -189,10 +189,34 @@ turned off within a week. A name that is genuinely needed goes in
 **It is prospective by construction**, and that is the point:
 
 ```bash
-npm run verify:attribution                     # origin/main..HEAD — passes on the current tree
+npm run verify:attribution                     # the discovered base..HEAD — passes on the current tree
 npm run verify:attribution -- --range A..B     # what CI passes
 npm run verify:attribution -- --all            # diagnostic: reports the eleven, exits non-zero
 ```
+
+### The default range is discovered, and an unreadable one is fatal
+
+The default used to be the literal `origin/main..HEAD`. That is true in a developer's clone
+and true in `ci.yml` — which passes an explicit `--range` derived from the event — and
+**false** in the release-verification workflow, whose `actions/checkout@v4` fetched one ref
+and no remote-tracking branches. `git log origin/main..HEAD` exited 128 and the guard died
+with an unhandled `execFileSync` stack trace, so the manual release drill was red for a
+reason that had nothing to do with attribution. Only the manual drill ran in the shape that
+exposed it.
+
+Both halves are fixed, and both are needed:
+
+- the guard tries `origin/main`, then `main`, then `refs/remotes/origin/HEAD`, and
+  **exits non-zero with a diagnosis** when none resolves. An unresolvable base is not
+  "nothing to check" — a guard that examined no commits would report OK, which is the one
+  answer it must never give for a range it could not read. A range that resolves but cannot
+  be read gets the same treatment instead of a stack trace;
+- the release-verification workflow now checks out with `fetch-depth: 0`, so what the guard
+  resolves is the whole range being released rather than the tip alone.
+
+`apps/api/test/release/attribution-guard-range.test.ts` drives the guard as a process and
+asserts the exit code, the diagnosis, and that the base is discovered rather than
+hard-coded — including that a stack trace is not an acceptable failure mode.
 
 Public history is **not** rewritten to remove the eleven: rewriting a published branch is
 destructive, and the authorship on `main` is intact — every merge commit's author and
