@@ -21,6 +21,13 @@ disagree about the same session.
 
 ## 2. The freshness contract
 
+> **Normative statement moved.** The freshness contract — the four terms, the per-surface maximum
+> staleness, which states may never be served stale, and the evidence behind the decision not to
+> introduce a bounded-stale surface — now lives in
+> [live-read-freshness-policy.md](live-read-freshness-policy.md). The table below is kept as the
+> summary this document introduced, and the two agree; where they ever disagree, the policy
+> document is authoritative.
+
 Four words, used precisely, because "eventually consistent" is not an answer an operator can
 act on.
 

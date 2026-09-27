@@ -54,6 +54,11 @@ console.warn = () => {};
 const apiEntry = new URL("../../apps/api/dist/index.js", import.meta.url);
 const { createApp } = await import(apiEntry.href);
 
+// The config literal is shared with `run-read-path-bench.mjs` and guarded by
+// `apps/api/test/bench-config.test.ts`, which asserts it covers every top-level key
+// `makeConfig()` produces and that no benchmark script declares its own copy.
+const { BENCH_API_KEY: API_KEY, benchConfig } = await import("./bench-config.mjs");
+
 // ═══════════════════════════════════════════════════════════════════
 // Harness
 // ═══════════════════════════════════════════════════════════════════
@@ -116,8 +121,6 @@ function report(row) {
 // ═══════════════════════════════════════════════════════════════════
 // Stubs — no network, no MongoDB, no paid inference
 // ═══════════════════════════════════════════════════════════════════
-
-const API_KEY = "bench-key";
 
 /** A stateful MCP stand-in, matching the real store's observable contract. */
 function installMcpStub() {
@@ -229,48 +232,6 @@ function installMcpStub() {
   };
 
   return { restore: () => { globalThis.fetch = original; } };
-}
-
-function benchConfig() {
-  return {
-    port: 0,
-    devMode: false,
-    openai: { apiKey: "bench", model: "bench", maxOutputTokens: 1024, requestTimeoutMs: 5000 },
-    mcp: { serverEndpoint: "http://127.0.0.1:1", apiKey: "bench", timeoutMs: 5000 },
-    auth: { apiKey: API_KEY, headerNames: ["authorization", "x-api-key"] },
-    cors: { allowedOrigins: [] },
-    security: {
-      sessionTTLSeconds: 7200,
-      maxRequestBodyBytes: 8 * 1024 * 1024,
-      maxPasteEventsPerSession: 5,
-      minHumanKeystrokeMs: 80,
-      dataLeakageSimilarityThreshold: 0.75,
-    },
-    // Off, so this measures the application rather than the limiter. The limiter
-    // has its own tests; a throughput figure with it on would measure bucket
-    // arithmetic.
-    rateLimit: { enabled: false, aiRequestsPerMinute: 10 },
-    // ── The two fields below are why this benchmark was broken ──────────
-    //
-    // `createApp` reads `config.log.level` unconditionally, so a config literal without a
-    // `log` object threw `Cannot read properties of undefined` before a single case ran.
-    // That was true from `v0.4.0` onward — the operability cycle added structured logging to
-    // `AppConfig` and this literal was not updated — so `npm run bench`, the command the
-    // performance baseline documents as reproducible, crashed on every revision it named.
-    //
-    // `error` rather than `info`, because the intent stated at the top of this file is to
-    // silence the application's per-request logging for the duration: one `http.request` line
-    // per sample buries the results table. `console.log` being silenced does not stop the
-    // logger, which writes to the stream directly — so the level is the control.
-    //
-    // `apps/api/test/bench-config.test.ts` now asserts this literal covers every key
-    // `makeConfig()` produces, so the next field added to `AppConfig` fails a test instead of
-    // silently breaking the benchmark.
-    log: { level: "error", format: "json" },
-    // Read by the paid routes' idempotency handling. Present so this literal matches the
-    // config shape the application expects; a `v0.4.0` build ignores it.
-    idempotency: { ttlSeconds: 86_400 },
-  };
 }
 
 const HEADERS = { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` };
