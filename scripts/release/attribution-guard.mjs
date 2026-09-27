@@ -150,20 +150,86 @@ function isAllowed(email) {
 const argv = process.argv.slice(2);
 const rangeIndex = argv.indexOf("--range");
 const all = argv.includes("--all");
+const explicitRange = rangeIndex !== -1 && argv[rangeIndex + 1] ? argv[rangeIndex + 1] : null;
+
+/**
+ * The base a default range is measured against.
+ *
+ * ── Why this is resolved rather than assumed ──────────────────────────
+ *
+ * The default used to be the literal `origin/main..HEAD`. That works in a developer's
+ * clone, where the remote-tracking ref exists, and it works in `ci.yml`, which passes an
+ * explicit `--range` derived from the event. It **fails** in the release-verification
+ * workflow, whose `actions/checkout@v4` fetches one ref and no remote-tracking branches —
+ * so `git log origin/main..HEAD` exits 128 and the guard died with an unhandled
+ * `execFileSync` stack trace rather than a diagnosis. The manual release drill was red for
+ * a reason that had nothing to do with attribution.
+ *
+ * So the base is discovered, in the order a checkout is likely to have it, and the two
+ * workflows are fixed on both sides: this resolves what it can, and the release workflow
+ * now fetches the history so that what it resolves is the *whole* range being released.
+ *
+ * ── Why a missing base is fatal rather than empty ─────────────────────
+ *
+ * An unresolvable base is **not** "nothing to check". Returning an empty commit list would
+ * print OK, which is the one answer a guard must never give for a range it could not read —
+ * the same failure mode the secret scan's range resolution was written to avoid. It exits
+ * non-zero with the reason instead.
+ */
+function resolveDefaultBase() {
+  for (const candidate of ["origin/main", "main", "refs/remotes/origin/HEAD"]) {
+    try {
+      git(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]);
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
 
 let range;
 if (all) {
   range = null;
-} else if (rangeIndex !== -1 && argv[rangeIndex + 1]) {
-  range = argv[rangeIndex + 1];
+} else if (explicitRange) {
+  range = explicitRange;
 } else {
-  range = "origin/main..HEAD";
+  const base = resolveDefaultBase();
+  if (base === null) {
+    console.error(
+      "attribution guard — no base to measure the range against.\n" +
+        "\n  Tried origin/main, main and refs/remotes/origin/HEAD; none resolves in this\n" +
+        "  checkout. This is a configuration problem, not a clean repository: a guard that\n" +
+        "  examined no commits would report OK, which is the one answer it must never give\n" +
+        "  for a range it could not read.\n" +
+        "\n  Fix one of:\n" +
+        "    - check out with the history: `actions/checkout@v4` with `fetch-depth: 0`\n" +
+        "    - pass the range explicitly: --range <base>..<head>\n" +
+        "    - audit everything instead: --all   (diagnostic, and it fails on known history)\n",
+    );
+    process.exit(1);
+  }
+  range = `${base}..HEAD`;
 }
 
 function commits() {
   const args = ["log", "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"];
   if (range) args.push(range);
-  const raw = git(args);
+
+  let raw;
+  try {
+    raw = git(args);
+  } catch (error) {
+    // A range that `rev-parse` accepted can still be unreadable — an unreachable object, a
+    // shallow boundary. Report it as a guard failure with the reason, not a stack trace.
+    console.error(
+      `attribution guard — could not read the commit range \`${range ?? "--all"}\`.\n` +
+        `\n  ${error instanceof Error ? error.message.split("\n")[0] : String(error)}\n` +
+        "\n  This is a configuration problem, not a clean repository.\n",
+    );
+    process.exit(1);
+  }
+
   return raw
     .split("\x1e")
     .map((chunk) => chunk.trim())
