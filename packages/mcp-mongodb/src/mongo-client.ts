@@ -17,7 +17,11 @@ import {
   DEFAULT_DATABASE_NAME,
 } from "./tool-names.js";
 import { ensureOperationClaimIndexes } from "./operation-claims.js";
-import { ensureLiveListIndexes } from "./live-list-query.js";
+import {
+  buildLiveListFilter,
+  ensureLiveListIndexes,
+  type LiveListQueryInput,
+} from "./live-list-query.js";
 import {
   isRetryableFailure,
   type ClaimPaidOperationInput,
@@ -274,10 +278,51 @@ export function buildSessionCountsDeltaUpdate(delta: SessionCountsDelta): Docume
   return update;
 }
 
+/**
+ * The fields the live session list reads.
+ *
+ * A whitelist, and deliberately unchanged by the bounded query: `liveListUpdatedAt` is a
+ * *predicate* field, not a reported one, so it is not projected and the response shape is exactly
+ * what it was. Both focus-loss spellings are projected because a document written before
+ * migration `0003` still carries the legacy field, and a list that projected only the canonical
+ * name would report zero for it.
+ */
+const LIVE_LIST_PROJECTION = {
+  sessionId: 1,
+  employeeId: 1,
+  auditId: 1,
+  matrixId: 1,
+  targetSystem: 1,
+  status: 1,
+  eventCount: 1,
+  pasteCount: 1,
+  tabSwitchCount: 1,
+  focusLossCount: 1,
+  fullscreenExitCount: 1,
+  copyAttemptCount: 1,
+  peakRiskScore: 1,
+  overallRiskScore: 1,
+  riskIndex: 1,
+  deployedAt: 1,
+  createdAt: 1,
+  updatedAt: 1,
+  _id: 0,
+} as const;
+
 export class MongoStore {
   private client: MongoClient;
   private db: Db | null = null;
   private config: MongoConfig;
+  /**
+   * Whether every migration this build knows about has been applied.
+   *
+   * Set by {@link runMigrations} and read by {@link listSessions}, which is the one place the
+   * store changes how it reads based on it. It is a fact about the database rather than a
+   * configuration knob on purpose: an operator cannot set it wrongly, and a process started with
+   * `migrate: false` gets the safe answer rather than the fast one.
+   */
+  private migrationsCurrent = false;
+  private warnedUnboundedLiveList = false;
 
   constructor(config?: Partial<MongoConfig>) {
     const uri =
@@ -358,6 +403,10 @@ export class MongoStore {
       log: (message) => console.log(`[migrations] ${message}`),
     });
 
+    // A non-dry run that returned without throwing applied every pending migration, so the plan
+    // it reports as pending is now applied. A dry run changes nothing and must not set this.
+    if (!result.dryRun) this.migrationsCurrent = true;
+
     if (result.dryRun) {
       const pending = result.plan.filter((entry) => entry.state === "pending");
       console.log(
@@ -388,6 +437,17 @@ export class MongoStore {
   /** Exposed for diagnostics and tests. */
   get collectionNames(): MongoCollections {
     return { ...this.config.collections };
+  }
+
+  /**
+   * Whether the live list is answered by the bounded query rather than by reading the collection.
+   *
+   * True once every known migration has been applied. Exposed so a health or readiness surface —
+   * and a test — can tell which of the two the process is doing, rather than inferring it from
+   * latency.
+   */
+  get liveListQueryIsBounded(): boolean {
+    return this.migrationsCurrent;
   }
 
   // ─── Collection Accessors ──────────────────────────────────────
@@ -637,39 +697,89 @@ export class MongoStore {
     return report;
   }
 
-  async listSessions(): Promise<Document[]> {
-    return this.collection("sessions")
-      .find(
-        {},
-        {
-          projection: {
-            sessionId: 1,
-            employeeId: 1,
-            auditId: 1,
-            matrixId: 1,
-            targetSystem: 1,
-            status: 1,
-            eventCount: 1,
-            pasteCount: 1,
-            tabSwitchCount: 1,
-            // Both spellings are projected: a document written before migration 0003 still
-            // carries the legacy field, and a list that projected only the canonical name
-            // would report zero for it.
-            focusLossCount: 1,
-            fullscreenExitCount: 1,
-            copyAttemptCount: 1,
-            peakRiskScore: 1,
-            overallRiskScore: 1,
-            riskIndex: 1,
-            deployedAt: 1,
-            createdAt: 1,
-            updatedAt: 1,
-            _id: 0,
-          },
-        },
-      )
-      .sort({ createdAt: -1 })
-      .toArray();
+  /**
+   * Lists session documents for the live session list.
+   *
+   * ── Two modes, and why the second is opt-in ───────────────────────────
+   *
+   * **No argument** is the published behaviour and is unchanged: every session document ever
+   * created, newest `createdAt` first. A direct MCP client calling `list_sessions` sees exactly
+   * what it saw before, and nothing about the tool's contract moves for it.
+   *
+   * **With `liveList`** the query is bounded to the documents the live list can actually show —
+   * the predicate in `live-list-query.ts`, answered from the two indexes migration `0005` and
+   * `ensureIndexes()` provide. The caller supplies the cutoff because the cutoff is the
+   * **reconciler's** boundary, taken from the request's injected clock: the store must not read
+   * its own clock and decide when a session expired.
+   *
+   * ── Why the bounded mode is refused while migrations are pending ──────
+   *
+   * The bounded predicate assumes the documents are in the normal form migration `0005`
+   * establishes. A database it has not reached still holds documents whose status the vocabulary
+   * does not include, and a predicate that is both complete for those *and* index-served does not
+   * exist — a status-free branch turns the whole query into a collection scan, which is measured
+   * in `apps/api/test/release/live-list-query-plan.test.ts`.
+   *
+   * So the store decides from the ledger, not from a configuration flag: once every known
+   * migration has been applied it answers the bounded query, and until then it reads the
+   * collection exactly as the previous build did and says so once. **Correctness never depends on
+   * an operator having migrated; only the cost does.** `connect()` applies the migrations before
+   * it creates indexes or serves anything, so the pending case is a process started with
+   * `migrate: false` — the migration CLI — or a database an operator has deliberately left behind.
+   */
+  async listSessions(options: { liveList?: LiveListQueryInput } = {}): Promise<Document[]> {
+    const collection = this.collection("sessions");
+
+    const unbounded = (): Promise<Document[]> =>
+      collection
+        .find({}, { projection: LIVE_LIST_PROJECTION })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+    const request = options.liveList;
+    if (!request) return unbounded();
+
+    if (!this.migrationsCurrent) {
+      this.warnUnboundedLiveList();
+      return unbounded();
+    }
+
+    const filter = buildLiveListFilter({
+      liveAfter: request.liveAfter,
+      sessionIds: request.sessionIds ?? [],
+    });
+
+    // `null` means there is nothing to narrow — expiry disabled and no local rows — which is the
+    // unbounded question again, asked deliberately.
+    if (!filter) return unbounded();
+
+    // ── No sort, on purpose ──
+    //
+    // The previous query sorted by `createdAt: -1`, and the sort was load-bearing only for rows
+    // that share a `deployedAt`: the response order is imposed by `reconcileLiveList`, whose
+    // comparator is now total (`deployedAt` descending, then `sessionId` ascending). So the order
+    // documents arrive in cannot change the page, and asking the server to sort them would be a
+    // blocking `SORT` stage over the matched set for no answer at all. The plan gate asserts the
+    // stage is absent.
+    return collection.find(filter, { projection: LIVE_LIST_PROJECTION }).toArray();
+  }
+
+  /**
+   * Warns, once per process, that the live list is being answered without its bound.
+   *
+   * Once, because the alternative is a line per request on a path a console polls continuously,
+   * which would bury the message that matters. The condition is a property of the database rather
+   * than of the request, so it cannot change between two requests of one process without a
+   * restart.
+   */
+  private warnUnboundedLiveList(): void {
+    if (this.warnedUnboundedLiveList) return;
+    this.warnedUnboundedLiveList = true;
+    console.warn(
+      "[mongo] the live session list is reading every session document: this database has " +
+        "pending migrations, and the bounded query needs the normal form migration 0005 " +
+        "establishes. Run `npm run migrate`, or start a service, which migrates on connect.",
+    );
   }
 
   /**
