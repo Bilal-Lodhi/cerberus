@@ -534,3 +534,23 @@ This section describes how to configure the software. It is not a claim that
 the resulting deployment is production ready; see the limitations in the
 README, [architecture.md](architecture.md) and
 [security/threat-model.md](security/threat-model.md).
+
+## 11. Benchmark and development-only variables
+
+These are read by `scripts/bench/`, never by the API or the MCP adapter. They are
+documented here because the configuration census requires every variable the code reads to be
+findable — a knob nobody can find is a knob that will be set wrongly — and because a benchmark
+that cannot be pointed at a real database quietly measures its own double instead.
+
+None of them has any effect on a running deployment.
+
+| Variable | Type | Default | Required | Notes |
+| --- | --- | --- | --- | --- |
+| `CERBERUS_BENCH_MONGODB_URI` | string (connection string) | — | **Yes**, for `npm run bench:read-path` | The MongoDB the read-path benchmark measures against. The benchmark **exits with an error** when it is unset rather than falling back to a stub: a read-path figure produced against an in-process double is not a read-path figure. `npm run bench` is the stubbed benchmark and needs no database. Use a **disposable** database — the script creates `cerberus_bench_read_<uuid>`, seeds it, and drops it — and never point it at one holding data you care about. |
+| `CERBERUS_BENCH_SESSIONS` | positive integer | `20` | No | How many sessions the read-path benchmark's list case reconciles. |
+| `CERBERUS_BENCH_EVENTS` | positive integer | `200` | No | How many events each of those sessions holds. |
+| `CERBERUS_BENCH_SAMPLES` | positive integer | `300` | No | Samples per sequential read case. An unset or unusable value takes the default rather than failing: these tune a measurement and cannot change what a deployment does. |
+
+See [development/read-path-performance.md](development/read-path-performance.md) for what the
+benchmark measures and the baseline it produced, and
+[development/performance-baseline.md](development/performance-baseline.md) for the stubbed one.
