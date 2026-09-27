@@ -68,7 +68,7 @@ deployment. This is an experimental research system and is not production ready.
   supports is **Cerberus v0.6.0 — Durable Idempotency & Side-Effect Safety**: both paid routes
   gained a durable retry contract, four real defects were found and fixed, and two previously open
   limitations were closed with measurements rather than prose.
-- **`docs/development/paid-operation-idempotency-checkpoint.md` — the cycle's record.** The eight
+- **`docs/development/paid-operation-idempotency-checkpoint.md` — the cycle's record.** The nine
   merged pull requests, the seven defects and how each was found (four of them P1), the design in
   one page, the twenty-five exit criteria with their state, the verification at the checkpoint, the
   immutability proof for the five published tags verified against `origin`, and the ten limitations
