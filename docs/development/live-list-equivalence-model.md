@@ -519,10 +519,13 @@ ordering.
 | --- | --- |
 | the case tables in §3, §5 and §6 | `apps/api/test/live-list-current-semantics.test.ts` |
 | §5 on a real store, including `Date` vs adapter string | `apps/api/test/live-list-current-semantics.test.ts` (real-Mongo half) |
-| §9.1, §9.2, §9.3 after migration | `apps/api/test/live-list-bounded-equivalence.test.ts` |
-| §9.4 ordering | the same suite, plus `apps/api/test/live-list-reconciliation.test.ts` |
+| §9.1, §9.2, §9.3 after migration | `apps/api/test/live-list-bounded-query.test.ts` — one reconciler over two document sets |
+| §9.2 over generated fixtures | `apps/api/test/live-list-equivalence-generated.test.ts` — 60 seeded fixtures, pre-migration documents against migrated ones |
+| that the mirror of the query describes the server | `apps/api/test/release/live-list-mirror-vs-query.test.ts` |
+| §9.4 ordering | `apps/api/test/live-list-current-semantics.test.ts`, plus the equivalence suites |
 | the predicate and its index | `apps/api/test/release/live-list-query-plan.test.ts` |
 | §10.1's branch costs | `npm run bench:read-path` |
+| the normal form and its accounting | `apps/api/test/live-list-normalisation.test.ts`, `apps/api/test/release/live-list-normalisation-migration.test.ts` |
 
 ## 13. See also
 
