@@ -576,17 +576,92 @@ if (REAL_MONGODB_URI) {
             }),
           ]);
 
-          // The terminate is the only writer of a status here; the ingest may lock. Whichever
-          // order they landed in, the durable status must be a legal state and must match one
-          // of the two requests rather than being a mixture.
+          // ── The invariant, not a winner ───────────────────────────────
+          //
+          // This used to read `assert.equal(lock.status, 200)`, which is true only when the
+          // auto-lock landed first — and it contradicted the comment above it. When the
+          // terminate landed first, the ingest was refused at its terminal-state check with
+          // `409 SESSION_TERMINATED`, which is the *correct* answer, and the test failed for
+          // a correct system. It is nondeterministic by construction: `Promise.all` decides
+          // which request the event loop gets to first, so the same code passes or fails run
+          // to run. A gate that fails for a correct system is worse than no gate, because the
+          // remedy it invites is to weaken the assertion.
+          //
+          // What is actually invariant is stronger and order-free. `terminate`'s table admits
+          // `terminated` from `active`, `locked` **and** `terminated`, so it always applies
+          // and the durable outcome is `terminated` whichever order they landed in — and a
+          // late counter write cannot undo it, because `writeDurableCounters` sends counters
+          // and never a status.
           assert.ok([200, 409].includes(terminate.status));
-          assert.equal(lock.status, 200);
-
-          const status = (await store.getSession(sessionId))?.["status"];
           assert.ok(
-            status === "terminated" || status === "locked" || status === "active",
-            `the race left an illegal status: ${String(status)}`,
+            [200, 409].includes(lock.status),
+            `the ingest answered ${lock.status}, which is neither "accepted" nor "refused"`,
           );
+
+          const document = await store.getSession(sessionId);
+          assert.equal(
+            document?.["status"],
+            "terminated",
+            "the race did not leave the session terminated, so the loser overwrote the winner",
+          );
+
+          // And the loser was *refused*, not silently accepted. Only one reason can produce a
+          // 409 here: the session is terminal. Expiry cannot, because the seed was just
+          // written under a one-hour TTL.
+          if (lock.status === 409) {
+            const body = (await lock.json()) as { code?: string };
+            assert.equal(
+              body["code"],
+              "SESSION_TERMINATED",
+              "the ingest was refused for a reason other than the session being terminal",
+            );
+          }
+        },
+        { aiResponse: HIGH_RISK_AI },
+      );
+    });
+
+    test("a terminate that lands first refuses the racing ingest", async () => {
+      // ── Why this test exists ─────────────────────────────────────────
+      //
+      // The race above is decided by `Promise.all`, so it covers *both* interleavings only
+      // by luck — and one of them used to fail. This is that interleaving, forced: the
+      // terminal state is written first, so the ingest must be refused rather than accepted
+      // and then locked. Asserting it deterministically means the behaviour is covered on
+      // purpose instead of by a coin flip, and it is the assertion the flaky one was
+      // silently standing in for.
+      await withRealStack(
+        async ({ app, store }) => {
+          const sessionId = "flow-terminate-first";
+          await app.request("/api/v1/guardian/ingest", {
+            method: "POST",
+            headers: authorizedHeaders(),
+            body: JSON.stringify({ events: [keystroke(sessionId, "seed", 120)] }),
+          });
+
+          const terminate = await app.request(
+            `/api/v1/guardian/sessions/${sessionId}/terminate`,
+            { method: "POST", headers: authorizedHeaders() },
+          );
+          assert.equal(terminate.status, 200);
+
+          const ingest = await app.request("/api/v1/guardian/ingest", {
+            method: "POST",
+            headers: authorizedHeaders(),
+            body: JSON.stringify({ events: [largePaste(sessionId, "late")] }),
+          });
+
+          assert.equal(
+            ingest.status,
+            409,
+            "a terminated session accepted telemetry, which is the terminal-state bypass " +
+              "the ingest precondition exists to prevent",
+          );
+          const body = (await ingest.json()) as { code?: string };
+          assert.equal(body["code"], "SESSION_TERMINATED");
+
+          // And the refusal did not disturb the durable state.
+          assert.equal((await store.getSession(sessionId))?.["status"], "terminated");
         },
         { aiResponse: HIGH_RISK_AI },
       );
