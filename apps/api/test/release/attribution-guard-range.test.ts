@@ -59,26 +59,69 @@ function looksLikeACrash(text: string): boolean {
   return /node:internal|at Object\.|at Module\.|at async |ERR_CHILD_PROCESS/.test(text);
 }
 
-describe("the attribution guard's range resolution", () => {
-  test("the default range resolves in this checkout and examines commits", () => {
-    // The guard's own success path. If the base cannot be resolved it now exits 1 with a
-    // diagnosis, so a green result here is the assertion that resolution worked.
-    const result = run([]);
+/** True when `git` can resolve `ref` in this checkout. */
+function gitResolves(ref: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-    assert.equal(
-      result.status,
-      0,
-      `the guard failed with no arguments:\n${result.stdout}\n${result.stderr}`,
-    );
-    assert.match(
-      result.stdout,
-      /attribution guard — \d+ commit\(s\) in /,
-      "the guard did not report a commit count, so the range resolved to nothing",
-    );
-    assert.ok(
-      !looksLikeACrash(result.stdout + result.stderr),
-      "the guard crashed instead of reporting",
-    );
+/**
+ * Whether **this** checkout has a base the guard can discover.
+ *
+ * The first version of this test asserted that the default invocation always succeeds —
+ * which is the same mistake the guard itself made, one layer up. A CI pull-request checkout
+ * is shallow and has neither `origin/main` nor a local `main`, so the guard correctly reports
+ * that it has no base, and the test failed for being right. The assertion has to describe
+ * both shapes, because both are real.
+ */
+const BASE_AVAILABLE = ["origin/main", "main", "refs/remotes/origin/HEAD"].some(gitResolves);
+
+describe("the attribution guard's range resolution", () => {
+  test("the default invocation is well-formed in whichever checkout it runs in", () => {
+    const result = run([]);
+    const output = result.stdout + result.stderr;
+
+    assert.ok(!looksLikeACrash(output), "the guard crashed instead of reporting");
+
+    if (BASE_AVAILABLE) {
+      // A base exists, so the guard must use it and examine commits.
+      assert.equal(result.status, 0, `the guard failed with a base available:\n${output}`);
+      assert.match(
+        result.stdout,
+        /attribution guard — \d+ commit\(s\) in /,
+        "the guard did not report a commit count, so the range resolved to nothing",
+      );
+    } else {
+      // No base exists. Failing is correct; failing *silently* would not be.
+      assert.equal(result.status, 1, "the guard passed without checking any commits");
+      assert.match(
+        result.stderr,
+        /no base to measure the range against/,
+        "the guard failed without naming the reason, which is what made the release " +
+          "drill's failure unreadable",
+      );
+    }
+  });
+
+  test("a base that exists is discovered rather than assumed", () => {
+    // Deterministic per checkout: when a base is present, the default run must find it.
+    // This is the assertion that would have failed before the fix in a developer's clone,
+    // where the old literal happened to be right for the wrong reason.
+    if (!BASE_AVAILABLE) {
+      // Nothing to prove here; the case above covers the other shape.
+      return;
+    }
+
+    const result = run([]);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /attribution guard — \d+ commit\(s\) in (origin\/main|main|refs\/remotes\/origin\/HEAD)/);
   });
 
   test("an unreadable range fails with a diagnosis, not a stack trace", () => {
