@@ -900,8 +900,14 @@ and it is stated in the release notes rather than hidden.
    identical detail requests per session selection, and `stopStreaming` not awaiting
    cancellation — all recorded in [console-polling-audit.md](console-polling-audit.md) and none
    of them fixed here.
-3. **A `v0.4.0` worktree** at `E:\CODE\Cerberus-AI\cerberus-v040` was used for the before/after
-   and should be removed (`git worktree remove`).
+3. **The `v0.4.0` worktree** at `E:\CODE\Cerberus-AI\cerberus-v040` was used for the before/after
+   comparison and has been removed. **Do not repeat the way it was set up**: `node_modules` was
+   linked into it as a Windows junction, and removing the worktree followed the junction — and
+   then npm's own workspace junctions inside `node_modules/@cerberus`, which point at
+   `apps/api` and `packages/mcp-mongodb` — and deleted both workspaces' source trees and the
+   whole of `node_modules`. Every tracked file was recovered from the index and `npm ci`
+   restored the rest, but a worktree that shares `node_modules` by junction is a directory
+   deletion waiting to happen. Install into the worktree instead.
 4. **The `updatedAt` reader asymmetry**: the store writes `updatedAt` as a BSON `Date` and the
    reconciler reads it with a string-only reader, which is correct **only** because the MCP
    adapter serialises dates to ISO strings on the wire. It is verified in the benchmark and is not

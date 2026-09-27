@@ -172,6 +172,14 @@ concern, and the audit found no over-polling that a server change would be maski
 **Found and not fixed** (recorded above and in the maturity plan): the unbounded durable list
 query.
 
+**An environment incident, not a product defect.** The `v0.4.0` worktree used for the before/after
+comparison had `node_modules` linked into it as a Windows junction. Removing the worktree followed
+that junction, and then npm's workspace junctions inside it, and deleted both workspaces' source
+trees and `node_modules`. Everything was recovered — the tracked files from the index, the
+dependencies with `npm ci` — and the suite was re-run afterwards: 1 135 + 21 tests, 0 failed, 0
+skipped. It is recorded because the setup is a plausible thing to do again, and the maturity plan
+now says not to.
+
 **Verified not to be defects.** Two hypotheses were tested and rejected, and are recorded because
 the negative result is worth as much as the positive:
 
