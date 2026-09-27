@@ -53,6 +53,7 @@ const criticalDocument = JSON.parse(
 );
 const criticalIndexes = criticalDocument.indexes;
 const criticalTtlIndexes = criticalDocument.ttlIndexes ?? [];
+const criticalQueryIndexes = criticalDocument.queryIndexes ?? [];
 
 const checks = [];
 
@@ -185,6 +186,19 @@ function seedSourceDatabase() {
     );
   }
 
+  // And the bounded-read indexes, created **with their declared names**. A key-only recreation
+  // would satisfy a key-only check while leaving the query without the index it was planned
+  // against, so the name is part of what this fixture has to reproduce.
+  for (const entry of criticalQueryIndexes) {
+    const keys = Object.entries(entry.key)
+      .map(([field, direction]) => `"${field}": ${direction}`)
+      .join(", ");
+    mongosh(
+      `db.getCollection('${entry.collection}').createIndex({ ${keys} }, { name: '${entry.name}' })`,
+      SOURCE_DATABASE,
+    );
+  }
+
   return collections;
 }
 
@@ -227,7 +241,8 @@ async function main() {
 
     seedSourceDatabase();
     console.log(
-      "fixture: 1 empty collection, 6 non-empty, the critical indexes (unique and TTL), a ledger\n",
+      "fixture: 1 empty collection, 6 non-empty, the critical indexes (unique, TTL and " +
+        "bounded-read), a ledger\n",
     );
 
     // ── Backup ──
@@ -285,9 +300,11 @@ async function main() {
       RESTORED_DATABASE,
     ]);
     check(
-      "the restore succeeds and verifies counts, uniqueness and retention",
+      "the restore succeeds and verifies counts, uniqueness, retention and bounded reads",
       restore.status === 0 &&
-        restore.stdout.includes("matches the backup, with its uniqueness and retention guarantees"),
+        restore.stdout.includes(
+          "matches the backup, with its uniqueness, retention and bounded-read guarantees",
+        ),
       restore.status === 0 ? "" : restore.stderr.trim().split("\n").slice(-1)[0],
     );
 

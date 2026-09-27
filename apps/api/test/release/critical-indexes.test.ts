@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { MongoClient } from "mongodb";
 
 import { MongoStore } from "../../../../packages/mcp-mongodb/src/mongo-client.js";
+import { LIVE_LIST_INDEXES } from "../../../../packages/mcp-mongodb/src/live-list-query.js";
 import { COLLECTION_NAMES } from "../../../../packages/mcp-mongodb/src/tool-names.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -57,12 +58,25 @@ interface CriticalTtlIndex extends CriticalIndex {
   expireAfterSeconds: number;
 }
 
+/**
+ * A query index: one a **bounded read** depends on.
+ *
+ * Carries a `name` because a query plan is asserted to have used *this* index, and an unnamed
+ * `{ status: 1, updatedAt: -1 }` reports as `status_1_updatedAt_-1` — a description rather than
+ * an identity.
+ */
+interface CriticalQueryIndex extends CriticalIndex {
+  name: string;
+}
+
 const list = JSON.parse(readFileSync(listPath, "utf8")) as {
   indexes: CriticalIndex[];
   ttlIndexes?: CriticalTtlIndex[];
+  queryIndexes?: CriticalQueryIndex[];
 };
 
 const ttlIndexes = list.ttlIndexes ?? [];
+const queryIndexes = list.queryIndexes ?? [];
 
 /** The driver's own rendering of a key pattern, matching the restore script's. */
 function keyPattern(key: Record<string, unknown>): string {
@@ -85,6 +99,11 @@ function ttlId(collection: string, key: Record<string, unknown>, seconds: unknow
   return `${collection}:${keyPattern(key)}:${String(seconds)}`;
 }
 
+/** Identity of a query index: collection, key pattern and **name**. */
+function queryId(collection: string, key: Record<string, unknown>, name: string): string {
+  return `${collection}:${keyPattern(key)}:${name}`;
+}
+
 if (REAL_MONGODB_URI) {
   describe("the critical-index list against the real store", () => {
     test("every entry is an index the product actually creates, and the list is complete", async () => {
@@ -103,6 +122,7 @@ if (REAL_MONGODB_URI) {
         // ── What the store actually created ──
         const actualUnique = new Set<string>();
         const actualTtl = new Set<string>();
+        const actualQuery = new Set<string>();
 
         for (const collection of Object.values(COLLECTION_NAMES)) {
           const indexes = await db.collection(collection).indexes();
@@ -119,6 +139,18 @@ if (REAL_MONGODB_URI) {
             // value that could legitimately be 0.
             if (typeof index.expireAfterSeconds === "number") {
               actualTtl.add(ttlId(collection, key, index.expireAfterSeconds));
+            }
+
+            // A query index is a named, non-unique, non-TTL index. Named, because that is what
+            // the list declares and what a query plan names; the server's own `_id_` index is
+            // excluded by the name filter rather than by assuming it is the only unnamed one.
+            if (
+              index.unique !== true &&
+              typeof index.expireAfterSeconds !== "number" &&
+              typeof index.name === "string" &&
+              index.name !== "_id_"
+            ) {
+              actualQuery.add(queryId(collection, key, index.name));
             }
           }
         }
@@ -169,6 +201,55 @@ if (REAL_MONGODB_URI) {
           "the store created no TTL index at all, so the retention half of this test proves nothing",
         );
 
+        // ── Query indexes: existence, and the shared specification ──
+        //
+        // The second direction is deliberately narrower than for the other two kinds. The store
+        // creates several non-unique indexes for reasons that are not a bounded read — the
+        // `(employeeId, auditId)` lookup, the `createdAt` ordering — so requiring this list to
+        // name them all would make it a copy of `ensureIndexes()` rather than a list of
+        // guarantees. What it *must* name is every live-list index, and that set is a shared
+        // constant rather than a convention: `ensureIndexes()` applies
+        // `LIVE_LIST_INDEXES`, so the declared set is compared against it directly.
+        const declaredQuery = new Set(
+          queryIndexes.map((entry) => queryId(entry.collection, entry.key, entry.name)),
+        );
+
+        assert.deepEqual(
+          [...declaredQuery].filter((entry) => !actualQuery.has(entry)),
+          [],
+          "the critical-index list names live-list indexes the product does not create, so a " +
+            "good restore would be reported as broken",
+        );
+
+        const expectedQuery = new Set(
+          LIVE_LIST_INDEXES.map((index) =>
+            queryId(COLLECTION_NAMES.sessions, index.key, index.name),
+          ),
+        );
+        assert.deepEqual(
+          [...declaredQuery].sort(),
+          [...expectedQuery].sort(),
+          "the declared live-list indexes and the shared specification in " +
+            "packages/mcp-mongodb/src/live-list-query.ts disagree, so a restore could be " +
+            "verified against an index the query does not use",
+        );
+        assert.deepEqual(
+          [...expectedQuery].filter((entry) => !actualQuery.has(entry)),
+          [],
+          "the store did not create a live-list index the specification names, so a bounded " +
+            "live-list query would fall back to reading the whole collection",
+        );
+
+        // The live-list indexes specifically, named individually because this is the guarantee
+        // the bounded read rests on: without them the list is correct and linear in history.
+        for (const index of LIVE_LIST_INDEXES) {
+          assert.ok(
+            actualQuery.has(queryId(COLLECTION_NAMES.sessions, index.key, index.name)),
+            `monitored_sessions has no '${index.name}' index, so the bounded live-list query ` +
+              "has nothing to range-scan and reads every session document ever created",
+          );
+        }
+
         // ── The claim indexes specifically ──
         //
         // Named individually because this is the guarantee the whole mechanism rests on:
@@ -191,7 +272,7 @@ if (REAL_MONGODB_URI) {
     });
 
     test("every entry states why the guarantee matters", () => {
-      for (const entry of [...list.indexes, ...ttlIndexes]) {
+      for (const entry of [...list.indexes, ...ttlIndexes, ...queryIndexes]) {
         assert.ok(
           typeof entry.why === "string" && entry.why.trim().length > 0,
           `${entry.collection}:${keyPattern(entry.key)} has no stated reason, so a reader ` +

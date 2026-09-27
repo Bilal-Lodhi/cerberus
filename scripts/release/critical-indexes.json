@@ -21,7 +21,36 @@
     "product forbids, and losing the second lets a collection grow without limit. The TTL",
     "index is the only thing bounding `operation_claims`, which holds one record per",
     "caller-supplied idempotency key, so losing it is a storage-exhaustion path rather than",
-    "a correctness one — which is exactly why it is easy to forget and must be checked."
+    "a correctness one — which is exactly why it is easy to forget and must be checked.",
+    "",
+    "`queryIndexes` are the indexes a *bounded read* depends on, and they fail a third way:",
+    "losing one changes no answer at all, it makes a read that was index-backed fall back to",
+    "reading the whole collection. That is a performance guarantee rather than a correctness",
+    "one, so nothing visible breaks — which is precisely why it is checked. The live session",
+    "list is the surface it applies to: it read every session document ever created until",
+    "these two indexes made its predicate answerable by the server, and a restore that lost",
+    "them would restore a database that is correct and slow.",
+    "",
+    "`queryIndexes` are checked in both directions against the real store too, but the second",
+    "direction is narrower on purpose: the store creates many non-unique indexes for other",
+    "reasons, so the list cannot be required to name them all. Instead the declared set must",
+    "equal the shared specification in `packages/mcp-mongodb/src/live-list-query.ts`, which is",
+    "the same list `ensureIndexes()` applies — so a live-list index cannot be added to the",
+    "product without appearing here, and an entry here cannot name an index nothing creates."
+  ],
+  "queryIndexes": [
+    {
+      "collection": "monitored_sessions",
+      "name": "live_list_status_updated_at",
+      "key": { "status": 1, "updatedAt": -1 },
+      "why": "the live-list recency branch (status in {active, locked} and updatedAt > cutoff); without it the bounded list falls back to reading every session document ever created"
+    },
+    {
+      "collection": "monitored_sessions",
+      "name": "live_list_status_liveness",
+      "key": { "status": 1, "liveListUpdatedAt": -1 },
+      "why": "the live-list branch for documents whose updatedAt is not a BSON Date — absent, null, a hand-edited string, or an unparseable value — which a range query on updatedAt cannot see at all; migration 0005 derives this field for exactly those documents"
+    }
   ],
   "indexes": [
     {
