@@ -253,8 +253,40 @@ export const TOOL_DEFINITIONS: Record<McpToolName, ToolDefinition> = {
 
   [MCP_TOOL_NAMES.LIST_SESSIONS]: {
     name: MCP_TOOL_NAMES.LIST_SESSIONS,
-    description: "List all monitored sessions with their aggregate counters.",
-    inputSchema: { type: "object", properties: {} },
+    description:
+      "List monitored sessions with their aggregate counters. With no arguments, every session " +
+      "document ever created, newest first — unchanged. `liveList` asks for the bounded live-list " +
+      "query instead: pass the caller's cutoff and the session ids the caller holds in memory, " +
+      "and the server returns only the documents the live list can show, from an index.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        liveList: {
+          type: "object",
+          description:
+            "Bounded live-list mode. Omit for the unbounded listing every existing caller gets.",
+          properties: {
+            liveAfter: {
+              type: ["string", "null"],
+              description:
+                "ISO-8601 cutoff: a session is a candidate while its activity instant is " +
+                "strictly after this. `null` means expiry is disabled, in which case every " +
+                "non-terminated session is live. The caller supplies it because the cutoff is " +
+                "the reconciler's expiry boundary, taken from the request's own clock.",
+            },
+            sessionIds: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Sessions the caller holds in memory. Their documents are returned whatever " +
+                "they say, so the caller can drop a session the durable record has terminated " +
+                "rather than republishing it from its own cache.",
+            },
+          },
+          required: ["liveAfter"],
+        },
+      },
+    },
   },
 
   [MCP_TOOL_NAMES.STORE_REFERENCE_DOCUMENT]: {
@@ -562,6 +594,72 @@ function requireFiniteNumber(body: Record<string, unknown>, key: string): number
 }
 
 /**
+ * Reads the optional bounded-live-list request.
+ *
+ * Returns `undefined` when the parameter is absent, which is the **unbounded** listing every
+ * existing caller gets — the published behaviour, preserved by construction rather than by
+ * convention.
+ *
+ * A supplied value is validated rather than coerced. `liveAfter` is required within it and must be
+ * either `null` or a parseable instant: a caller that sent a malformed cutoff has a bug, and
+ * quietly substituting the request's own time would answer a different question than the one
+ * asked. An unparseable instant would otherwise reach the driver as `NaN` and match nothing, which
+ * reads as "there are no live sessions" — the worst possible answer for this surface.
+ */
+function readLiveListQuery(
+  body: Record<string, unknown>,
+): { liveAfter: Date | null; sessionIds: string[] } | undefined {
+  const raw = body["liveList"];
+  if (raw === undefined || raw === null) return undefined;
+
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ToolArgumentError("Parameter 'liveList' must be an object.");
+  }
+
+  const request = raw as Record<string, unknown>;
+  if (!("liveAfter" in request)) {
+    throw new ToolArgumentError(
+      "Parameter 'liveList.liveAfter' is required: pass the ISO-8601 cutoff, or null when " +
+        "expiry is disabled.",
+    );
+  }
+
+  const rawLiveAfter = request["liveAfter"];
+  let liveAfter: Date | null;
+  if (rawLiveAfter === null) {
+    liveAfter = null;
+  } else if (typeof rawLiveAfter === "string") {
+    const parsed = new Date(rawLiveAfter);
+    if (!Number.isFinite(parsed.getTime())) {
+      throw new ToolArgumentError(
+        "Parameter 'liveList.liveAfter' must be an ISO-8601 instant or null.",
+      );
+    }
+    liveAfter = parsed;
+  } else {
+    throw new ToolArgumentError(
+      "Parameter 'liveList.liveAfter' must be an ISO-8601 instant or null.",
+    );
+  }
+
+  const rawSessionIds = request["sessionIds"];
+  let sessionIds: string[] = [];
+  if (rawSessionIds !== undefined && rawSessionIds !== null) {
+    if (!Array.isArray(rawSessionIds)) {
+      throw new ToolArgumentError("Parameter 'liveList.sessionIds' must be an array of strings.");
+    }
+    sessionIds = rawSessionIds.map((entry) => {
+      if (typeof entry !== "string") {
+        throw new ToolArgumentError("Parameter 'liveList.sessionIds' must contain only strings.");
+      }
+      return entry;
+    });
+  }
+
+  return { liveAfter, sessionIds };
+}
+
+/**
  * Reads the route family, checked against the vocabulary.
  *
  * Validated rather than accepted as any string: the family is half of the unique index, so
@@ -825,8 +923,9 @@ export function createToolRegistry(store: MongoStore): Record<McpToolName, ToolH
       return { success: true, reports };
     },
 
-    [MCP_TOOL_NAMES.LIST_SESSIONS]: async () => {
-      const data = await store.listSessions();
+    [MCP_TOOL_NAMES.LIST_SESSIONS]: async (body) => {
+      const liveList = readLiveListQuery(body);
+      const data = await store.listSessions(liveList ? { liveList } : {});
       return { success: true, data };
     },
 

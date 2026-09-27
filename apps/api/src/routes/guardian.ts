@@ -1289,10 +1289,35 @@ export function createGuardianRouter(
     //
     // It is one query for the whole page, not one per session, so the list cannot acquire an
     // N+1 as the session count grows. See `docs/development/live-read-consistency.md` §3.
+    //
+    // ── The bound ──
+    //
+    // `liveList` asks the store for the bounded query instead of the whole collection: the
+    // documents that can appear on the page, from an index, rather than every session ever
+    // created. The cutoff is computed **here**, from the same `nowMs` the reconciler will
+    // evaluate expiry against, because it is the reconciler's boundary and not the store's — a
+    // store that read its own clock could place the boundary a millisecond away from the one
+    // `isExpired` uses, and a session exactly on it would be listed by one and dropped by the
+    // other.
+    //
+    // `sessionIds` carries this process's own rows, whose documents must come back **whatever
+    // they say**. Without them a durably-terminated session this process still holds would look
+    // absent durably, and the reconciler would answer from the cache and republish it as live.
+    // See live-list-equivalence-model.md §9.1.
+    const liveAfter =
+      Number.isFinite(ttlSeconds) && ttlSeconds > 0
+        ? new Date(nowMs - ttlSeconds * 1000)
+        : null;
+
     const listed = await callMcpTool<{
       success?: boolean;
       data?: Array<Record<string, unknown>>;
-    }>(config, MCP_TOOL_NAMES.LIST_SESSIONS, {}, { requestId, timeoutMs: MCP_TIMEOUT_MS });
+    }>(config, MCP_TOOL_NAMES.LIST_SESSIONS, {
+      liveList: {
+        liveAfter: liveAfter ? liveAfter.toISOString() : null,
+        sessionIds: local.map((row) => row.sessionId),
+      },
+    }, { requestId, timeoutMs: MCP_TIMEOUT_MS });
 
     // `null` is "the store did not answer", which is a different fact from "there are no
     // sessions". Collapsing the two is what made an unreachable store return an empty live
