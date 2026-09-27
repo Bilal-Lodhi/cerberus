@@ -715,6 +715,7 @@ if (REAL_MONGODB_URI) {
               "0002-dedupe-risk-assessment-identity",
               "0003-rename-fullscreen-exit-to-focus-loss",
               "0004-paid-operation-claim-indexes",
+              "0005-normalise-session-list-fields",
             ],
             "the ledger does not record every migration",
           );

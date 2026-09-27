@@ -40,6 +40,12 @@ import type { Db, ObjectId } from "mongodb";
 
 import { isDuplicateKeyError } from "./mongo-client.js";
 import { ensureOperationClaimIndexes } from "./operation-claims.js";
+import {
+  buildSessionListGuard,
+  buildSessionListUpdate,
+  planChangesDocument,
+  planSessionListNormalisation,
+} from "./session-list-normalisation.js";
 
 /** Collection holding the migration ledger. */
 export const MIGRATIONS_COLLECTION = "schema_migrations";
@@ -64,6 +70,21 @@ export interface Migration {
   rewritesData: boolean;
   /** Applies the migration. Must be idempotent and must fail before mutating. */
   up(context: MigrationContext): Promise<void>;
+  /**
+   * Reports what {@link up} would change, **without changing anything**.
+   *
+   * Optional, and called only for a pending migration during a dry run. The runner's dry run
+   * otherwise answers one question — which migrations are pending — which is enough for a
+   * schema migration and not enough for a data migration whose effect depends on what the
+   * documents currently hold. "Fifty rows have no verifiable timestamp and will be kept live"
+   * is the kind of sentence an operator needs *before* the run, so the classification is
+   * available on both paths from one implementation.
+   *
+   * A migration that implements this must not write. `0005` achieves that by running the same
+   * scan with its write path disabled, so the dry-run numbers and the applied numbers come from
+   * one code path rather than two that could drift.
+   */
+  inspect?(context: MigrationContext): Promise<void>;
 }
 
 /** A migration the database has recorded as applied. */
@@ -524,6 +545,248 @@ const createPaidOperationClaimIndexes: Migration = {
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// 0005 — the live-list normal form
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * How many session documents one bulk write covers.
+ *
+ * The migration rewrites a collection that grows with every session ever created, so the work
+ * is streamed through a cursor and written in bounded batches rather than loaded, planned and
+ * written as one array. 500 is small enough that a failure re-does little and large enough that
+ * the round trips do not dominate; the value is not a tuning knob and nothing depends on it
+ * beyond memory.
+ */
+const SESSION_NORMALISATION_BATCH = 500;
+
+/**
+ * The only fields the normal form depends on.
+ *
+ * Projected explicitly rather than reading whole documents: the normalisation must not be able
+ * to read session content, and a projection is what makes that a property of the query rather
+ * than of the code that follows it.
+ */
+const SESSION_NORMALISATION_PROJECTION = {
+  _id: 1,
+  status: 1,
+  updatedAt: 1,
+  deployedAt: 1,
+  createdAt: 1,
+  liveListUpdatedAt: 1,
+} as const;
+
+/**
+ * What {@link normaliseSessionListFields} did, or would do.
+ *
+ * Every category is a count of documents, never a value: the report is printed by the migration
+ * CLI and recorded in the ledger, and a session id or a status from a document is not something
+ * either should carry.
+ */
+export interface SessionListNormalisationReport {
+  /** Documents examined. */
+  totalRows: number;
+  /** Status absent or `null`, written as `active`. */
+  statusMissingNormalized: number;
+  /** Status present but not one of the three durable values, written as its normalised form. */
+  statusUnknownNormalized: number;
+  /** Status already exactly the durable value; no write. */
+  statusAlreadyNormal: number;
+  /** The instant came from `updatedAt`. */
+  liveListUpdatedAtFromUpdatedAt: number;
+  /** The instant came from `deployedAt`, because `updatedAt` was absent or `null`. */
+  liveListUpdatedAtFromDeployedAt: number;
+  /** The instant came from `createdAt`, because `updatedAt` and `deployedAt` were absent. */
+  liveListUpdatedAtFromCreatedAt: number;
+  /**
+   * **No verifiable last-activity instant exists**, so the document is conservatively treated
+   * as never expiring — which is what the current reader does with it. See the module header.
+   */
+  liveListUpdatedAtUnverifiable: number;
+  /** The stored instant was already exactly the target value; no write. */
+  liveListUpdatedAtAlreadyNormal: number;
+  /** Neither field needed a write. */
+  unchangedRows: number;
+  /** At least one field needed a write. */
+  rewrittenRows: number;
+  /** Documents a bulk write actually modified. Zero on a dry run, and zero on a re-run. */
+  modifiedRows: number;
+}
+
+function emptyNormalisationReport(): SessionListNormalisationReport {
+  return {
+    totalRows: 0,
+    statusMissingNormalized: 0,
+    statusUnknownNormalized: 0,
+    statusAlreadyNormal: 0,
+    liveListUpdatedAtFromUpdatedAt: 0,
+    liveListUpdatedAtFromDeployedAt: 0,
+    liveListUpdatedAtFromCreatedAt: 0,
+    liveListUpdatedAtUnverifiable: 0,
+    liveListUpdatedAtAlreadyNormal: 0,
+    unchangedRows: 0,
+    rewrittenRows: 0,
+    modifiedRows: 0,
+  };
+}
+
+/**
+ * Normalises every session document into the live list's normal form.
+ *
+ * Pure per document (`planSessionListNormalisation`), streaming, batched, idempotent, and
+ * **not destructive**: it writes two fields and deletes nothing. Every field the reconciler or
+ * any other read surface consults is left exactly as it was, including `updatedAt` — the module
+ * header of `session-list-normalisation.ts` carries the proof that rewriting it would change the
+ * answer for the malformed documents this migration exists to preserve.
+ *
+ * Each write is guarded by {@link buildSessionListGuard}, a compare-and-set on the values the
+ * plan was computed from, so a session the application transitions while the scan is running is
+ * left alone rather than overwritten with a normalisation of its previous state.
+ *
+ * There is nothing to refuse, so unlike `0001` and `0002` this migration cannot raise a
+ * conflict. A crash part-way leaves the documents it reached normalised and the rest untouched,
+ * which is a state the next run converges from because every write is idempotent — that is why
+ * the ledger's "apply twice" rule is enough here and a claim protocol is not needed.
+ */
+export async function normaliseSessionListFields(
+  db: Db,
+  options: { apply: boolean; log: (message: string) => void },
+): Promise<SessionListNormalisationReport> {
+  const collection = db.collection("monitored_sessions");
+  const report = emptyNormalisationReport();
+
+  const cursor = collection.find({}, { projection: SESSION_NORMALISATION_PROJECTION });
+
+  let operations: Array<Record<string, unknown>> = [];
+
+  const flush = async (): Promise<void> => {
+    if (!options.apply || operations.length === 0) return;
+    const result = await collection.bulkWrite(operations as never[], { ordered: false });
+    report.modifiedRows += result.modifiedCount;
+    operations = [];
+  };
+
+  for await (const document of cursor as AsyncIterable<Record<string, unknown>>) {
+    report.totalRows += 1;
+
+    const plan = planSessionListNormalisation(document);
+
+    if (plan.status === null) {
+      report.statusAlreadyNormal += 1;
+    } else if (plan.statusWasMissing) {
+      report.statusMissingNormalized += 1;
+    } else {
+      report.statusUnknownNormalized += 1;
+    }
+
+    switch (plan.source) {
+      case "updatedAt":
+        report.liveListUpdatedAtFromUpdatedAt += 1;
+        break;
+      case "deployedAt":
+        report.liveListUpdatedAtFromDeployedAt += 1;
+        break;
+      case "createdAt":
+        report.liveListUpdatedAtFromCreatedAt += 1;
+        break;
+      case "unverifiable":
+        report.liveListUpdatedAtUnverifiable += 1;
+        break;
+    }
+
+    if (plan.liveListUpdatedAt === null) report.liveListUpdatedAtAlreadyNormal += 1;
+
+    if (!planChangesDocument(plan)) {
+      report.unchangedRows += 1;
+      continue;
+    }
+
+    report.rewrittenRows += 1;
+
+    // A dry run counts the same things and writes nothing: the plan is computed either way, so
+    // the numbers an operator reads before applying are the numbers the run reports after.
+    if (!options.apply) continue;
+
+    operations.push({
+      updateOne: {
+        filter: buildSessionListGuard(document, plan),
+        update: buildSessionListUpdate(plan),
+      },
+    });
+
+    if (operations.length >= SESSION_NORMALISATION_BATCH) await flush();
+  }
+
+  await flush();
+
+  if (report.liveListUpdatedAtUnverifiable > 0) {
+    options.log(
+      `${report.liveListUpdatedAtUnverifiable} document(s) carry no verifiable last-activity ` +
+        `instant and are conservatively kept live, exactly as the current reader treats them; ` +
+        `any later write replaces the sentinel with a real instant`,
+    );
+  }
+
+  options.log(
+    `scanned ${report.totalRows} document(s): status ${report.statusMissingNormalized} missing ` +
+      `and ${report.statusUnknownNormalized} unrecognised normalised, ` +
+      `${report.statusAlreadyNormal} already normal`,
+  );
+  options.log(
+    `liveListUpdatedAt: ${report.liveListUpdatedAtFromUpdatedAt} from updatedAt, ` +
+      `${report.liveListUpdatedAtFromDeployedAt} from deployedAt, ` +
+      `${report.liveListUpdatedAtFromCreatedAt} from createdAt, ` +
+      `${report.liveListUpdatedAtUnverifiable} unverifiable, ` +
+      `${report.liveListUpdatedAtAlreadyNormal} already normal`,
+  );
+  options.log(
+    `${report.unchangedRows} document(s) unchanged, ${report.rewrittenRows} rewritten` +
+      (options.apply ? `, ${report.modifiedRows} modified` : " (dry run: nothing written)"),
+  );
+
+  return report;
+}
+
+/**
+ * Brings every session document into the live list's normal form, so the live-list predicate
+ * can be evaluated by an index instead of by reading the collection.
+ *
+ * ── Why this is a migration and not a read-path shim ──────────────────
+ *
+ * The live list cannot be bounded without it. `normalizeStatus` treats any unrecognised or
+ * absent status as `active`, so a `status` filter alone would silently drop rows the current
+ * code lists, and the liveness rule treats an unreadable timestamp as *not expired*, so no
+ * recency range on `updatedAt` reproduces it. Both facts are measured and documented in
+ * `docs/release/v0.6.1-release-notes.md` under "Known limitation, deliberately not fixed",
+ * which is why the bound was deferred rather than guessed at.
+ *
+ * ── What it is not ───────────────────────────────────────────────────
+ *
+ * Not a retention policy: nothing is deleted, and an expired session stays exactly as readable
+ * through the review surfaces as it was. Not a status change: every status it writes is the
+ * value the reconciler was already computing from the stored one. Not a rewrite of
+ * `updatedAt` or any other timestamp the read surfaces display.
+ *
+ * `rewritesData` is `true` because it does rewrite documents — but only into their normal form,
+ * and the migration cannot fail, refuse or delete. A dry run reports the exact counts by
+ * category through `inspect`, because "which documents will change" is the question an operator
+ * about to run a data migration actually has.
+ */
+const normaliseSessionListFieldsMigration: Migration = {
+  id: "0005-normalise-session-list-fields",
+  description:
+    "Normalise monitored_sessions.status and derive monitored_sessions.liveListUpdatedAt, so the live session list can be answered by a bounded index-backed query instead of a full collection scan.",
+  rewritesData: true,
+
+  async up({ db, log }) {
+    await normaliseSessionListFields(db, { apply: true, log });
+  },
+
+  async inspect({ db, log }) {
+    await normaliseSessionListFields(db, { apply: false, log });
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // Registry
 // ═══════════════════════════════════════════════════════════════════
 
@@ -539,6 +802,7 @@ export const MIGRATIONS: readonly Migration[] = [
   dedupeRiskAssessmentIdentity,
   renameFullscreenExitToFocusLoss,
   createPaidOperationClaimIndexes,
+  normaliseSessionListFieldsMigration,
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -599,8 +863,15 @@ export async function runMigrations(
 
   if (options.dryRun) {
     for (const entry of plan) {
-      if (entry.state === "pending") {
-        log(`would apply ${entry.id}${entry.rewritesData ? " (rewrites data)" : ""}`);
+      if (entry.state !== "pending") continue;
+      log(`would apply ${entry.id}${entry.rewritesData ? " (rewrites data)" : ""}`);
+
+      // A dry run of a data migration answers "which documents would change" only if the
+      // migration is asked. `inspect` is read-only by contract, and it is the same code path
+      // the applied run classifies with, so the two cannot report different numbers.
+      const migration = MIGRATIONS.find((candidate) => candidate.id === entry.id);
+      if (migration?.inspect) {
+        await migration.inspect({ db, log: (message) => log(`  ${message}`) });
       }
     }
     return { plan, applied, unknown: [], dryRun: true };
