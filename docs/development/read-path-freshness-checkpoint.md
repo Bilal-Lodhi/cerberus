@@ -135,7 +135,7 @@ future bounded cache would have to pass.
 | U | `v0.6` idempotency guarantees remain intact | **Met** — the full suite, including the two-process paid-route races and migration 0004, is green and unskipped; no paid-route file was touched |
 | V | CI/release harness remain green | **Met** — see §7 |
 | W | Published tags remain immutable | **Met** — see §8 |
-| X | A coherent next release candidate can be described | **Met** — [release/v0.7.0-release-notes.md](../release/v0.7.0-release-notes.md) |
+| X | A coherent next release candidate can be described | **Met** — [release/v0.6.1-release-notes.md](../release/v0.6.1-release-notes.md). Prepared as a `v0.7.0` candidate and published as **`v0.6.1`**: nothing a client can observe changed, so it is a patch |
 
 ## 5. Deliberately not done
 
@@ -202,7 +202,7 @@ the negative result is worth as much as the positive:
 | `flutter test` | **55 passed** |
 | CI on every pull request | green |
 
-Every gate with its result is in [release/v0.7.0-checklist.md](../release/v0.7.0-checklist.md).
+Every gate with its result is in [release/v0.6.1-checklist.md](../release/v0.6.1-checklist.md).
 
 ## 8. Tag immutability
 
