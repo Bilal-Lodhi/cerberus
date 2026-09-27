@@ -54,9 +54,43 @@ holding a legacy field name — `fullscreenExitCount`, `auditId` — or an unusa
 reported the same way wherever it is read, and the **larger** of two aliases wins so a
 document holding both cannot lose the higher total.
 
-`deployedAt` falls back to `createdAt` and then to the current instant. A document with
+`deployedAt` falls back to `createdAt` and then to the **request instant**. A document with
 neither is malformed — `create_session` always writes one — and a plausible instant is a
-smaller problem than a missing one on a display surface.
+smaller problem than a missing one on a display surface. The instant is a parameter
+(`nowMs`, defaulting to the wall clock), so a caller that has an injected clock gets a page
+that is a function of `(documents, now)` rather than of when the row loop happened to reach
+the document.
+
+### 2.1 The timestamp reader refuses a `Date`, and that is deliberate
+
+`readDurableString(document, "updatedAt")` accepts a **non-empty string** and nothing else.
+The fallback chain above does `String(value ?? …)`, so it accepts anything that is not
+nullish — a `Date` included. The live list uses the first for a session this process holds in
+memory and the second for one it does not
+([live-list-equivalence-model.md](live-list-equivalence-model.md) §4.1), so the two do not
+always agree about the same document.
+
+The obvious tidy-up is to teach `readDurableString` to accept a `Date`. **Do not.** It is not
+semantics-preserving, and the difference is a session appearing on the live list that is not
+there today:
+
+| `updatedAt` in the document | The local-row branch's durable candidate | Verdict, with a stale local instant |
+| --- | --- | --- |
+| ISO string (what the adapter produces) | the instant | **listed** — the later of the two instants wins |
+| BSON `Date` (a raw driver read) | none | **dropped** — this process's own stale instant decides |
+
+Both documents describe the same instant. Making the reader accept the `Date` gives the second
+one a candidate, the maximum wins, and a session that was expired becomes live.
+
+That is the same flip that
+[live-list-equivalence-model.md](live-list-equivalence-model.md) §9.3 proves for in-place
+`updatedAt` normalisation, and it is why migration `0005` puts its normalised instant in a
+**separate** field (`liveListUpdatedAt`) and leaves `updatedAt` exactly as it found it.
+
+The readers' behaviour, the fallback order, the injected-instant fallback and the millisecond
+truncation that `String(Date)` performs and the JSON path does not are all pinned by
+`apps/api/test/session-read-model-timestamps.test.ts`, which also demonstrates the flip above
+through the shipped `isExpired`.
 
 ## 3. What must agree, and what each surface reports
 
