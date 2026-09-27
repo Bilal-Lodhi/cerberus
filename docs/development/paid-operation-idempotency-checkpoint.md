@@ -142,10 +142,18 @@ place, and the attribution guard remains **prospective**.
 
 ## 7. What was published
 
-**Nothing.** No `v0.6.0` tag, no npm package, no container image, no hosted deployment, and nothing
-marked stable or latest. [v0.6.0-release-notes.md](../release/v0.6.0-release-notes.md) and
-[v0.6.0-checklist.md](../release/v0.6.0-checklist.md) are prepared and their publication steps are
-recorded as **not run**.
+**A GitHub pre-release, on 2026-09-27.** Annotated tag `v0.6.0`, tag object
+`5baf349c9d75982f8b3c5c7e9659c85d990ad14f`, target
+`6db091a0a48f20144329dc6b7236512209b712d7` — verified against `origin`, and `git rev-list -n 1
+v0.6.0` agrees. `prerelease=true`, `draft=false`, no attached assets, and nothing marked stable or
+latest.
+
+**Nothing else.** No npm package, no container image, no hosted deployment. The five earlier tags
+are unchanged (§6).
+
+[v0.6.0-release-notes.md](../release/v0.6.0-release-notes.md) is the published body, and
+[v0.6.0-checklist.md](../release/v0.6.0-checklist.md) records every gate with its result — including
+the browser smoke's screenshots, which were inspected by hand here rather than at the checkpoint.
 
 ## 8. Limitations accepted rather than fixed
 

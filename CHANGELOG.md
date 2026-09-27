@@ -15,9 +15,12 @@ The theme is **durable idempotency and side-effect safety** for the two routes t
 money. Both paid routes accept an optional `Idempotency-Key`, and a retry with one replays the
 first response instead of spending again.
 
-Published as a GitHub **pre-release**. Nothing else was published: no npm package, no container
-image and no hosted deployment, and nothing marked stable or latest. This is an experimental
-research system and is not production ready.
+Published as a GitHub **pre-release** on 2026-09-27. Annotated tag `v0.6.0`, tag object
+`5baf349c9d75982f8b3c5c7e9659c85d990ad14f`, target
+`6db091a0a48f20144329dc6b7236512209b712d7`. Nothing else was published: no npm package, no
+container image and no hosted deployment, and nothing marked stable or latest. The gates are
+recorded in [docs/release/v0.6.0-checklist.md](docs/release/v0.6.0-checklist.md). This is an
+experimental research system and is not production ready.
 
 The mechanism is a new `operation_claims` collection whose **unique index on
 `(routeFamily, keyHash)` is the whole of the mutual exclusion** — no lock service, no Redis, no

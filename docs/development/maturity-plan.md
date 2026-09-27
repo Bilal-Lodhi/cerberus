@@ -794,3 +794,19 @@ proves it — a test, a workflow run, or a measured number.
 | Rate limiting is per-process | Unchanged, and now stated alongside the idempotency order so the two cannot be confused |
 | The console embeds the operator key | Unchanged. Still a documented consequence of the single-key model |
 | Backups have no scheduling or off-host storage | Unchanged. Out of scope for this cycle |
+
+### The release
+
+**Published as a GitHub pre-release on 2026-09-27.** Annotated tag `v0.6.0`, tag object
+`5baf349c9d75982f8b3c5c7e9659c85d990ad14f`, target
+`6db091a0a48f20144329dc6b7236512209b712d7`. Nothing else was published: no npm package, no
+container image and no hosted deployment, and nothing marked stable or latest. The five earlier tags
+are unchanged. The record is
+[paid-operation-idempotency-checkpoint.md](paid-operation-idempotency-checkpoint.md) §7, and the
+gates are in [release/v0.6.0-checklist.md](../release/v0.6.0-checklist.md).
+
+### What the next cycle inherits
+
+The measured 38× live-detail cost, and the question it raises: is a durable read on every live
+detail request the right trade, or does the surface want a short-lived cache with a stated staleness
+bound? That is a design question with a number attached now, which is what this cycle was for.
