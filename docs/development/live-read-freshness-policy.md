@@ -141,8 +141,8 @@ At best concurrency (8 in flight) one process serves **1 849 live-detail request
 
 ### 6.2 Who actually polls, and how often
 
-The console's request-frequency audit is the fact that decides this. Its findings, quoted from the
-audit rather than restated:
+The console's request-frequency audit — [console-polling-audit.md](console-polling-audit.md) — is
+the fact that decides this. Its findings, quoted from the audit rather than restated:
 
 - the console's only periodic mechanism is a 5-second poll loop
   (`apps/console/lib/services/api_service.dart:212-230`);
