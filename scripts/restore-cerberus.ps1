@@ -200,6 +200,8 @@ $criticalDocument = Get-Content $criticalPath -Raw | ConvertFrom-Json
 $critical = $criticalDocument.indexes
 $criticalTtl = $criticalDocument.ttlIndexes
 if (-not $criticalTtl) { $criticalTtl = @() }
+$criticalQuery = $criticalDocument.queryIndexes
+if (-not $criticalQuery) { $criticalQuery = @() }
 
 # A here-string rather than a one-line nested-arrow expression: the one-liner had an
 # unbalanced parenthesis, which mongosh reported as `Unexpected token, expected ","` and
@@ -215,6 +217,13 @@ db.getCollectionNames().sort().forEach(function (collection) {
     if (index.unique) print("unique", collection, keys);
     if (typeof index.expireAfterSeconds === "number") {
       print("ttl", collection, keys, index.expireAfterSeconds);
+    }
+    // A bounded read's index. Printed with its **name**, because that is how the query plan
+    // identifies it and how the critical-index list declares it — two indexes with the same key
+    // and different names or options are different indexes, and only one of them is the one the
+    // query was planned against.
+    if (!index.unique && typeof index.expireAfterSeconds !== "number" && index.name !== "_id_") {
+      print("query", collection, keys, index.name);
     }
   });
 });
@@ -247,10 +256,12 @@ function Get-ServerIndexes([string]$database, [string]$kind, [int]$tokenCount) {
 
 $restoredIndexes = @(Get-ServerIndexes $TargetDatabase 'unique' 3)
 $restoredTtl = @(Get-ServerIndexes $TargetDatabase 'ttl' 4)
+$restoredQuery = @(Get-ServerIndexes $TargetDatabase 'query' 4)
 $missingIndexes = @()
 
 Write-Host "  unique indexes found: $(if ($restoredIndexes.Count -gt 0) { $restoredIndexes -join ', ' } else { 'none' })"
 Write-Host "  TTL indexes found:    $(if ($restoredTtl.Count -gt 0) { $restoredTtl -join ', ' } else { 'none' })"
+Write-Host "  query indexes found:  $(if ($restoredQuery.Count -gt 0) { $restoredQuery -join ', ' } else { 'none' })"
 
 foreach ($entry in $critical) {
     # The key pattern is compared as the driver reports it: field names in order, joined
@@ -275,11 +286,23 @@ foreach ($entry in $criticalTtl) {
     if (-not $present) { $missingIndexes += $needle }
 }
 
+foreach ($entry in $criticalQuery) {
+    $keys = ($entry.key.PSObject.Properties.Name) -join '+'
+    # `<collection>:<keys>:<name>`. The name is part of the identity: the bounded live-list query
+    # is asserted against a specific index, and a restore that produced the same key under a
+    # different name would satisfy a key-only check while leaving the query without its index.
+    $needle = "$($entry.collection):$($keys):$($entry.name)"
+    $present = $restoredQuery -contains $needle
+    $mark = if ($present) { 'ok  ' } else { 'FAIL' }
+    Write-Host ("  {0} query  {1}" -f $mark, $needle)
+    if (-not $present) { $missingIndexes += $needle }
+}
+
 if ($missingIndexes.Count -gt 0) {
-    throw "The restore is missing these indexes: $($missingIndexes -join ', '). Every document came back, but the constraints and retention bounds that keep them in order did not — a restored database would accept duplicates the product forbids, or grow without limit. Do not use this restore."
+    throw "The restore is missing these indexes: $($missingIndexes -join ', '). Every document came back, but the constraints, retention bounds and bounded-read indexes that keep them in order did not — a restored database would accept duplicates the product forbids, grow without limit, or read every session document ever created to answer the live list. Do not use this restore."
 }
 
 Write-Host ''
-Write-Host "[restore] OK - $TargetDatabase matches the backup, with its uniqueness and retention guarantees"
+Write-Host "[restore] OK - $TargetDatabase matches the backup, with its uniqueness, retention and bounded-read guarantees"
 Write-Host "[restore] drop the scratch database when the drill is done:"
 Write-Host "          mongosh `"$Uri`" --eval 'db.getSiblingDB(`"$TargetDatabase`").dropDatabase()'"

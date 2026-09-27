@@ -17,6 +17,7 @@ import {
   DEFAULT_DATABASE_NAME,
 } from "./tool-names.js";
 import { ensureOperationClaimIndexes } from "./operation-claims.js";
+import { ensureLiveListIndexes } from "./live-list-query.js";
 import {
   isRetryableFailure,
   type ClaimPaidOperationInput,
@@ -411,6 +412,19 @@ export class MongoStore {
     await sessions.createIndex({ sessionId: 1 }, { unique: true });
     await sessions.createIndex({ employeeId: 1, auditId: 1 });
     await sessions.createIndex({ createdAt: -1 });
+
+    // ── The live session list's own indexes ──────────────────────────
+    //
+    // The list is the only read surface whose cost grew with the size of the collection, because
+    // it read every session document ever created and discarded the finished ones in JavaScript.
+    // These two indexes are what let the replacement predicate be answered by the server instead
+    // — see `live-list-query.ts` for why there are two rather than one, and
+    // `docs/development/live-list-equivalence-model.md` §10.1 for the predicate they serve.
+    //
+    // The specification is shared with `scripts/release/critical-indexes.json` through that
+    // module rather than repeated here, so the list a restore is verified against cannot drift
+    // from the indexes the product actually creates.
+    await ensureLiveListIndexes(sessions);
 
     await microEvents.createIndex({ sessionId: 1, timestamp: -1 });
     await microEvents.createIndex({ eventType: 1 });
