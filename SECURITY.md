@@ -35,7 +35,7 @@ We will credit reporters in the release notes unless you ask us not to.
 
 ## Supported versions
 
-`v0.6.0` was published as a pre-release on 2026-09-27. Only the latest minor
+`v0.6.1` was published as a pre-release on 2026-09-27. Only the latest minor
 release line receives security fixes. Older versions are not supported.
 
 | Version | Supported |

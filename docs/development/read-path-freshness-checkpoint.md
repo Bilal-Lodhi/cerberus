@@ -204,13 +204,31 @@ the negative result is worth as much as the positive:
 
 Every gate with its result is in [release/v0.6.1-checklist.md](../release/v0.6.1-checklist.md).
 
-## 8. Tag immutability
+## 8. The release
 
-`v0.1.0` through `v0.6.0` were verified unchanged at the start of the cycle and again at the
-checkpoint. The exact objects are in the checklist. No tag was moved, no history was rewritten,
-and no published commit was amended.
+**Published as a GitHub pre-release on 2026-09-27 as `v0.6.1`, not `v0.7.0`.**
 
-## 9. What the next cycle inherits
+The cycle prepared a `v0.7.0` candidate and the maintainer decided against it. Nothing a client can
+observe about the running system changed — no route, no response field, no configuration, no
+schema, index or migration, no cache — and the only behavioural code change is a test fix. Under
+SemVer discipline that is a patch. The candidate documents were converted into this release's
+material by `git mv` rather than deleted, so the working documents' history is preserved.
+
+| | |
+| --- | --- |
+| Frozen release target | `42c0cc8c0deba2a853c9c6f3295c1ad843276610` |
+| Tag | Annotated `v0.6.1`, object `5a4e3191c0e38bbef17d86ec2bfe7b29bdf4bf75` |
+| GitHub Release | <https://github.com/Bilal-Lodhi/cerberus/releases/tag/v0.6.1> — `prerelease=true`, `draft=false`, 0 assets, nothing marked Latest |
+| Gates | 19 passed, 0 failed, 0 skipped — both locally on the frozen target and through its `workflow_dispatch` |
+| Also published | **Nothing.** No npm package, no container image, no hosted deployment |
+
+## 9. Tag immutability
+
+`v0.1.0` through `v0.6.0` were verified unchanged at the start of the cycle, again at the
+checkpoint, and again after `v0.6.1` was pushed. The exact objects are in the checklist. No tag was
+moved, no history was rewritten, and no published commit was amended.
+
+## 10. What the next cycle inherits
 
 1. **The bounded live-list query**, with its migration, its index and its equivalence proof.
 2. **The console's polling model**, recorded and unfixed.

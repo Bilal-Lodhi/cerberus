@@ -16,9 +16,11 @@ changed: this release corrects a published measurement that was wrong, adds the 
 measures the read path against a real database, and states — normatively — what "current" means
 on every surface that reads a session.
 
-Published as a GitHub **pre-release**. Nothing else was published: no npm package, no container
-image and no hosted deployment, and nothing marked stable or latest. This is an experimental
-research system and is not production ready. The gates are recorded in
+Published as a GitHub **pre-release** on 2026-09-27. Annotated tag `v0.6.1`, tag object
+`5a4e3191c0e38bbef17d86ec2bfe7b29bdf4bf75`, target
+`42c0cc8c0deba2a853c9c6f3295c1ad843276610`. Nothing else was published: no npm package, no
+container image and no hosted deployment, and nothing marked stable or latest. This is an
+experimental research system and is not production ready. The gates are recorded in
 [docs/release/v0.6.1-checklist.md](docs/release/v0.6.1-checklist.md).
 
 ### Why this is a patch release
