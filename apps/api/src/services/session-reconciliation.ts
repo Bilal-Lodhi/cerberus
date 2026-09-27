@@ -235,7 +235,7 @@ export function reconcileLiveList(
 
     const document = durableById.get(entry.sessionId) ?? null;
     const view: DurableSessionView | null = document
-      ? readDurableSessionView(document, entry.sessionId)
+      ? readDurableSessionView(document, entry.sessionId, nowMs)
       : null;
 
     if (!document) localOnly.push(entry.sessionId);
@@ -319,7 +319,7 @@ export function reconcileLiveList(
       if (seen.has(sessionId)) continue;
       seen.add(sessionId);
 
-      const view = readDurableSessionView(document, sessionId);
+      const view = readDurableSessionView(document, sessionId, nowMs);
 
       if (!isMonitored(view.status)) {
         dropped.push({ sessionId, reason: "terminated" });
@@ -364,6 +364,19 @@ export function reconcileLiveList(
     }
   }
 
+  // ── Newest first, then a deterministic tie-break ───────────────────
+  //
+  // `deployedAt` is not unique: the benchmark seeds thousands of sessions in a tight loop and
+  // real deployments create sessions within the same millisecond. Before this, the order of
+  // two rows sharing a `deployedAt` was whatever MongoDB happened to return for the durable
+  // side, which is not a guarantee anyone can test against — and `bRank - aRank` for two
+  // rows that both fail to parse is `-Infinity - -Infinity`, i.e. `NaN`, which the sort
+  // specification collapses to "equal" and therefore leaves to insertion order.
+  //
+  // `sessionId` ascending makes the order a total one. It is a comparator on **code units**,
+  // not `localeCompare`: the response order must not depend on which ICU collation the
+  // runtime was built with. This refines an unspecified order; it cannot reorder a pair whose
+  // `deployedAt` differs. See live-list-equivalence-model.md §9.4.
   sessions.sort((a, b) => {
     const aTime = Date.parse(a.deployedAt);
     const bTime = Date.parse(b.deployedAt);
@@ -371,7 +384,9 @@ export function reconcileLiveList(
     // sorts last rather than producing NaN comparisons.
     const aRank = Number.isFinite(aTime) ? aTime : Number.NEGATIVE_INFINITY;
     const bRank = Number.isFinite(bTime) ? bTime : Number.NEGATIVE_INFINITY;
-    return bRank - aRank;
+    if (aRank !== bRank) return bRank - aRank;
+    if (a.sessionId === b.sessionId) return 0;
+    return a.sessionId < b.sessionId ? -1 : 1;
   });
 
   return {
@@ -495,7 +510,9 @@ export function reconcileLiveDetail(
   const clock = fixedClock(nowMs);
 
   const sessionId = local?.sessionId ?? String(durableDocument?.["sessionId"] ?? "");
-  const view = durableDocument ? readDurableSessionView(durableDocument, sessionId) : null;
+  const view = durableDocument
+    ? readDurableSessionView(durableDocument, sessionId, nowMs)
+    : null;
 
   const status = view ? view.status : normalizeStatus(local?.status ?? "active");
   const statusSource: ReconciledLiveDetail["statusSource"] = view
