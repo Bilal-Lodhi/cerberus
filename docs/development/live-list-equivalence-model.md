@@ -436,6 +436,12 @@ Everything above yields one target shape for a `monitored_sessions` document, an
 more than this shape is required to make the list predicate total, index-usable and
 provably equivalent:
 
+**Implemented by migration `0005-normalise-session-list-fields`**
+(`packages/mcp-mongodb/src/migrations.ts`), with the decision itself in the pure module
+`packages/mcp-mongodb/src/session-list-normalisation.ts` and the equivalence asserted by
+`apps/api/test/live-list-normalisation.test.ts` and
+`apps/api/test/release/live-list-normalisation-migration.test.ts`.
+
 | Field | Before | After | Rule |
 | --- | --- | --- | --- |
 | `status` | any value, or absent | `active` \| `locked` \| `terminated` | `normalizeStatus(String(status ?? "active"))`, applied only when it differs |

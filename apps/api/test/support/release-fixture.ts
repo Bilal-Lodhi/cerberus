@@ -672,6 +672,32 @@ export const ADVERSARIAL_SESSION_ROWS: readonly AdversarialSessionRow[] = [
 export const ADVERSARIAL_EMPLOYEE_ID = "adv-operator";
 
 /**
+ * Writes a **v0.6.1 database plus the adversarial session rows**.
+ *
+ * The combination is what matters. The adversarial rows alone leave the migration ledger empty,
+ * so every migration from `0001` onward is pending and a test of `0005` would be exercising the
+ * whole upgrade rather than the one migration it is about. The ledger is seeded from
+ * {@link RELEASE_SHAPES} — rather than repeating the ids here — so "what `v0.6.1` shipped" stays
+ * in the one place the release notes are transcribed into.
+ */
+export async function seedV061AdversarialFixture(db: Db): Promise<{
+  inserted: number;
+  rows: readonly AdversarialSessionRow[];
+}> {
+  const shape = RELEASE_SHAPES["v0.6.1"];
+
+  await db.collection(COLLECTION_NAMES.schemaMigrations).insertMany(
+    shape.appliedMigrations.map((migrationId) => ({
+      migrationId,
+      appliedAt: new Date(ADVERSARIAL_NOW_MS),
+      description: `${migrationId} (recorded by the v0.6.1 adversarial fixture)`,
+    })) as never[],
+  );
+
+  return seedAdversarialSessionRows(db);
+}
+
+/**
  * Writes the adversarial rows into `db`.
  *
  * Through the raw driver, like {@link seedPublishedRelease}, and for the same reason: the

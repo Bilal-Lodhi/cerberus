@@ -117,6 +117,10 @@ if (REAL_MONGODB_URI) {
             "0002-dedupe-risk-assessment-identity",
             "0003-rename-fullscreen-exit-to-focus-loss",
             "0004-paid-operation-claim-indexes",
+            // Appended by the v0.7.0 cycle. The list is stated rather than derived from the
+            // fixture on purpose: deriving it would make the assertion agree with any fixture,
+            // including one that wrongly claimed a migration had already been applied.
+            "0005-normalise-session-list-fields",
           ],
           "the dry run did not report the migrations this release left pending",
         );
@@ -156,6 +160,7 @@ if (REAL_MONGODB_URI) {
             "0002-dedupe-risk-assessment-identity",
             "0003-rename-fullscreen-exit-to-focus-loss",
             "0004-paid-operation-claim-indexes",
+            "0005-normalise-session-list-fields",
           ],
         );
 
@@ -252,23 +257,25 @@ if (REAL_MONGODB_URI) {
 
     // ── v0.3.0: the upgrade that is already complete ────────────────
 
-    test("v0.3.0 — the only thing pending is the claim indexes, and a run applies exactly that", async () => {
+    test("v0.3.0 — the only things pending are the two migrations added since, and a run applies exactly those", async () => {
       await withRelease("v0.3.0", async ({ store }) => {
-        // `v0.3.0` shipped every migration that existed at the time, so before this cycle
-        // it was the release that left nothing pending. That is no longer true of any
-        // published release: every one of them predates `0004`, so an upgrade from any of
-        // them has exactly one thing to do. The "nothing pending" case is asserted against
-        // a *current* database by the v0.5.0 re-run test below, which is the only place it
-        // can honestly be asserted now.
+        // `v0.3.0` shipped every migration that existed at the time, so before the v0.6.0 cycle
+        // it was the release that left nothing pending. Every published release now predates
+        // `0004` and `0005`, so an upgrade from any of them has exactly those two things to do.
+        // The "nothing pending" case is asserted against a *current* database by the v0.5.0
+        // re-run test below, which is the only place it can honestly be asserted now.
         const plan = await store.runMigrations({ dryRun: true });
         assert.deepEqual(
           plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id),
-          ["0004-paid-operation-claim-indexes"],
-          "the v0.3.0 upgrade is not exactly the one migration this cycle adds",
+          ["0004-paid-operation-claim-indexes", "0005-normalise-session-list-fields"],
+          "the v0.3.0 upgrade is not exactly the migrations added since that release",
         );
 
         const result = await store.runMigrations();
-        assert.deepEqual(result.applied, ["0004-paid-operation-claim-indexes"]);
+        assert.deepEqual(result.applied, [
+          "0004-paid-operation-claim-indexes",
+          "0005-normalise-session-list-fields",
+        ]);
       });
     });
 
@@ -294,11 +301,11 @@ if (REAL_MONGODB_URI) {
 
     // ── v0.5.0: the upgrade this cycle actually ships ───────────────
 
-    test("v0.5.0 — nothing but the claim collection's indexes is pending", async () => {
+    test("v0.5.0 — nothing but the migrations added since is pending", async () => {
       await withRelease("v0.5.0", async ({ db, store }) => {
-        // The published release left a database with no `operation_claims` collection at
-        // all, so this is the ordinary case: one migration, creating one new collection's
-        // two indexes, and nothing else.
+        // The published release left a database with no `operation_claims` collection at all,
+        // so this is the ordinary case: two migrations, one creating a new collection's two
+        // indexes and one normalising the session list fields, and nothing else.
         const before = await db.listCollections({ name: COLLECTION_NAMES.operationClaims }).toArray();
         assert.equal(
           before.length,
@@ -309,8 +316,8 @@ if (REAL_MONGODB_URI) {
         const plan = await store.runMigrations({ dryRun: true });
         assert.deepEqual(
           plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id),
-          ["0004-paid-operation-claim-indexes"],
-          "the v0.5.0 upgrade is not exactly the one migration this cycle adds",
+          ["0004-paid-operation-claim-indexes", "0005-normalise-session-list-fields"],
+          "the v0.5.0 upgrade is not exactly the migrations added since that release",
         );
         assert.deepEqual(plan.applied, [], "a dry run applied something");
       });
@@ -342,7 +349,10 @@ if (REAL_MONGODB_URI) {
     test("v0.5.0 — migrating creates the claim collection with both of its indexes", async () => {
       await withRelease("v0.5.0", async ({ db, store }) => {
         const result = await store.runMigrations();
-        assert.deepEqual(result.applied, ["0004-paid-operation-claim-indexes"]);
+        assert.deepEqual(result.applied, [
+          "0004-paid-operation-claim-indexes",
+          "0005-normalise-session-list-fields",
+        ]);
 
         const indexes = await db.collection(COLLECTION_NAMES.operationClaims).indexes();
 
@@ -414,6 +424,66 @@ if (REAL_MONGODB_URI) {
           indexesAfterFirstRun,
           "a second run changed the claim collection's indexes",
         );
+      });
+    });
+
+    // ── v0.6.1: the release this cycle starts from ──────────────────
+
+    test("v0.6.1 — the only thing pending is the live-list normalisation, and a run applies exactly that", async () => {
+      await withRelease("v0.6.1", async ({ db, store }) => {
+        // `v0.6.1`'s release notes say "Migration `0004` is untouched; there is no `0005`", so
+        // the ledger holds all four and the whole upgrade is one migration.
+        const before = await db
+          .collection(COLLECTION_NAMES.sessions)
+          .findOne({ sessionId: "fixture-session-1" });
+        assert.ok(before, "the fixture session is missing");
+        assert.equal(
+          before["liveListUpdatedAt"],
+          undefined,
+          "the v0.6.1 fixture already carries liveListUpdatedAt, so it does not represent the published release",
+        );
+
+        const plan = await store.runMigrations({ dryRun: true });
+        assert.deepEqual(
+          plan.plan.filter((entry) => entry.state === "pending").map((entry) => entry.id),
+          ["0005-normalise-session-list-fields"],
+          "the v0.6.1 upgrade is not exactly the one migration this cycle adds",
+        );
+        assert.deepEqual(plan.applied, [], "a dry run applied something");
+
+        const result = await store.runMigrations();
+        assert.deepEqual(result.applied, ["0005-normalise-session-list-fields"]);
+      });
+    });
+
+    test("v0.6.1 — the canonical session is normalised and nothing else about it changes", async () => {
+      await withRelease("v0.6.1", async ({ db, store, fixture }) => {
+        const before = await db
+          .collection(COLLECTION_NAMES.sessions)
+          .findOne({ sessionId: fixture.sessionId });
+        assert.ok(before);
+
+        await store.runMigrations();
+
+        const after = await db
+          .collection(COLLECTION_NAMES.sessions)
+          .findOne({ sessionId: fixture.sessionId });
+        assert.ok(after);
+
+        // `status` was already `active`, so it is untouched — a document that is already in the
+        // normal form is not rewritten. The derived instant is added, and it is the `updatedAt`
+        // the fixture wrote, not the moment the migration ran.
+        assert.equal(after["status"], "active");
+        assert.ok(after["liveListUpdatedAt"] instanceof Date, "liveListUpdatedAt was not written");
+        assert.equal(
+          (after["liveListUpdatedAt"] as Date).getTime(),
+          (before["updatedAt"] as Date).getTime(),
+          "the derived instant is not the document's own updatedAt",
+        );
+
+        const { liveListUpdatedAt: _instant, ...restAfter } = after;
+        const { liveListUpdatedAt: _before, ...restBefore } = before;
+        assert.deepEqual(restAfter, restBefore, "the migration changed another field");
       });
     });
 

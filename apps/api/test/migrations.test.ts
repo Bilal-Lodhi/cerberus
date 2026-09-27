@@ -185,6 +185,10 @@ interface FakeDb {
   sessionCountCalls: () => number;
   sessionUpdateCalls: () => number;
   ledgerIndexCalls: () => number;
+  /** How many times a migration opened a cursor over `monitored_sessions`. */
+  sessionFindCalls: () => number;
+  /** Every guarded session write a migration attempted, in order. */
+  sessionWrites: () => Array<{ filter: Record<string, unknown>; update: Record<string, unknown> }>;
   /** Every index the claim migration created, in order, as `key -> options`. */
   claimIndexCalls: () => Array<{ key: Record<string, number>; options: Record<string, unknown> }>;
 }
@@ -208,6 +212,14 @@ function fakeDb(options: {
   /** Duplicate groups for `risk_assessments`, keyed by `riskAssessmentId`. */
   /** How many session documents carry the legacy focus-loss field. */
   legacyFocusLossDocs?: number;
+  /**
+   * The session documents migration `0005` reads.
+   *
+   * Supplied by the caller rather than invented here, because the whole point of `0005` is that
+   * its behaviour depends on what the documents hold — a fake that returned a fixed shape would
+   * test the fake.
+   */
+  sessionDocuments?: Array<Record<string, unknown>>;
   riskAssessmentGroups?: Array<{
     _id: string;
     count: number;
@@ -221,7 +233,12 @@ function fakeDb(options: {
   let riskAssessmentAggregateCalls = 0;
   let sessionCountCalls = 0;
   let sessionUpdateCalls = 0;
+  let sessionFindCalls = 0;
   let ledgerIndexCalls = 0;
+  const sessionWrites: Array<{
+    filter: Record<string, unknown>;
+    update: Record<string, unknown>;
+  }> = [];
   const claimIndexCalls: Array<{
     key: Record<string, number>;
     options: Record<string, unknown>;
@@ -257,6 +274,29 @@ function fakeDb(options: {
     async updateMany() {
       sessionUpdateCalls++;
       return { modifiedCount: options.legacyFocusLossDocs ?? 0 };
+    },
+    /**
+     * A cursor over the supplied documents.
+     *
+     * Migration `0005` streams `monitored_sessions` with `for await`, so the fake has to be an
+     * async iterable rather than an object with `toArray()`. Returning a generator is also what
+     * makes "the migration reads the collection once" checkable: the counter increments on
+     * `find`, not on iteration, so a second pass shows up.
+     */
+    find() {
+      sessionFindCalls++;
+      const documents = options.sessionDocuments ?? [];
+      return (async function* iterate() {
+        for (const document of documents) yield document;
+      })();
+    },
+    async bulkWrite(
+      operations: Array<{
+        updateOne: { filter: Record<string, unknown>; update: Record<string, unknown> };
+      }>,
+    ) {
+      for (const operation of operations) sessionWrites.push(operation.updateOne);
+      return { modifiedCount: operations.length };
     },
   };
 
@@ -326,6 +366,8 @@ function fakeDb(options: {
     riskAssessmentAggregateCalls: () => riskAssessmentAggregateCalls,
     sessionCountCalls: () => sessionCountCalls,
     sessionUpdateCalls: () => sessionUpdateCalls,
+    sessionFindCalls: () => sessionFindCalls,
+    sessionWrites: () => sessionWrites,
     ledgerIndexCalls: () => ledgerIndexCalls,
     claimIndexCalls: () => claimIndexCalls,
   };
@@ -353,6 +395,7 @@ const APPLIED_ALL = [
   "0002-dedupe-risk-assessment-identity",
   "0003-rename-fullscreen-exit-to-focus-loss",
   "0004-paid-operation-claim-indexes",
+  "0005-normalise-session-list-fields",
 ];
 
 describe("planMigrations", () => {
@@ -411,11 +454,12 @@ describe("runMigrations", () => {
 
     assert.deepEqual(result.applied, APPLIED_ALL);
     assert.deepEqual(deletedIdBatches, [["b"]]);
-    assert.equal(ledger.length, 4);
+    assert.equal(ledger.length, APPLIED_ALL.length);
     assert.equal(ledger[0]["migrationId"], "0001-dedupe-micro-event-identity");
     assert.equal(ledger[1]["migrationId"], "0002-dedupe-risk-assessment-identity");
     assert.equal(ledger[2]["migrationId"], "0003-rename-fullscreen-exit-to-focus-loss");
     assert.equal(ledger[3]["migrationId"], "0004-paid-operation-claim-indexes");
+    assert.equal(ledger[4]["migrationId"], "0005-normalise-session-list-fields");
     assert.ok(ledger[0]["appliedAt"] instanceof Date);
   });
 
@@ -743,8 +787,28 @@ describe("0004 — the paid-operation claim indexes", () => {
     assert.equal(migration.rewritesData, false);
   });
 
-  test("is the last migration, so it cannot run before the data it depends on", () => {
-    assert.equal(MIGRATIONS[MIGRATIONS.length - 1].id, "0004-paid-operation-claim-indexes");
+  test("runs after the data migrations it depends on", () => {
+    // The original form of this assertion was "it is the last migration", which stopped being
+    // the same statement as soon as `0005` existed. The property that actually matters is
+    // ordering: `0004` may create the claim collection's indexes only once `0001`–`0003` have
+    // made them creatable, so it must never be reordered ahead of them.
+    const order = MIGRATIONS.map((migration) => migration.id);
+    const position = (id: string): number => {
+      const index = order.indexOf(id);
+      assert.ok(index >= 0, `${id} is missing from the registry`);
+      return index;
+    };
+
+    for (const dependency of [
+      "0001-dedupe-micro-event-identity",
+      "0002-dedupe-risk-assessment-identity",
+      "0003-rename-fullscreen-exit-to-focus-loss",
+    ]) {
+      assert.ok(
+        position(dependency) < position("0004-paid-operation-claim-indexes"),
+        `0004 now runs before ${dependency}, which it depends on`,
+      );
+    }
   });
 
   test("the shared index specification matches what the migration applied", async () => {
@@ -762,6 +826,117 @@ describe("0004 — the paid-operation claim indexes", () => {
       "the shared claim-index specification changed, so the migration and the store can now " +
         "disagree and the second to run will fail",
     );
+  });
+});
+
+describe("0005 — the live-list normal form", () => {
+  /** A session document, with only the fields the normalisation reads. */
+  const session = (
+    id: string,
+    overrides: Record<string, unknown> = {},
+    remove: readonly string[] = [],
+  ): Record<string, unknown> => {
+    const document: Record<string, unknown> = {
+      _id: id,
+      sessionId: id,
+      status: "active",
+      updatedAt: new Date("2026-03-01T11:59:00.000Z"),
+      deployedAt: new Date("2026-03-01T11:59:00.000Z"),
+      createdAt: new Date("2026-03-01T11:59:00.000Z"),
+      ...overrides,
+    };
+    for (const key of remove) delete document[key];
+    return document;
+  };
+
+  const DOCUMENTS = [
+    session("already-normal"),
+    session("status-missing", {}, ["status"]),
+    session("status-unknown", { status: "cleared" }),
+    session("updated-at-missing", {}, ["updatedAt"]),
+    // No verifiable instant anywhere: the sentinel case.
+    session("unverifiable", { updatedAt: "not-a-date" }),
+  ];
+
+  test("is registered, rewrites data, and exposes the plan to a dry run", async () => {
+    const migration = MIGRATIONS.find((entry) => entry.id === "0005-normalise-session-list-fields");
+    assert.ok(migration);
+    assert.equal(migration.rewritesData, true, "a data migration must say so");
+    assert.ok(migration.inspect, "0005 must report its intended changes without applying them");
+  });
+
+  test("the dry run reports the categories and writes nothing", async () => {
+    const { db, sessionWrites, sessionFindCalls } = fakeDb({ sessionDocuments: DOCUMENTS });
+    const lines: string[] = [];
+
+    const result = await runMigrations(db, { dryRun: true, log: (line) => lines.push(line) });
+
+    assert.ok(
+      result.plan.some((entry) => entry.id === "0005-normalise-session-list-fields"),
+      "the plan does not name 0005",
+    );
+    assert.deepEqual(result.applied, [], "a dry run applied something");
+    assert.deepEqual(sessionWrites(), [], "a dry run wrote a session document");
+    assert.equal(sessionFindCalls(), 1, "the dry run did not scan the collection exactly once");
+
+    const report = lines.join("\n");
+    // The exact counts, from the five documents above: one missing status, one unrecognised and
+    // three already normal; three instants from `updatedAt`, one from `deployedAt` because
+    // `updatedAt` is absent, and one unverifiable because `updatedAt` cannot be parsed.
+    assert.match(report, /scanned 5 document\(s\): status 1 missing and 1 unrecognised normalised, 3 already normal/);
+    assert.match(report, /1 unverifiable/);
+    assert.match(report, /1 from deployedAt/);
+    assert.match(report, /dry run: nothing written/);
+  });
+
+  test("applying it writes only the two normal-form fields, guarded on what it read", async () => {
+    const { db, sessionWrites } = fakeDb({ sessionDocuments: DOCUMENTS });
+
+    const result = await runMigrations(db);
+    assert.deepEqual(result.applied, APPLIED_ALL);
+
+    const writes = sessionWrites();
+    // Every document needs the derived instant, because none of them carries one — a document
+    // whose status is already normal is still a document the field is missing from. That is the
+    // distinction the "unchanged" category is about: `status` is untouched on three of these.
+    assert.equal(writes.length, DOCUMENTS.length);
+    assert.equal(
+      writes.filter((write) => (write.update["$set"] as Record<string, unknown>)["status"] !== undefined)
+        .length,
+      2,
+      "the wrong number of documents had their status normalised",
+    );
+
+    for (const write of writes) {
+      assert.deepEqual(Object.keys(write.update), ["$set"]);
+      const set = write.update["$set"] as Record<string, unknown>;
+      assert.deepEqual(
+        Object.keys(set).filter((key) => key !== "status" && key !== "liveListUpdatedAt"),
+        [],
+        `0005 wrote a field outside the normal form: ${Object.keys(set).join(", ")}`,
+      );
+      // The guard: the write applies only while the fields the plan was computed from are
+      // unchanged, so a session the application transitions mid-scan is not overwritten.
+      assert.ok("_id" in write.filter, "a guarded write did not identify its document");
+      if (set["status"] !== undefined) assert.ok("status" in write.filter);
+      if (set["liveListUpdatedAt"] !== undefined) {
+        assert.ok("liveListUpdatedAt" in write.filter);
+      }
+    }
+  });
+
+  test("the guard matches an absent field with $exists rather than null", async () => {
+    // `{ field: null }` also matches a document where the field is *missing*, so a filter that
+    // meant "it had no status" would also match a document that gained one after the scan.
+    const { db, sessionWrites } = fakeDb({ sessionDocuments: DOCUMENTS });
+    await runMigrations(db);
+
+    const missingStatusWrite = sessionWrites().find(
+      (write) => (write.update["$set"] as Record<string, unknown>)["status"] === "active" &&
+        write.filter["status"] !== undefined,
+    );
+    assert.ok(missingStatusWrite, "no write normalised a status");
+    assert.deepEqual(missingStatusWrite!.filter["status"], { $exists: false });
   });
 });
 
