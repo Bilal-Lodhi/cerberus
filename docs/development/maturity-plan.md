@@ -887,11 +887,17 @@ together rather than a partial bound landed to make a number smaller.
 
 ### The release
 
-**Prepared, not published.** The recommendation is
-[release/v0.7.0-release-notes.md](../release/v0.7.0-release-notes.md): *Cerberus v0.7.0 —
-Freshness Contracts & Read-Path Efficiency*. The one observable behaviour change is a correction
-to a flaky test; nothing in the API changed. A case exists for shipping this as `v0.6.1` instead,
-and it is stated in the release notes rather than hidden.
+**Published as a GitHub pre-release as `v0.6.1`, not `v0.7.0`.** The cycle prepared a `v0.7.0`
+candidate and the maintainer decided against it: nothing a client can observe about the running
+system changed — no route, no response field, no configuration, no schema, index or migration, no
+cache, and the paid routes are byte-for-byte `v0.6.0`. The only behavioural code change is a test
+fix. Under SemVer that is a **patch**.
+
+The `v0.7.0` candidate documents were converted into
+[release/v0.6.1-release-notes.md](../release/v0.6.1-release-notes.md) and
+[release/v0.6.1-checklist.md](../release/v0.6.1-checklist.md) rather than left in the tree, so a
+reader does not have to disambiguate a candidate that was never published from the release that
+shipped.
 
 ### What the next cycle inherits
 

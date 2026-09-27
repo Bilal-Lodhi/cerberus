@@ -9,6 +9,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.6.1] - 2026-09-27
+
+The theme is **read-path measurement and a written freshness contract**. No runtime behaviour
+changed: this release corrects a published measurement that was wrong, adds the instrument that
+measures the read path against a real database, and states — normatively — what "current" means
+on every surface that reads a session.
+
+Published as a GitHub **pre-release**. Nothing else was published: no npm package, no container
+image and no hosted deployment, and nothing marked stable or latest. This is an experimental
+research system and is not production ready. The gates are recorded in
+[docs/release/v0.6.1-checklist.md](docs/release/v0.6.1-checklist.md).
+
+### Why this is a patch release
+
+`0.6.1`, not `0.7.0`. Nothing a client can observe about the running system changed:
+
+- no route behaviour, request or response shape changed, and no response field was added or
+  removed;
+- no server configuration was added or changed;
+- no cache was introduced, so every read surface is still `DURABLE_CURRENT` with a maximum
+  staleness of **0 ms**;
+- no schema, index or migration changed — migration `0004` is untouched and there is no `0005`;
+- the paid routes are byte-for-byte the `v0.6.0` behaviour: the `Idempotency-Key` contract, the
+  claim protocol, the pending lease and the stale reclaim are unchanged;
+- the only behavioural code change is a **test** fix.
+
+The substance is measurement, benchmark-fidelity correction, a polling audit, a normative
+document and two release-tooling fixes. Under SemVer that is a patch.
+
+### Added
+
+- **A real-MongoDB read-path benchmark**, `npm run bench:read-path`
+  (`scripts/bench/run-read-path-bench.mjs`). It drives the compiled API against a real driver and
+  a real server, and reports **persistence calls per request** alongside latency — the number a
+  cache would actually change. It **refuses to run** without `CERBERUS_BENCH_MONGODB_URI` rather
+  than falling back to a stub, because a read-path figure produced against an in-process double
+  is not a read-path figure. The baseline is
+  [docs/development/read-path-performance.md](docs/development/read-path-performance.md).
+- **A normative freshness contract**,
+  [docs/development/live-read-freshness-policy.md](docs/development/live-read-freshness-policy.md).
+  Four terms — `DURABLE_CURRENT`, `BOUNDED_STALE`, `PROCESS_LOCAL`, `ABSENT` — the maximum
+  staleness per surface, the six states that may never be served stale, what may and may not be
+  cached, and the eight-clause gate a future bounded cache would have to pass. Written **before**
+  any implementation, deliberately.
+- **A console polling audit**,
+  [docs/development/console-polling-audit.md](docs/development/console-polling-audit.md): what the
+  console actually calls, with `file:line` evidence.
+- **A benchmark-double fidelity suite**, `apps/api/test/bench-double.test.ts`, which drives the
+  same call through the benchmark's double and through the real tool registry and asserts they
+  agree. Nine of its ten cases fail against the pre-fix double.
+- **Four benchmark-only environment variables** — `CERBERUS_BENCH_MONGODB_URI`,
+  `CERBERUS_BENCH_SESSIONS`, `CERBERUS_BENCH_EVENTS`, `CERBERUS_BENCH_SAMPLES`. Read by
+  `scripts/bench/`, never by the API or the MCP adapter, and no effect on a deployment. Documented
+  in [docs/configuration.md](docs/configuration.md) §11.
+
+### Fixed
+
+- **The benchmark's persistence double was measuring itself, and a published figure was wrong.**
+  Its `get_session_review` ignored the `eventsLimit` and `includeAssessments` arguments the API
+  sends, so every ingest and every live-detail read carried up to 500 micro-event documents the
+  real store never returns. Corrected, on one machine and back to back: the live detail went from
+  a published **1.21 ms p50** to **0.10 ms**, one keystroke's ingest from **1.36 ms** to
+  **0.20 ms**, and the review list with 20×200 history from **10.28 ms** to **0.51 ms**. The
+  published `v0.4.0`-to-`main` live-surface comparison — 0.09 ms against 3.49 ms, a ratio of
+  **38×** — was a measurement of the double, not of the durable read. Against a real MongoDB the
+  live detail is **1.36 ms p50 / 1.96 ms p95**, with the round trip included. This is the fifth
+  occurrence of the same class in this repository; the previous four were each fixed by editing
+  the double, and this one is fixed by making the double checkable.
+  See [docs/development/performance-baseline.md](docs/development/performance-baseline.md).
+- **A race gate failed for a correct system.** `terminate racing auto-lock: exactly one applies`
+  asserted `lock.status === 200` inside a `Promise.all` race while its own comment said
+  "whichever order they landed in". When the terminate landed first the ingest was correctly
+  refused with `409 SESSION_TERMINATED`, and the test failed. It now asserts the invariant that
+  holds under either interleaving, and a second deterministic test forces the interleaving that
+  used to flake.
+- **The manual release drill could not run its attribution guard.** The guard's default range was
+  the literal `origin/main..HEAD`, which the release-verification workflow's checkout does not
+  have, so `git log` exited 128 and the guard died with an unhandled stack trace. The guard now
+  discovers its base — `origin/main`, then `main`, then `refs/remotes/origin/HEAD` — and **exits
+  non-zero with a diagnosis** when none resolves, because a guard that examined no commits would
+  report OK. The workflow checks out with `fetch-depth: 0`.
+
+### Changed
+
+- **`npm run bench -- --json`** now writes the ingest-scaling rows and the per-tool call counts,
+  so a comparison can check what a case actually called rather than trusting the table.
+- **The benchmarks' `AppConfig` literal** moved to `scripts/bench/bench-config.mjs`, shared by
+  both benchmarks, with a test asserting neither declares its own copy.
+
+### Known limitation, deliberately not fixed
+
+`MongoStore.listSessions` is `find({})` with no filter and no limit, so the **live list** reads
+every session document ever created — including the terminated and long-expired ones the
+reconciler then discards. Measured: **2.53 ms p50 at 20 stored sessions, 10.21 ms at 520, and
+75.58 ms at 5 020**, while the live detail is flat at 0.98–1.45 ms across the same range because
+it is a lookup on a unique index. The live list, not the live detail, is the read surface that
+does not scale.
+
+The bounded query is **deferred**, and the reason is correctness rather than effort: the obvious
+filter is not exactly equivalent to the reconciler's rule. `normalizeStatus` maps any
+unrecognised status, and a missing one, onto `active`, so "monitored" is `$ne: "terminated"` —
+not an index-friendly predicate, and any conservative `$or` branch covering the legacy values
+forces the collection scan the change exists to remove. And `isExpired` treats a missing or
+unparseable timestamp as **not expired**, deliberately, so a recency bound would exclude
+documents the current code lists. The fix needs a normalisation migration, an index and an
+equivalence proof to land together. Landing a partial bound would make a number smaller and the
+read path less trustworthy.
+
+### Not claimed
+
+The API did **not** get faster. The live list's scaling is **not** fixed. There is **no** cache.
+The 38× figure did **not** represent a real MongoDB measurement. Nothing here is a latency or
+availability guarantee. See
+[docs/release/v0.6.1-release-notes.md](docs/release/v0.6.1-release-notes.md) for the full scope
+and, stated plainly, what the release does not claim.
+
 ## [0.6.0] - 2026-09-27
 
 The theme is **durable idempotency and side-effect safety** for the two routes that spend
