@@ -122,117 +122,11 @@ function report(row) {
 // Stubs — no network, no MongoDB, no paid inference
 // ═══════════════════════════════════════════════════════════════════
 
-/** A stateful MCP stand-in, matching the real store's observable contract. */
-function installMcpStub() {
-  const sessions = new Map();
-  const events = new Map();
-  const storedEventKeys = new Set();
-  const original = globalThis.fetch;
-
-  const riskPayload = (score) => ({
-    riskAssessmentId: "11111111-1111-4111-8111-111111111111",
-    overallRiskScore: score,
-    dimensionScores: { dataExfiltration: score },
-    flags: [],
-    exfiltrationReport: null,
-    behavioralAnomalies: [],
-    generatedAt: new Date().toISOString(),
-  });
-
-  globalThis.fetch = async (url, init) => {
-    const target = typeof url === "string" ? url : url.url;
-
-    // The AI provider.
-    if (target.includes("/chat/completions")) {
-      return new Response(
-        JSON.stringify({
-          id: "cmpl-bench",
-          object: "chat.completion",
-          created: 0,
-          model: "bench",
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content: JSON.stringify(riskPayload(40)) },
-              finish_reason: "stop",
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    // The MCP adapter.
-    const tool = target.split("/tools/")[1];
-    const body = init?.body ? JSON.parse(String(init.body)) : {};
-
-    switch (tool) {
-      case "create_session": {
-        const id = String(body.sessionId);
-        if (!sessions.has(id)) sessions.set(id, { ...body, createdAt: new Date().toISOString() });
-        return Response.json({ success: true, mongoDocumentId: `doc-${id}` });
-      }
-      case "get_session_review": {
-        const id = String(body.sessionId);
-        // The real store caps this at 500 (`MongoStore.getSessionEvents`,
-        // `limit ?? 500`). Returning the whole array here made the *stub* the
-        // bottleneck: it re-serialised a growing array on every ingest, which showed
-        // up as ingest cost growing with session size and was mistaken for an API
-        // defect. A double that does not match the real store's bounds measures the
-        // double.
-        const all = events.get(id) ?? [];
-        return Response.json({
-          success: true,
-          session: sessions.get(id) ?? null,
-          events: all.slice(-500),
-          riskAssessments: [],
-        });
-      }
-      case "ingest_micro_events": {
-        const batch = body.events ?? [];
-        const acceptedEventIds = [];
-        const duplicateEventIds = [];
-        for (const event of batch) {
-          const key = `${event.sessionId}::${event.eventId}`;
-          if (storedEventKeys.has(key)) {
-            duplicateEventIds.push(event.eventId);
-            continue;
-          }
-          storedEventKeys.add(key);
-          acceptedEventIds.push(event.eventId);
-          const list = events.get(event.sessionId) ?? [];
-          list.push(event);
-          events.set(event.sessionId, list);
-        }
-        return Response.json({
-          success: true,
-          processedCount: batch.length,
-          acceptedEventIds,
-          duplicateEventIds,
-        });
-      }
-      case "update_session_counts": {
-        const id = String(body.sessionId);
-        sessions.set(id, { ...(sessions.get(id) ?? {}), ...(body.counts ?? {}) });
-        return Response.json({ success: true });
-      }
-      case "store_risk_assessment":
-        return Response.json({ success: true, mongoDocumentId: "risk-doc" });
-      case "set_session_status":
-        return Response.json({ success: true, updated: true });
-      case "list_sessions":
-        return Response.json({ success: true, data: [...sessions.values()] });
-      case "list_reference_documents":
-        return Response.json({ success: true, data: [] });
-      case "health_check":
-        return Response.json({ connected: true, healthy: true });
-      default:
-        return Response.json({ success: true });
-    }
-  };
-
-  return { restore: () => { globalThis.fetch = original; } };
-}
+// The doubles live in `mcp-double.mjs` so `apps/api/test/bench-double.test.ts` can drive
+// the same call through them **and** through the real tool registry and assert the two
+// agree. They were closures here, and that is how `get_session_review` came to ignore the
+// `eventsLimit`/`includeAssessments` bounds the API sends — see that module's header.
+const { installMcpStub, installSinkStub } = await import("./mcp-double.mjs");
 
 const HEADERS = { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` };
 
@@ -521,44 +415,6 @@ for (const size of scalingSizes) {
   );
 }
 
-/**
- * A stub that accepts telemetry and retains nothing.
- *
- * Used for the memory case only. With the ordinary stub the MCP double's own event
- * log lives in the same heap as the API, so a heap delta measures both and attributes
- * the double's growth to the application — the same class of mistake as the event-cap
- * fidelity bug above. A store that keeps nothing isolates what Cerberus itself holds.
- */
-function installSinkStub() {
-  const original = globalThis.fetch;
-
-  globalThis.fetch = async (url, init) => {
-    const target = typeof url === "string" ? url : url.url;
-    if (target.includes("/chat/completions")) {
-      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
-    }
-
-    const tool = target.split("/tools/")[1];
-    const body = init?.body ? JSON.parse(String(init.body)) : {};
-
-    if (tool === "ingest_micro_events") {
-      const batch = body.events ?? [];
-      return Response.json({
-        success: true,
-        processedCount: batch.length,
-        acceptedEventIds: batch.map((event) => event.eventId),
-        duplicateEventIds: [],
-      });
-    }
-    if (tool === "get_session_review") {
-      return Response.json({ success: true, session: null, events: [], riskAssessments: [] });
-    }
-    return Response.json({ success: true });
-  };
-
-  return { restore: () => { globalThis.fetch = original; } };
-}
-
 // ── 11. Memory under sustained ingest ──
 //
 // Not a leak test — a leak needs hours. It answers "does a sustained burst grow the
@@ -621,12 +477,30 @@ emit(`  environment: node ${env.node}, ${env.platform}, ${env.cpus} cpu, ${env.c
 emit("─".repeat(96));
 
 if (jsonPath) {
-  writeFileSync(jsonPath, JSON.stringify({ env, results, memory: {
-    iterations: sustainedIterations,
-    heapBeforeBytes: heapBefore,
-    heapAfterBytes: heapAfter,
-    bytesPerEvent,
-  } }, null, 2));
+  // The ingest-vs-size rows and the tool call counts travel with the results. They were
+  // printed and not written, so a comparison could quote the table but could not check it —
+  // and the table is where a double that ignores a read bound shows up first.
+  writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      {
+        env,
+        results,
+        ingestScaling: scaling,
+        toolCalls: Object.fromEntries(
+          [...mcp.counts.entries()].sort((a, b) => a[0].localeCompare(b[0])),
+        ),
+        memory: {
+          iterations: sustainedIterations,
+          heapBeforeBytes: heapBefore,
+          heapAfterBytes: heapAfter,
+          bytesPerEvent,
+        },
+      },
+      null,
+      2,
+    ),
+  );
   emit(`  raw results written to ${jsonPath}`);
 }
 
