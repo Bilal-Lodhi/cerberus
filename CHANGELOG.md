@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+**Bounded live sessions and storage normalisation.** The live session list stops reading the whole
+session collection: it is answered by a bounded, index-backed durable query whose result is proven
+equal to the previous build's full scan — field for field, in order — including for legacy,
+hand-edited and malformed documents. The list's p50 is flat from 20 to 20 020 stored sessions where
+it was linear (75.58 ms → 3.45 ms at 5 020 stored sessions, and 20 documents examined at every size
+instead of every document ever written).
+
+**Not published.** No `v0.7.0` tag exists; the candidate is described in
+[docs/release/v0.7.0-release-notes.md](docs/release/v0.7.0-release-notes.md) and
+[docs/release/v0.7.0-checklist.md](docs/release/v0.7.0-checklist.md), and the cycle's record is
+[docs/development/bounded-live-list-checkpoint.md](docs/development/bounded-live-list-checkpoint.md).
+
+### Added
+
+- **A bounded live-list query**, from two new indexes on `monitored_sessions`. One durable query per
+  page, unchanged: persistence calls per request stay at 1.00.
+- **Migration `0005-normalise-session-list-fields`**, which normalises `status` and derives
+  `liveListUpdatedAt`. It deletes nothing, rewrites no other field, never reads the clock, and is a
+  no-op on a re-run.
+- **`Migration.inspect`**, so a dry run reports exactly what a data migration would change, from the
+  same code path it applies with.
+- **An optional `liveList` argument on the `list_sessions` MCP tool.** Omitted, the tool returns
+  exactly what it returned before.
+- **A `queryIndexes` category in the critical-index list**, verified after every restore by name.
+- **Two release-harness steps**, `verify:live-list` and `verify:live-list-bench`.
+
+### Changed
+
+- **`monitored_sessions.status` is normalised** by migration `0005` for documents whose stored value
+  was missing, `null`, unknown, a case variant or of another type. Every value written is the value
+  `normalizeStatus` was already computing, so no surface reports a different status.
+- **The order of live-list rows sharing a `deployedAt` to the millisecond is now `sessionId`
+  ascending**, where it was previously unspecified.
+- **`readDurableSessionView` takes the request instant** for the fallback it uses when a document
+  carries no timestamp at all, so the page is a function of `(documents, now)`.
+
+### Fixed
+
+- Nothing. This cycle changed no answer the API gave before it.
 
 ## [0.6.1] - 2026-09-27
 

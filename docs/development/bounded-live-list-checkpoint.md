@@ -193,8 +193,8 @@ liveListUpdatedAt: 25 from updatedAt, 4 from deployedAt, 2 from createdAt, 10 un
 
 **Not verified locally, and stated as such:** the container-build and backup/restore steps of the
 full release harness were last run before the local Docker daemon stopped; the `workflow_dispatch`
-job runs them on a runner that provides both, and its result is recorded in the release-candidate
-checklist this cycle prepares (`docs/release/v0.7.0-checklist.md`).
+job runs them on a runner that provides both, and its result is recorded in
+[v0.7.0-checklist.md](../release/v0.7.0-checklist.md).
 
 ## 8. What this does not claim
 
