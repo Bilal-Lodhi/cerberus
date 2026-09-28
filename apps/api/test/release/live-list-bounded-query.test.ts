@@ -41,14 +41,14 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
-import { MongoClient } from "mongodb";
+import { MongoClient, type Db } from "mongodb";
 
 import { MongoStore } from "../../../../packages/mcp-mongodb/src/mongo-client.js";
 import {
   createToolRegistry,
   ToolArgumentError,
 } from "../../../../packages/mcp-mongodb/src/tools.js";
-import { MCP_TOOL_NAMES } from "../../../../packages/mcp-mongodb/src/tool-names.js";
+import { MCP_TOOL_NAMES, COLLECTION_NAMES } from "../../../../packages/mcp-mongodb/src/tool-names.js";
 import {
   reconcileLiveList,
   type LocalLiveSession,
@@ -119,8 +119,8 @@ function localSessions(): LocalLiveSession[] {
 
 /** A disposable database seeded with the v0.6.1 adversarial fixture. */
 async function withFixture(
-  run: (context: { store: MongoStore; databaseName: string }) => Promise<void>,
-  options: { migrate?: boolean } = {},
+  run: (context: { store: MongoStore; databaseName: string; db: Db }) => Promise<void>,
+  options: { migrate?: boolean; indexes?: boolean } = {},
 ): Promise<void> {
   const databaseName = `cerberus_bounded_list_${randomUUID().replace(/-/g, "")}`;
   const client = new MongoClient(REAL_MONGODB_URI);
@@ -141,8 +141,9 @@ async function withFixture(
       await seedV061AdversarialFixture(db);
       await store.runMigrations();
     }
-    await store.ensureIndexes();
-    await run({ store, databaseName });
+    // Indexes are created unless a test is specifically about their absence.
+    if (options.indexes !== false) await store.ensureIndexes();
+    await run({ store, databaseName, db });
   } finally {
     await store.disconnect().catch(() => {});
     await db.dropDatabase().catch(() => {});
@@ -294,6 +295,64 @@ if (REAL_MONGODB_URI) {
           "the cache was not told to correct the terminated session",
         );
       });
+    });
+    test("the bound is correct without its indexes, and only slower", async () => {
+      // The predicate's *answer* cannot depend on an index: an index changes how the server finds
+      // documents, not which ones match. This is worth asserting because the two are easy to
+      // conflate — a query that returned the right rows only because of an index would be a
+      // correctness bug waiting for a restore that lost the index, and the critical-index list
+      // exists precisely because a restore can lose one.
+      //
+      // So: same fixture, **no live-list indexes**, same comparison. The plan is asserted to be a
+      // collection scan, which is what makes this test about the unindexed path rather than luck.
+      await withFixture(
+        async ({ store, db }) => {
+          const local = localSessions();
+
+          const unbounded = (await store.listSessions()).map(toApiDocument);
+          const bounded = (
+            await store.listSessions({
+              liveList: { liveAfter: CUTOFF, sessionIds: local.map((row) => row.sessionId) },
+            })
+          ).map(toApiDocument);
+
+          assert.deepEqual(
+            reconcileLiveList(local, bounded, OPTIONS).sessions,
+            reconcileLiveList(local, unbounded, OPTIONS).sessions,
+            "the bounded query answered differently without its indexes",
+          );
+
+          const plan = (await db
+            .collection(COLLECTION_NAMES.sessions)
+            .find({
+              $or: [
+                { sessionId: { $in: local.map((row) => row.sessionId) } },
+                { status: { $ne: "terminated" }, liveListUpdatedAt: { $gt: CUTOFF } },
+                { status: { $ne: "terminated" }, updatedAt: { $gt: CUTOFF } },
+              ],
+            })
+            .explain("executionStats")) as Record<string, unknown>;
+
+          const stages: string[] = [];
+          const walk = (node: unknown): void => {
+            if (!node || typeof node !== "object") return;
+            const record = node as Record<string, unknown>;
+            if (typeof record["stage"] === "string") stages.push(record["stage"]);
+            for (const value of Object.values(record)) {
+              if (Array.isArray(value)) value.forEach(walk);
+              else if (value && typeof value === "object") walk(value);
+            }
+          };
+          walk(plan["queryPlanner"] ?? plan);
+
+          assert.ok(
+            stages.includes("COLLSCAN"),
+            `the unindexed fixture was answered from an index after all (stages: ${stages.join(", ")}), ` +
+              "so this test did not exercise the path it claims to",
+          );
+        },
+        { indexes: false },
+      );
     });
   });
 
