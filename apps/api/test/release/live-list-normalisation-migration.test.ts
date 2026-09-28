@@ -119,6 +119,89 @@ if (REAL_MONGODB_URI) {
       assert.equal(MIGRATIONS[MIGRATIONS.length - 1]?.id, MIGRATION_ID);
     });
 
+    test("a run interrupted part-way converges on the next run", async () => {
+      // The failure mode the ledger cannot see. A migration that crashed after normalising some
+      // documents recorded nothing — the ledger row is written **after** the work — so the next
+      // run finds the migration pending and must complete it without disturbing what the first
+      // run did. Simulated by normalising half the documents by hand and leaving no ledger row,
+      // which is exactly the state a crash leaves.
+      await withAdversarialSessions(async ({ db, store }) => {
+        const collection = db.collection(COLLECTION_NAMES.sessions);
+        const stored = await collection.find({}).toArray();
+        const interruptedAt = Math.floor(stored.length / 2);
+
+        for (const document of stored.slice(0, interruptedAt)) {
+          const plan = planSessionListNormalisation(document as Record<string, unknown>);
+          const update = buildSessionListUpdate(plan);
+          if (update) await collection.updateOne({ _id: document["_id"] }, update as never);
+        }
+
+        const ledgerBefore = await db
+          .collection(COLLECTION_NAMES.schemaMigrations)
+          .countDocuments({ migrationId: MIGRATION_ID });
+        assert.equal(
+          ledgerBefore,
+          0,
+          "the interrupted state already carries a ledger row, so this is not the state a crash leaves",
+        );
+
+        // The next run completes it. `runMigrations` does not know which documents the first run
+        // reached, and does not need to: every write is idempotent, so re-normalising the ones it
+        // already did is a no-op.
+        const result = await store.runMigrations();
+        assert.ok(
+          result.applied.includes(MIGRATION_ID),
+          "a run that found the migration pending did not apply it",
+        );
+
+        const after = await wireDocuments(db);
+        for (const document of after) {
+          const status = document["status"];
+          assert.ok(
+            status === "active" || status === "locked" || status === "terminated",
+            `a document was left with status ${JSON.stringify(status)} after the completing run`,
+          );
+          assert.ok(
+            Number.isFinite(Date.parse(String(document["liveListUpdatedAt"]))),
+            "a document was left without a usable liveListUpdatedAt after the completing run",
+          );
+        }
+
+        // And the ledger now records it, exactly once.
+        assert.equal(
+          await db
+            .collection(COLLECTION_NAMES.schemaMigrations)
+            .countDocuments({ migrationId: MIGRATION_ID }),
+          1,
+        );
+      });
+    });
+
+    test("an interrupted run's partial work is not rewritten", async () => {
+      // The other half of convergence: the documents the first run reached are **already** in the
+      // normal form, so the completing run must plan no write for them. Asserted through the
+      // migration's own report rather than by comparing documents, because "it did not need to
+      // write" and "it wrote the same value" are different claims.
+      await withAdversarialSessions(async ({ db, store }) => {
+        const collection = db.collection(COLLECTION_NAMES.sessions);
+        const stored = await collection.find({}).toArray();
+
+        for (const document of stored) {
+          const plan = planSessionListNormalisation(document as Record<string, unknown>);
+          const update = buildSessionListUpdate(plan);
+          if (update) await collection.updateOne({ _id: document["_id"] }, update as never);
+        }
+
+        // Every document is normal and the ledger is empty: the state a crash *after* the work
+        // but *before* the ledger write leaves.
+        const log = collectingLog();
+        const report = await normaliseSessionListFields(db, { apply: true, log: log.log });
+        assert.equal(report.totalRows, stored.length);
+        assert.equal(report.rewrittenRows, 0, "the completing run planned a write");
+        assert.equal(report.modifiedRows, 0, "the completing run modified a document");
+      });
+    });
+
     test("the dry run reports the same categories as the applied run, and writes nothing", async () => {
       await withAdversarialSessions(async ({ db, store }) => {
         const before = await wireDocuments(db);
