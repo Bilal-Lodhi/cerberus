@@ -126,6 +126,11 @@ const loggerEntry = new URL("../../apps/api/dist/observability/logger.js", impor
 const { configureLogging } = await import(loggerEntry.href);
 const { BENCH_API_KEY: API_KEY, benchConfig } = await import("./bench-config.mjs");
 const { MongoClient } = await import("mongodb");
+const liveListQueryEntry = new URL(
+  "../../packages/mcp-mongodb/dist/live-list-query.js",
+  import.meta.url,
+);
+const { buildLiveListFilter } = await import(liveListQueryEntry.href);
 
 // Installed **before** any app is built, and `createApp` leaves the sink alone — it sets only
 // the level and the format. See `apps/api/src/observability/logger.ts`.
@@ -427,8 +432,56 @@ async function hit(app, path, options = {}) {
   return { calls: mcpCallCount - before, status: response.status };
 }
 
+/**
+ * How many rows one live-list request returns.
+ *
+ * Reported alongside the query cost so a latency figure cannot be read without the result count
+ * beside it: a query that got fast by returning less would otherwise look like a win.
+ */
+async function listResultCount(app) {
+  const response = await app.request("/api/v1/guardian/sessions", { headers: HEADERS });
+  if (response.status !== 200) {
+    throw new Error(`the live list answered ${response.status}`);
+  }
+  const body = await response.json();
+  return Array.isArray(body.data) ? body.data.length : 0;
+}
+
+/** Every stage name in a plan tree, so a COLLSCAN anywhere is visible. */
+function planStages(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (typeof node.stage === "string") found.push(node.stage);
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) for (const entry of value) planStages(entry, found);
+    else if (value && typeof value === "object") planStages(value, found);
+  }
+  return found;
+}
+
+/**
+ * What the server did to answer a filter: documents, index keys, and the stages it used.
+ *
+ * `executionStats` rather than `queryPlanner`, because the planner reports what it *would* do and
+ * the point here is what it did — a plan that says `IXSCAN` while examining every document would
+ * be a bound in name only.
+ */
+async function explainSessions(collection, filter) {
+  const result = await collection.find(filter).explain("executionStats");
+  const stats = result.executionStats ?? {};
+  return {
+    docsExamined: stats.totalDocsExamined ?? 0,
+    keysExamined: stats.totalKeysExamined ?? 0,
+    returned: stats.nReturned ?? 0,
+    // Deduplicated: `$or` repeats `FETCH` once per branch, and the set of distinct stages is what
+    // a reader is checking for.
+    stages: [...new Set(planStages(result.queryPlanner))].sort(),
+  };
+}
+
 let storeConnected = false;
 let stub = null;
+/** The driver connection the scaling section uses to write history and read query plans. */
+let benchClient = null;
 
 try {
   await store.connect();
@@ -585,6 +638,10 @@ try {
         `${await terminateResponse.text()}`,
     );
   }
+  // One of the ingested sessions is now finished with, so the live set is one smaller for the
+  // rest of the run. Tracked rather than recomputed, so the scaling table's "live" column is the
+  // number of rows the response should hold rather than an assumption about it.
+  const liveWarmSessions = SESSION_COUNT - 1;
 
   await run(
     await measure(
@@ -638,18 +695,24 @@ try {
 
   // ── Scaling: does a read cost depend on how much history the store holds? ──
   //
-  // The cases above run against 20 sessions, which is not enough to see a query that is
-  // unbounded in the number of **historical** sessions. `MongoStore.listSessions` issues
-  // `find({})` — every session document ever created, including the terminated and expired
-  // ones the reconciler then drops — while `getSession` is a lookup on the unique
-  // `sessionId` index. So one of these two is expected to be flat and the other is not, and
-  // the difference is the whole read-path scaling question.
+  // The cases above run against 20 sessions, which is not enough to see a query that is unbounded
+  // in the number of **historical** sessions. This section grows the collection while holding the
+  // live set constant, which is what a real deployment looks like over time: sessions accumulate
+  // and are finished with, and the number being monitored right now does not grow with them.
   //
-  // The extra sessions are written **directly through the store**, not through the ingest
-  // route: they are history this process never held, which is exactly the durable-only case
-  // the list's batched query exists to cover. 80 % are terminated, because a real deployment
-  // accumulates far more finished sessions than live ones and those are the documents the
-  // query pays for and the response discards.
+  // ── The fixture is history, and it is written as history ──
+  //
+  // Half of it is recently terminated and half is long expired but still marked `active` — the
+  // shape a deployment accumulates because expiry is derived and never persisted. **None of it is
+  // live**, so the live set stays at the 20 ingested sessions and every extra document is cost the
+  // query must stop paying for. The earlier revision of this section stamped all of history with
+  // `updatedAt: now`, which made the fixture uniformly "recent" and hid the difference between a
+  // recency bound and a status bound.
+  //
+  // The documents are written through the driver rather than through `createSession`, because
+  // `createSession` stamps `updatedAt` itself — it cannot express a document that is two hours
+  // old. They carry `liveListUpdatedAt` set to their own instant, which is the shape migration
+  // `0005` leaves, so the plan measured here is the plan a migrated deployment gets.
   emit("");
   emit("  scaling — read cost against the size of the durable store");
   emit(
@@ -657,35 +720,59 @@ try {
       `${"req/s".padStart(8)} ${"p50 ms".padStart(8)} ${"p95 ms".padStart(8)} ${"p99 ms".padStart(8)}`,
   );
 
+  const benchClientConnection = new MongoClient(MONGODB_URI);
+  await benchClientConnection.connect();
+  benchClient = benchClientConnection;
+  const sessionsCollection = benchClient.db(databaseName).collection("monitored_sessions");
+
   const scalingRows = [];
   let historical = 0;
   let previousTotal = SESSION_COUNT;
-  const totalStages = QUICK ? [0, 500] : [0, 500, 5000];
+  const totalStages = QUICK ? [0, 500] : [0, 500, 5000, 20000];
+
+  // The cutoff the route computes, from the same config the app is running under.
+  const benchTtlSeconds = benchConfig().security.sessionTTLSeconds;
+  const liveAfter = new Date(Date.now() - benchTtlSeconds * 1000);
+  // The sessions the warm process holds in memory, which is what it sends as `sessionIds`.
+  const localSessionIds = Array.from({ length: SESSION_COUNT }, (_unused, index) =>
+    sessionIdFor(index),
+  );
 
   for (const target of totalStages) {
     const startedSeeding = performance.now();
-    while (historical < target) {
-      const index = historical;
-      const now = new Date().toISOString();
-      await store.createSession({
+    const pending = [];
+    for (let index = historical; index < target; index += 1) {
+      const now = Date.now();
+      const finished = index % 2 === 0;
+      const instant = finished
+        ? new Date(now - 60_000)
+        : new Date(now - 100 * 24 * 3600 * 1000);
+      pending.push({
         sessionId: `bench-hist-${index}`,
         employeeId: `op-hist-${index % 50}`,
         auditId: "audit-bench",
         matrixId: "audit-bench",
         targetSystem: "bench",
-        status: index % 5 === 0 ? "active" : "terminated",
+        status: finished ? "terminated" : "active",
         eventCount: index % 97,
         pasteCount: 0,
         tabSwitchCount: 0,
         focusLossCount: 0,
         copyAttemptCount: 0,
         peakRiskScore: index % 101,
-        deployedAt: now,
-        createdAt: now,
-        updatedAt: now,
+        deployedAt: instant,
+        createdAt: instant,
+        updatedAt: instant,
+        liveListUpdatedAt: instant,
       });
-      historical += 1;
     }
+    // Chunked so one insert cannot approach the 16 MB command limit.
+    for (let offset = 0; offset < pending.length; offset += 5000) {
+      await sessionsCollection.insertMany(pending.slice(offset, offset + 5000), {
+        ordered: false,
+      });
+    }
+    historical = target;
     const seedingMs = performance.now() - startedSeeding;
 
     const storedSessions = SESSION_COUNT + historical;
@@ -700,14 +787,29 @@ try {
       () => hit(warmApp, `/api/v1/guardian/sessions/${primarySessionId}`),
     );
 
+    // ── What the server did, for both queries ──
+    //
+    // The previous build's query is `find({})`, and it is measured here **in this environment, on
+    // this data**, so the before/after pair is a comparison rather than a recollection. The
+    // bounded query is the one the route now issues, with the same cutoff and the same local ids.
+    const beforePlan = await explainSessions(sessionsCollection, {});
+    const afterPlan = await explainSessions(
+      sessionsCollection,
+      buildLiveListFilter({ liveAfter, sessionIds: localSessionIds }),
+    );
+    const resultCount = await listResultCount(warmApp);
+
     scalingRows.push({
       storedSessions,
       seededInThisStage: storedSessions - previousTotal,
       seedingMs,
-      // The sessions the reconciler considers live: the 20 ingested ones plus the one in
-      // five seeded as `active`. The rest are read and dropped, which is the cost being
-      // measured.
-      expectedLiveRows: SESSION_COUNT + Math.ceil(historical / 5),
+      // Every historical document is finished with, so the live set is exactly the ingested
+      // sessions that have not been terminated. That is the property being demonstrated: the live
+      // count is constant while the store grows.
+      liveRows: liveWarmSessions,
+      resultCount,
+      previousBuildQuery: beforePlan,
+      boundedQuery: afterPlan,
       liveList: listRow,
       liveDetail: detailRow,
     });
@@ -716,10 +818,35 @@ try {
     for (const row of [listRow, detailRow]) {
       emit(
         `    ${row.label.padEnd(30)} ${String(storedSessions).padStart(9)} ` +
-          `${String(SESSION_COUNT + Math.ceil(historical / 5)).padStart(6)} ` +
+          `${String(liveWarmSessions).padStart(6)} ` +
           `${String(row.iterations).padStart(5)} ${row.throughputPerSecond.toFixed(0).padStart(8)} ` +
           `${row.p50Ms.toFixed(2).padStart(8)} ${row.p95Ms.toFixed(2).padStart(8)} ` +
           `${row.p99Ms.toFixed(2).padStart(8)}`,
+      );
+    }
+  }
+
+  // ── What each query cost the server ──
+  //
+  // The latency table above answers "how long did a request take"; this answers "why". A bounded
+  // query that returned the right answer by reading everything would show up here as
+  // `docsExamined` tracking the collection, which is the regression the gate in
+  // `apps/api/test/release/live-list-query-plan.test.ts` refuses.
+  emit("");
+  emit("  query cost — documents and index keys the server examined");
+  emit(
+    `    ${"query".padEnd(34)} ${"stored".padStart(9)} ${"returned".padStart(9)} ` +
+      `${"docs".padStart(9)} ${"keys".padStart(9)}  stages`,
+  );
+  for (const row of scalingRows) {
+    for (const [label, plan] of [
+      ["previous build: find({})", row.previousBuildQuery],
+      ["bounded: live-list predicate", row.boundedQuery],
+    ]) {
+      emit(
+        `    ${label.padEnd(34)} ${String(row.storedSessions).padStart(9)} ` +
+          `${String(plan.returned).padStart(9)} ${String(plan.docsExamined).padStart(9)} ` +
+          `${String(plan.keysExamined).padStart(9)}  ${plan.stages.join(" ")}`,
       );
     }
   }
@@ -834,6 +961,11 @@ try {
     await store.disconnect();
   } catch {
     // Best-effort.
+  }
+  try {
+    await benchClient?.close();
+  } catch {
+    // Best-effort: the disposable database is dropped below anyway.
   }
 
   const cleanup = new MongoClient(MONGODB_URI);
