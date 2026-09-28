@@ -70,7 +70,7 @@ the failure this document exists to avoid, committed by the document itself.
 | MongoDB | `7.0.43` |
 | Topology | standalone (single `mongod`), **loopback** |
 | Deployment | local Docker container, `127.0.0.1:27170` |
-| Commit | `a9f5079c57dcaac6c6fa0610746443a84107bf94` |
+| Commit | `42f7234` — the head of the release-harness branch this run was taken on. That change is `829e713` on `main`; the two differ only in documentation, and the benchmark records the commit it ran at in its own JSON. |
 | Dataset | 20 sessions × 200 events = 4 000 event documents |
 | Warm-up | 10 % of each case's samples (minimum 5) |
 | Samples | 300 per read case, 150 for the list and review cases, 400 per concurrency row |
@@ -79,36 +79,44 @@ The dataset is seeded **through the real ingest route**, so the documents are wr
 production code path and the process under measurement holds exactly the sessions a running
 deployment would hold.
 
+§4.1 to §4.4 are all from this one run. Several figures moved slightly against the `v0.6.1` numbers
+— the live detail from 1.36 to 1.64 ms p50, the review detail from 6.55 to 8.32 ms. That is the
+same machine at a different time, not a change in the code: neither path was touched by this cycle,
+and a single-run figure from one machine is not a trend. The figures that *are* a change are in
+§4.3, and the deterministic evidence there is the documents examined rather than the milliseconds.
+
 ## 4. Results
 
 ### 4.1 The read surfaces
 
 | Case | n | p50 ms | p95 ms | p99 ms | max ms | persistence calls/request | statuses |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Live detail — this process holds the session | 300 | **1.36** | **1.96** | 2.40 | 2.85 | **1.00** | 200 ×300 |
-| Live detail — after restart (memory empty) | 300 | **1.13** | **1.61** | 2.00 | 2.13 | **1.00** | 200 ×300 |
-| Live list — 20 sessions | 150 | **1.59** | **2.34** | 2.77 | 2.87 | **1.00** | 200 ×150 |
-| Review detail — durable evidence | 150 | **6.55** | **8.73** | 9.92 | 10.65 | **1.00** | 200 ×150 |
-| Live detail — missing session | 300 | 1.08 | 1.43 | 1.81 | 3.38 | 1.00 | 404 ×300 |
-| Live detail — terminated session | 300 | 1.08 | 1.42 | 1.56 | 1.76 | 1.00 | 200 ×300 |
+| Live detail — this process holds the session | 300 | **1.64** | **2.70** | 3.37 | 3.68 | **1.00** | 200 ×300 |
+| Live detail — after restart (memory empty) | 300 | **2.11** | **3.26** | 3.79 | 3.89 | **1.00** | 200 ×300 |
+| Live list — 20 sessions | 150 | **2.67** | **3.51** | 4.27 | 4.58 | **1.00** | 200 ×150 |
+| Review detail — durable evidence | 150 | **8.32** | **10.38** | 11.33 | 11.84 | **1.00** | 200 ×150 |
+| Live detail — missing session | 300 | 1.43 | 1.91 | 2.11 | 2.38 | 1.00 | 404 ×300 |
+| Live detail — terminated session | 300 | 1.40 | 1.76 | 1.89 | 2.18 | 1.00 | 200 ×300 |
 
 Three things this says:
 
 **The durable read is one bounded round trip, and it is cheap.** Every read surface makes
 **exactly one** call to the persistence layer per request. The live list makes one call for the
 whole page of 20 sessions — it has not acquired the per-session N+1 the list path was designed
-to avoid.
+to avoid, and it did not acquire one when its query gained a bound.
 
-**The live detail costs about 1.4 ms p50, not 3.49 ms.** That is *with* the durable read
+**The live detail costs about 1.6 ms p50, not 3.49 ms.** That is *with* the durable read
 included and *with* a real network round trip to a real server. The stubbed benchmark reports a
 larger number for the same route on the same machine, which is worth understanding rather than
 averaging away — see §5.
 
-**A restart is not a slower case.** "After restart" is 1.13 ms p50 against 1.36 ms for a process
-that holds the session, which is inside run-to-run noise. Nothing is lazily loaded on the read
-path, so a cold process answers the first request exactly as it answers the thousandth.
+**A restart is not a slower case.** "After restart" is 2.11 ms p50 against 1.64 ms for a process
+that holds the session. Nothing is lazily loaded on the read path, so a cold process answers the
+first request exactly as it answers the thousandth; the difference here is run-to-run variance on
+one machine, not a warm-up effect, and it is the kind of figure §8 warns against reading as a
+trend.
 
-**The review detail is the expensive read** at 6.55 ms p50 — about 5× the live detail. That is
+**The review detail is the expensive read** at 8.32 ms p50 — about 5× the live detail. That is
 the evidentiary surface: its one persistence call carries up to 500 micro-events plus the risk
 assessments, where the live detail asks for the session document alone
 (`eventsLimit: 0, includeAssessments: false`).
@@ -122,17 +130,17 @@ scales flat is not.
 
 | Case | concurrency | n | req/s | p50 ms | p95 ms | p99 ms | persistence calls/request |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Live detail | 1 | 400 | 831 | 1.12 | 1.78 | 2.18 | 1.00 |
-| Live detail | 8 | 400 | **1 849** | 3.96 | 6.05 | 13.39 | 1.00 |
-| Live detail | 32 | 400 | 1 841 | 16.26 | 27.09 | 39.21 | 1.00 |
-| Live list | 1 | 400 | 686 | 1.37 | 1.85 | 2.21 | 1.00 |
-| Live list | 8 | 400 | **1 483** | 5.06 | 7.98 | 8.49 | 1.00 |
-| Live list | 32 | 400 | 1 069 | 28.80 | 50.56 | 52.23 | 1.00 |
+| Live detail | 1 | 400 | 603 | 1.52 | 2.53 | 4.16 | 1.00 |
+| Live detail | 8 | 400 | **1 861** | 4.05 | 5.55 | 12.14 | 1.00 |
+| Live detail | 32 | 400 | 1 658 | 17.03 | 30.60 | 44.00 | 1.00 |
+| Live list | 1 | 400 | 485 | 2.02 | 2.43 | 2.77 | 1.00 |
+| Live list | 8 | 400 | **1 121** | 6.95 | 9.68 | 10.66 | 1.00 |
+| Live list | 32 | 400 | 974 | 30.51 | 45.65 | 46.27 | 1.00 |
 
-**Throughput stops improving at eight concurrent callers.** The live detail goes 831 → 1 849
-req/s from 1 to 8 and then is flat to 32, while p99 rises from 2.18 ms to 39.21 ms; the live
-list peaks at 8 and *falls* to 1 069 at 32 with a p99 of 52 ms. Past the knee, adding
-concurrency adds queueing rather than throughput.
+**Throughput stops improving at eight concurrent callers.** The live detail goes 603 → 1 861
+req/s from 1 to 8 and then *falls* to 1 658 at 32, while p99 rises from 4.16 ms to 44.00 ms; the
+live list peaks at 8 and falls to 974 at 32 with a p99 of 46 ms. Past the knee, adding concurrency
+adds queueing rather than throughput.
 
 That knee is a property of this process on this machine — one Node event loop, one driver
 connection pool — and it is the number a capacity statement has to be built on. It is **not**
@@ -142,49 +150,65 @@ knee, and against a remote or replica-set MongoDB it would find another.
 ### 4.3 Scaling — read cost against the size of the durable store
 
 The cases above run against 20 sessions, which is not enough to see a query that is unbounded in
-the number of **historical** sessions. This section seeds extra sessions **directly through the
-store** — history this process never held, which is exactly the durable-only case the list's
-batched query exists to cover — and measures both read surfaces at each size. One session in five
-is seeded `active` and the rest `terminated`, because a real deployment accumulates far more
-finished sessions than live ones.
+the number of **historical** sessions. This section grows the collection while holding the live set
+constant, which is what a real deployment looks like over time: sessions accumulate and are
+finished with, and the number being monitored right now does not grow with them.
 
-| Stored sessions | Live rows returned | Live **list** p50 | p95 | p99 | Live **detail** p50 | p95 | p99 |
+The fixture is history, and it is written as history: half recently terminated and half long
+expired but still marked `active` — the shape a deployment accumulates because expiry is derived
+and never persisted — and **none of it is live**. So every extra document is cost the query has to
+stop paying for, and the "live rows" column stays at the ingested sessions.
+
+| Stored sessions | Live rows returned | Live **list** p50 | p95 | p99 | Live **detail** p50 | p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20 | 19 | 2.63 ms | 3.43 ms | 6.19 ms | 1.39 ms | 1.81 ms |
+| 520 | 19 | 2.64 ms | 3.23 ms | 8.10 ms | 1.47 ms | 1.91 ms |
+| 5 020 | 19 | 3.45 ms | 5.64 ms | 8.15 ms | 3.58 ms | 11.34 ms |
+| 20 020 | 19 | **2.92 ms** | 4.12 ms | 5.63 ms | **1.33 ms** | 1.95 ms |
+
+**This is the read-path scaling result, and it is a change.** `v0.6.1` measured the live list at
+2.53 ms → 10.21 ms → **75.58 ms** p50 for 20 → 520 → 5 020 stored sessions. It is now **flat**:
+2.63 ms → 2.64 ms → 3.45 ms → 2.92 ms across a thousandfold growth in the store, and the point that
+cost 75.58 ms costs 3.45 ms.
+
+The 5 020 stage is the one figure that stands out, and it is a measurement artefact rather than a
+scaling effect: that stage inserts 5 000 documents immediately before it measures, and both its
+list and its detail figures (3.45 ms and 3.58 ms) sit above their neighbours at 520 and 20 020 —
+including the **detail**, which is a lookup on a unique index and cannot depend on the store's size.
+A warm-up of 10 % of the samples does not fully absorb a 5 000-document insert. The next two
+columns are the evidence that does not depend on that.
+
+#### What the server actually did
+
+Both queries, in this environment, on this data, through `explain("executionStats")`. The
+previous build's query is `find({})`; the bounded query is the predicate the route now issues, with
+the same cutoff and the same local session ids.
+
+| Stored | Previous build: docs examined | keys | plan | Bounded: docs examined | keys | returned | plan |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 20 | 20 | 2.53 ms | 5.23 ms | 16.21 ms | 1.45 ms | 2.30 ms | 2.81 ms |
-| 520 | 120 | 10.21 ms | 12.92 ms | 16.21 ms | 1.17 ms | 2.01 ms | 2.21 ms |
-| 5 020 | 1 020 | **75.58 ms** | **85.40 ms** | 92.42 ms | **0.98 ms** | **1.16 ms** | 1.20 ms |
+| 20 | 20 | 0 | **COLLSCAN** | **20** | 42 | 20 | IXSCAN, OR |
+| 520 | 520 | 0 | **COLLSCAN** | **20** | 43 | 20 | IXSCAN, OR |
+| 5 020 | 5 020 | 0 | **COLLSCAN** | **20** | 43 | 20 | IXSCAN, OR |
+| 20 020 | 20 020 | 0 | **COLLSCAN** | **20** | 43 | 20 | IXSCAN, OR |
 
-**This is the read-path scaling result, and it is not where the charter expected it.**
+This is the claim, and it is deterministic rather than statistical:
 
-- **The live detail is flat.** 1.45 ms → 1.17 ms → 0.98 ms as the store grows 250×. It is a
-  lookup on the unique `sessionId` index, so it is `O(log n)` in the store and effectively
-  constant at these sizes. Whatever the live detail's 1.4 ms is made of, it is not the number of
-  sessions in the database.
-- **The live list grows linearly with the total number of stored sessions.** 2.53 ms → 10.21 ms
-  → 75.58 ms p50 for 20 → 520 → 5 020 stored sessions. At 5 020 stored sessions it is **30×**
-  its 20-session cost and its p95 is 85 ms.
+- the previous build's query examined **every document ever written** — 20 020 of them at the
+  largest size, with no index at all;
+- the bounded query examined **20 documents at every size**, and 43 index keys;
+- it returned 20 documents for a page of 19 rows, which is the local-sessions branch doing its job:
+  the session the benchmark terminated is still in the process's memory, so its document must come
+  back for the reconciler to drop it. A query that returned only the live set would republish it.
 
-The cause is one line. `MongoStore.listSessions` issues:
+The bound is `{ status: { $ne: "terminated" } }` combined with a range on `updatedAt` or on the
+derived `liveListUpdatedAt`, from two indexes on `monitored_sessions`. The reasoning, including why
+`$ne: "terminated"` **is** index-friendly despite `v0.6.1`'s release notes saying otherwise, is in
+[live-list-equivalence-model.md](live-list-equivalence-model.md) §10.1 and
+`packages/mcp-mongodb/src/live-list-query.ts`.
 
-```js
-this.collection("sessions").find({}, { projection: { … } }).sort({ createdAt: -1 }).toArray()
-```
-
-There is no filter and no limit. It returns **every session document ever created** — the
-terminated and long-expired ones included — and the route then reads all of them, reconciles all
-of them, and discards the ones that are not live. At 5 020 stored sessions the response carries
-1 020 live rows out of 5 020 documents read.
-
-So the batched query is bounded in the sense that matters for the N+1 question — one query, not
-one per session — but it is **not bounded in the size of the store**, and the cost is paid on
-every request by every replica. A deployment with a few hundred monitored sessions a day
-accumulates `active`-but-expired documents indefinitely, because expiry is derived and never
-persisted, so this grows without limit.
-
-That is a real limit and it is recorded as its own change: the durable list query is given a
-bound that preserves the current answer exactly (see
-[live-read-freshness-policy.md](live-read-freshness-policy.md) §6.4 for why the live detail was
-*not* the surface worth optimising, and §9 for what this implies for the cache question).
+**The live detail is flat, as it was.** 1.39 ms → 1.47 ms → 1.33 ms at the three sizes whose
+measurement is not disturbed by its own seeding. It is a lookup on the unique `sessionId` index, so
+it is `O(log n)` in the store and effectively constant at these sizes.
 
 ### 4.4 Store unavailable
 
@@ -194,12 +218,12 @@ throws.
 
 | Case | n | p50 ms | p95 ms | p99 ms | statuses | required answer |
 | --- | --- | --- | --- | --- | --- | --- |
-| Store down — this process holds the session | 100 | 0.13 | 0.16 | 0.19 | 200 ×100 | labelled `process-local`, not a claim of durable truth |
-| Store down — nothing holds the session | 100 | 0.21 | 0.27 | 0.36 | 503 ×100 | `SESSION_STORE_UNAVAILABLE`, never a `404` |
-| Store down — live list | 100 | 0.18 | 0.25 | 0.34 | 200 ×100 | `reconciled: false`, every row `statusSource: "process-local"` |
+| Store down — this process holds the session | 100 | 0.17 | 0.26 | 0.32 | 200 ×100 | labelled `process-local`, not a claim of durable truth |
+| Store down — nothing holds the session | 100 | 0.33 | 0.41 | 0.54 | 503 ×100 | `SESSION_STORE_UNAVAILABLE`, never a `404` |
+| Store down — live list | 100 | 0.23 | 0.35 | 0.38 | 200 ×100 | `reconciled: false`, every row `statusSource: "process-local"` |
 
 Every status is the one the contract requires, and the failing path is **faster** than the
-working one (0.13 ms against 1.36 ms) because it fails before reaching the database. A dependency
+working one (0.17 ms against 1.64 ms) because it fails before reaching the database. A dependency
 outage does not become a false `404`, and a session whose existence cannot be verified is not
 asserted to be absent.
 
@@ -216,7 +240,7 @@ GET /guardian/sessions/:id (live detail)    1000      741     1.21     1.87     
 ```
 
 **1.21 ms p50**, not 3.49 ms. The documented ratio does not reproduce, and the real-Mongo
-measurement above is comparable at 1.36 ms p50 with an actual network round trip included.
+measurement above is comparable at 1.64 ms p50 with an actual network round trip included.
 
 Two facts follow, and they are separate:
 
@@ -247,18 +271,20 @@ evidence that question is decided on:
 
 - **The read is one bounded round trip per request** (1.00 persistence calls/request), not a
   scan and not an N+1. A cache would reduce that count from one to zero on a hit.
-- **The read costs about 1.4 ms p50 and 2.0 ms p95** against a loopback `mongod`, on a machine
+- **The read costs about 1.6 ms p50 and 2.7 ms p95** against a loopback `mongod`, on a machine
   that also runs the API process under measurement — and it is **flat in the size of the store**
-  (1.45 ms at 20 sessions, 0.98 ms at 5 020), because it is a lookup on a unique index.
-- **One process serves about 1 850 live-detail requests per second** at its best concurrency.
+  (1.39 ms at 20 sessions, 1.33 ms at 20 020), because it is a lookup on a unique index.
+- **One process serves about 1 860 live-detail requests per second** at its best concurrency.
 - **The console polls the review detail, not the live detail.** Its steady-state load on the
   live detail is zero while the primary endpoint answers. That audit is recorded separately and
   is cross-referenced from [live-read-freshness-policy.md](live-read-freshness-policy.md) §6,
   which carries the arithmetic.
-- **The surface that does not scale is the live list, not the live detail** (§4.3): 2.53 ms at
-  20 stored sessions, 75.58 ms at 5 020, because its durable query is `find({})` with no bound.
-  That is a query-shape problem, not a staleness problem, and the answer to it is a bounded
-  query rather than a cache — which is why it does not change the freshness contract at all.
+- **The surface that did not scale was the live list, and it now does.** §4.3 measured it at
+  2.53 ms at 20 stored sessions and 75.58 ms at 5 020, because its durable query was `find({})`
+  with no bound. That was a query-shape problem rather than a staleness problem, and the answer
+  was a bounded query rather than a cache — which is why it changed no freshness clause at all.
+  The bound has landed: the same measurement is now 2.63 ms → 2.64 ms → 3.45 ms → 2.92 ms across
+  20 → 520 → 5 020 → 20 020 stored sessions, and the query examines 20 documents at every size.
 
 The third and fourth points are decisive for the KEEP/REVERT decision, and both are measured
 rather than assumed. They are recorded in
@@ -285,12 +311,20 @@ figures:
 | `CERBERUS_BENCH_EVENTS` | 200 | events each of those sessions holds |
 | `CERBERUS_BENCH_SAMPLES` | 300 | samples per sequential read case |
 
-The scaling stages are fixed at 0 / 500 / 5 000 extra stored sessions (0 / 500 in `--quick`),
-because a shape is only comparable between runs if the points it is sampled at are the same.
+The scaling stages are 0 / 500 / 5 000 / 20 000 extra stored sessions (0 / 500 in `--quick`),
+because a shape is only comparable between runs if the points it is sampled at are the same. Each
+stage seeds its history and then measures, so the stage that inserts 5 000 documents is the one
+whose figures can carry that insert's cost — §4.3 says which figure that is.
 
-`--json` writes the environment, every case, the concurrency rows, the scaling rows, the
-unavailable rows, the tools exercised and the application's own log-level tally, so a comparison
-can state what it was comparing.
+`--json` writes the environment, every case, the concurrency rows, the scaling rows — including
+**both** queries' `explain("executionStats")` counts and plan stages — the unavailable rows, the
+tools exercised and the application's own log-level tally, so a comparison can state what it was
+comparing.
+
+`npm run verify:live-list-bench` runs the benchmark in its quick shape and gates the deterministic
+part of §4.3: the previous build's query must collect-scan, the bounded one must not, the documents
+examined must be bounded by the live set, and the examined count must not follow the collection. It
+does not gate a latency, and says why.
 
 ## 8. What this does not establish
 

@@ -164,6 +164,43 @@ codes, bodies and provider-call behaviour it got before, with one exception: the
 store-outage case above, which now answers `503` instead of a fabricated `200`. That
 exception is a fix, not a regression, and it is stated here rather than buried.
 
+## 1d. What the bounded live-list cycle added to the public surface
+
+**Additive, plus one stored-value normalisation and one ordering refinement.** No route changed,
+no response field was added or removed, no error code changed and no configuration was added. The
+record is in
+[development/bounded-live-list-checkpoint.md](development/bounded-live-list-checkpoint.md).
+
+| Surface | Change | Kind |
+| --- | --- | --- |
+| `list_sessions` (MCP) | optional `liveList` argument: `{ liveAfter, sessionIds }`. Omitted, the tool returns exactly what it returned before — every session document, newest first | added |
+| `monitored_sessions` | the stored `liveListUpdatedAt` field, written by migration `0005` | added |
+| `monitored_sessions.status` | normalised to `active` \| `locked` \| `terminated` by migration `0005`, for documents whose stored value was missing, `null`, unknown or of another type | **changed — see below** |
+| `GET /api/v1/guardian/sessions` | the order of rows that share a `deployedAt` to the millisecond is now `sessionId` ascending | refined |
+| migration ledger | `0005-normalise-session-list-fields` | added |
+| indexes on `monitored_sessions` | `live_list_status_updated_at` (`{status:1, updatedAt:-1}`) and `live_list_status_liveness` (`{status:1, liveListUpdatedAt:-1}`) | added |
+
+Three of those need a sentence each.
+
+- **The status normalisation is not a status change.** Every value it writes is the value the API
+  was already computing from the stored one: `normalizeStatus` maps everything unrecognised onto
+  `active`, and only the exact string `terminated` is terminal. What changes is that a
+  compare-and-set on `expectedStatuses` now matches a document whose stored status was, say,
+  `"cleared"` — which is a repair, not a new behaviour: the transition path already treated that
+  document as `active` everywhere else.
+- **The ordering refinement is observable only for sessions created in the same millisecond.**
+  That order was previously whatever MongoDB returned for the durable side, which is not a
+  guarantee anyone could rely on; it is now specified. No pair with different `deployedAt` values
+  moves.
+- **`liveListUpdatedAt` is a predicate field, not a reported one.** It is not projected by the live
+  list, so no response gained a field. It is visible in the review detail's session document, which
+  returns the stored document; a client that echoes the document back is unaffected, and one that
+  validates against a strict schema needs the field added.
+
+**Nothing else moved.** The live detail, the review surfaces, the freshness contract
+(`DURABLE_CURRENT`, 0 ms maximum staleness, no cache) and the paid routes' idempotency behaviour
+are unchanged.
+
 
 
 Before breaking a public surface, in order:

@@ -128,16 +128,19 @@ phase. Therefore:
 ### 6.1 The measured cost of durable truth
 
 From [read-path-performance.md](read-path-performance.md) §4, against a loopback `mongod` with the
-real driver, dataset 20 sessions × 200 events, commit `a9f5079`:
+real driver, dataset 20 sessions × 200 events, commit `42f7234`:
 
 | Case | p50 | p95 | persistence calls/request |
 | --- | --- | --- | --- |
-| Live detail (process holds the session) | 1.36 ms | 1.96 ms | 1.00 |
-| Live detail (after restart) | 1.13 ms | 1.61 ms | 1.00 |
-| Live list (20 sessions) | 1.59 ms | 2.34 ms | 1.00 |
-| Review detail | 6.55 ms | 8.73 ms | 1.00 |
+| Live detail (process holds the session) | 1.64 ms | 2.70 ms | 1.00 |
+| Live detail (after restart) | 2.11 ms | 3.26 ms | 1.00 |
+| Live list (20 sessions) | 2.67 ms | 3.51 ms | 1.00 |
+| Review detail | 8.32 ms | 10.38 ms | 1.00 |
 
-At best concurrency (8 in flight) one process serves **1 849 live-detail requests per second**.
+At best concurrency (8 in flight) one process serves **1 861 live-detail requests per second**.
+The figures are from a single run on one machine; the `v0.6.1` measurement of the same cases was
+lower on both detail paths, which is machine variance rather than a change — neither path was
+touched by the bounded-live-list cycle.
 
 ### 6.2 Who actually polls, and how often
 
@@ -161,17 +164,18 @@ the fact that decides this. Its findings, quoted from the audit rather than rest
 
 The console's poll interval is 5 s, so a single console issues **12 requests/minute**.
 
-- Against the **review detail** (its actual polled endpoint): 12 × 6.55 ms = **79 ms of work per
-  minute**, or 0.13 % of one process's capacity.
-- Against the **live detail**, at the measured p50: 12 × 1.36 ms = **16 ms per minute**, or
-  0.02 % of one process's capacity.
-- At 1 849 req/s, one process has room for **≈ 9 200 consoles** polling the live detail at
+- Against the **review detail** (its actual polled endpoint): 12 × 8.32 ms = **100 ms of work per
+  minute**, or 0.17 % of one process's capacity.
+- Against the **live detail**, at the measured p50: 12 × 1.64 ms = **20 ms per minute**, or
+  0.03 % of one process's capacity.
+- At 1 861 req/s, one process has room for **≈ 9 300 consoles** polling the live detail at
   12 req/min before the measured knee is reached — and the console does not poll it at all.
 
-### 6.4 The surface that does not scale is not the one the cache would cover
+### 6.4 The surface that did not scale was not the one the cache would cover
 
 [read-path-performance.md](read-path-performance.md) §4.3 measures both read surfaces against a
-store that grows from 20 to 5 020 sessions:
+store that grows from 20 to 20 020 sessions. At the time this policy was written the list was
+unbounded and the measurement read:
 
 | Stored sessions | Live list p50 | Live detail p50 |
 | --- | --- | --- |
@@ -179,23 +183,26 @@ store that grows from 20 to 5 020 sessions:
 | 520 | 10.21 ms | 1.17 ms |
 | 5 020 | **75.58 ms** | **0.98 ms** |
 
-The live detail is **flat** — it is a lookup on the unique `sessionId` index. The live list grows
-**linearly with the total number of stored sessions**, because `MongoStore.listSessions` issues
-`find({})` with no filter and no limit and the route then discards every session that is not live.
+The live detail was **flat** — it is a lookup on the unique `sessionId` index. The live list grew
+**linearly with the total number of stored sessions**, because `MongoStore.listSessions` issued
+`find({})` with no filter and no limit and the route then discarded every session that was not live.
 
-Two consequences for this policy, and they point the same way:
+Two consequences for this policy, and they pointed the same way:
 
-1. **A cache in front of the live detail would optimise the one read surface that is already
+1. **A cache in front of the live detail would optimise the one read surface that was already
    independent of the store's size**, on a path the console does not poll. It would not touch the
-   cost that actually grows.
-2. **The list's cost is a query-shape problem, not a staleness problem.** The answer to it is a
+   cost that actually grew.
+2. **The list's cost was a query-shape problem, not a staleness problem.** The answer to it was a
    *bounded durable query* — one that returns exactly the documents the reconciler needs, so the
-   response is unchanged — and not a cache. A bound preserves `DURABLE_CURRENT` at zero
-   staleness, which is strictly better than any TTL, and it is why this cycle's work on the list
-   changes no freshness clause at all.
+   response is unchanged — and not a cache. A bound preserves `DURABLE_CURRENT` at zero staleness,
+   which is strictly better than any TTL, and it is why this policy's clauses did not change.
 
-That change is tracked separately: the durable list query gains a bound that preserves the current
-answer exactly, and §7's terminal-state clauses are the invariants it must not weaken.
+**That bound has landed**, and it landed the way this section predicted: with no change to any
+freshness clause. The same measurement is now 2.63 ms → 2.64 ms → 3.45 ms → 2.92 ms across
+20 → 520 → 5 020 → 20 020 stored sessions, and the query examines 20 documents at every size where
+it used to examine every document ever written. The equivalence proof, the migration that makes it
+possible and the two-process terminal-safety suite are in
+[bounded-live-list-checkpoint.md](bounded-live-list-checkpoint.md).
 
 ## 7. Which states may never be served stale
 
@@ -268,21 +275,23 @@ and the freshness contract above is the deliverable.
 The reasoning, in the order it was reached:
 
 1. **The cost being optimised is one bounded round trip.** 1.00 persistence calls per request,
-   1.36 ms p50 / 1.96 ms p95 against a real `mongod` — and **flat in the size of the store**
-   (1.45 ms at 20 sessions, 0.98 ms at 5 020), because it is a lookup on a unique index. There is
+   1.64 ms p50 / 2.70 ms p95 against a real `mongod` — and **flat in the size of the store**
+   (1.39 ms at 20 sessions, 1.33 ms at 20 020), because it is a lookup on a unique index. There is
    no scan, no N+1, and no cost that grows with a session's history on the live detail — it asks
    for the session document alone.
 2. **The client that exists does not poll this surface.** The console polls the review detail at
    12 requests/minute; its steady-state load on the live detail is zero. Caching the live detail
    would optimise a path with no measured traffic, and §7.5 keeps the surface that *is* polled
    durable because it is evidence.
-3. **The capacity headroom is four orders of magnitude.** 1 849 requests/second against
+3. **The capacity headroom is four orders of magnitude.** 1 861 requests/second against
    12 requests/minute per console is not a constraint worth adding a staleness surface to a
    correctness-critical read for.
-4. **The one read surface that does not scale is the live list, and a cache is the wrong
-   instrument for it** (§6.4). Its cost grows linearly with the number of *stored* sessions
-   because its durable query is unbounded, and the fix is a bounded durable query that keeps the
-   answer identical — zero staleness rather than a TTL.
+4. **The one read surface that did not scale was the live list, and a cache was the wrong
+   instrument for it** (§6.4). Its cost grew linearly with the number of *stored* sessions because
+   its durable query was unbounded, and the fix was a bounded durable query that keeps the answer
+   identical — zero staleness rather than a TTL. **That fix has since landed**, with no change to
+   any clause of this policy: the bound changes which documents are fetched, never which are
+   returned.
 5. **The complexity is not free and is not local.** A cache introduces a second answer to "what
    is this session's status", a declared staleness bound operators must reason about, bounded
    memory, deterministic eviction, and a cross-replica convergence property that cannot be better
@@ -314,10 +323,30 @@ reading.
 ## 11. Compatibility
 
 - **No field is removed** from any response.
-- **No response metadata is added** by this cycle: `statusSource`, `reconciled`, `source` and
-  `ephemeralStateAvailable` already exist and already carry the meanings in §3.
+- **No response metadata is added** by the cycle that wrote this policy: `statusSource`,
+  `reconciled`, `source` and `ephemeralStateAvailable` already existed and already carried the
+  meanings in §3.
 - **No configuration is added**, so there is no new knob and no config census change.
 - **Default behaviour is unchanged**: every surface remains `DURABLE_CURRENT`, exactly as
   [live-read-consistency.md](live-read-consistency.md) §2 already stated. What this document adds
   is the definition, the per-surface maximum staleness, the states that may never be served
   stale, the gate a future cache must pass, and the evidence for declining to build one now.
+
+### 11.1 The bounded live list, and why it is not a freshness change
+
+The cycle that bounded the live list's durable query touched no clause above, and the reason is
+worth stating here because the surface it changed is the one this policy governs:
+
+| | Before | After |
+| --- | --- | --- |
+| Documents **fetched** | every session document ever created | the live set, from an index |
+| Documents **returned** | the reconciler's answer | the reconciler's answer — **identical**, asserted field by field |
+| Maximum staleness | 0 ms | **0 ms** |
+| Cache | none | none |
+
+The bound is an implementation change to one query. `reconcileLiveList` is not modified, so what
+the list *says* is decided by exactly the same code over exactly the same answers; only the set of
+documents handed to it changed, and
+[live-list-equivalence-model.md](live-list-equivalence-model.md) §9 states the condition that makes
+the two sets produce one answer. A cache would have traded staleness for cost; a bound trades
+neither.
