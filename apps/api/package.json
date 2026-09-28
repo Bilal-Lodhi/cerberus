@@ -13,7 +13,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json",
     "start": "node dist/index.js",
     "test": "node --import tsx --test test/*.test.ts test/integration/*.test.ts test/release/*.test.ts",
-    "test:migrations": "node --import tsx --test test/release/migration-from-previous-release.test.ts test/release/live-list-normalisation-migration.test.ts"
+    "test:migrations": "node --import tsx --test test/release/migration-from-previous-release.test.ts test/release/live-list-normalisation-migration.test.ts",
+    "test:live-list": "node --import tsx --test test/live-list-current-semantics.test.ts test/live-list-normalisation.test.ts test/live-list-equivalence-generated.test.ts test/release/live-list-bounded-query.test.ts test/release/live-list-mirror-vs-query.test.ts test/release/live-list-query-plan.test.ts test/integration/multi-process-live-list.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

@@ -41,6 +41,8 @@
     "verify:packages": "node scripts/release/private-packages.mjs",
     "verify:attribution": "node scripts/release/attribution-guard.mjs",
     "verify:backup": "node scripts/release/backup-restore-drill.mjs",
+    "verify:live-list": "npm run test:live-list --workspace @cerberus/api",
+    "verify:live-list-bench": "node scripts/release/live-list-bench-sanity.mjs",
     "verify:image": "node scripts/release/verify-image.mjs",
     "verify:release": "node scripts/release/verify-release.mjs"
   }

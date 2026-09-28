@@ -100,6 +100,17 @@ function powershell(script, args) {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
+ * The instant the fixture's session documents are dated to, and the migration this cycle adds.
+ *
+ * Fixed rather than `new Date()`, because the check below compares the **restored** value against
+ * it: a fixture built from the wall clock could only be compared against a range, and "the instant
+ * came back within a minute of when the dump ran" is a weaker statement than "the instant came
+ * back".
+ */
+const NORMAL_FORM_INSTANT = "2026-03-01T12:00:00.000Z";
+const NORMAL_FORM_MIGRATION_ID = "0005-normalise-session-list-fields";
+
+/**
  * Seeds the source database.
  *
  * `threat_scenarios` is created **empty** on purpose. `mongodump` writes a 0-byte `.bson`
@@ -125,9 +136,13 @@ function seedSourceDatabase() {
     `
     db.monitored_sessions.insertMany([
       { sessionId: 'drill-1', employeeId: 'op-1', auditId: 'audit-1', status: 'active',
-        eventCount: 2, focusLossCount: 1, createdAt: new Date(), updatedAt: new Date() },
-      { sessionId: 'drill-2', employeeId: 'op-2', auditId: 'audit-1', status: 'locked',
-        eventCount: 0, focusLossCount: 0, createdAt: new Date(), updatedAt: new Date() }
+        eventCount: 2, focusLossCount: 1,
+        createdAt: new Date('${NORMAL_FORM_INSTANT}'), updatedAt: new Date('${NORMAL_FORM_INSTANT}'),
+        liveListUpdatedAt: new Date('${NORMAL_FORM_INSTANT}') },
+      { sessionId: 'drill-2', employeeId: 'op-2', auditId: 'audit-1', status: 'terminated',
+        eventCount: 0, focusLossCount: 0,
+        createdAt: new Date('${NORMAL_FORM_INSTANT}'), updatedAt: new Date('${NORMAL_FORM_INSTANT}'),
+        liveListUpdatedAt: new Date('${NORMAL_FORM_INSTANT}') }
     ]);
     db.micro_events.insertMany([
       { sessionId: 'drill-1', eventId: 'e1', eventType: 'KEYSTROKE', timestamp: new Date() },
@@ -144,6 +159,11 @@ function seedSourceDatabase() {
     });
     db.schema_migrations.insertOne({
       migrationId: 'drill-migration-1', appliedAt: new Date(), description: 'drill'
+    });
+    // The migration this cycle adds, so the ledger's own record of it survives the round trip.
+    db.schema_migrations.insertOne({
+      migrationId: '${NORMAL_FORM_MIGRATION_ID}', appliedAt: new Date(),
+      description: 'the live-list normal form'
     });
     // A paid-operation claim, so the collection is non-empty and its indexes are dumped
     // with it. The expiry is deliberately far in the future: the TTL monitor would
@@ -164,8 +184,8 @@ function seedSourceDatabase() {
   );
 
   // The critical indexes, from the shared list — the same list the restore script verifies
-  // against, so the verification has something real to find. Both kinds are created:
-  // uniqueness and retention.
+  // against, so the verification has something real to find. All three kinds are created:
+  // uniqueness, retention, and the indexes a bounded read depends on.
   for (const entry of criticalIndexes) {
     const keys = Object.entries(entry.key)
       .map(([field, direction]) => `"${field}": ${direction}`)
@@ -318,6 +338,66 @@ async function main() {
       "the restored database holds the documents",
       restoredCounts[0] === "2" && restoredCounts[1] === "3",
       `monitored_sessions=${restoredCounts[0]}, micro_events=${restoredCounts[1]}`,
+    );
+
+    // ── The live-list normal form survived the round trip ──
+    //
+    // Migration 0005 writes two fields that the bounded live-list query reads: the normalised
+    // `status` and the derived `liveListUpdatedAt`. A restore that lost them would leave a
+    // database whose documents no longer match the predicate its indexes were built for — the
+    // query would still run, and would silently answer a different question. Counts cannot see
+    // that, so the values are read back and compared against the fixture's own instant.
+    const restoredNormalForm = mongosh(
+      `
+      var session = db.monitored_sessions.findOne({ sessionId: 'drill-1' });
+      print([
+        session.status,
+        session.liveListUpdatedAt instanceof Date,
+        session.liveListUpdatedAt ? session.liveListUpdatedAt.getTime() : 'none'
+      ].join('|'));
+      `,
+      RESTORED_DATABASE,
+    ).trim();
+    const expectedInstant = String(Date.parse(NORMAL_FORM_INSTANT));
+    check(
+      "the restored database holds the live-list normal form",
+      restoredNormalForm === `active|true|${expectedInstant}`,
+      `drill-1 = ${restoredNormalForm}, expected active|true|${expectedInstant}`,
+    );
+
+    const restoredLedger = mongosh(
+      `print(db.schema_migrations.countDocuments({ migrationId: '${NORMAL_FORM_MIGRATION_ID}' }))`,
+      RESTORED_DATABASE,
+    ).trim();
+    check(
+      "the restored ledger still records the normalisation migration",
+      restoredLedger === "1",
+      `${NORMAL_FORM_MIGRATION_ID} rows = ${restoredLedger}`,
+    );
+
+    // ── And the restored documents still answer the predicate ──
+    //
+    // The two fields above are what the bounded query ranges over, so this asks the restored
+    // database the question the query asks — one live session and one terminated, at the same
+    // instant, told apart by the status alone. The shipped filter itself is asserted against a
+    // real server by `apps/api/test/release/live-list-query-plan.test.ts`; what is checked here is
+    // that a restored database can still answer it.
+    const restoredLive = mongosh(
+      `
+      var cutoff = new Date(${expectedInstant} - 3600000);
+      var rows = db.monitored_sessions
+        .find({ status: { $ne: 'terminated' }, liveListUpdatedAt: { $gt: cutoff } })
+        .toArray()
+        .map(function (row) { return row.sessionId; })
+        .sort();
+      print(rows.join(','));
+      `,
+      RESTORED_DATABASE,
+    ).trim();
+    check(
+      "the restored database answers the bounded live-list predicate",
+      restoredLive === "drill-1",
+      `the predicate returned '${restoredLive}', expected 'drill-1'`,
     );
 
     // ── The paid-operation claim survived the round trip ──
