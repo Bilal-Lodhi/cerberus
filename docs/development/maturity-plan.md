@@ -924,3 +924,85 @@ shipped.
    reconciler reads it with a string-only reader, which is correct **only** because the MCP
    adapter serialises dates to ISO strings on the wire. It is verified in the benchmark and is not
    a live defect, but it is a coupling worth removing.
+
+---
+
+# The bounded live-list cycle (`v0.7.0`)
+
+The first item the previous cycle handed over, and the one it had already designed.
+
+## The primary question, and the answer
+
+> Can the live-session list stop scanning the entire session collection while remaining exactly
+> equivalent to the current reconciler semantics for every legacy and malformed stored document?
+
+**Yes.** The list is now answered by a bounded, index-backed query whose result is proven equal to
+the previous build's full scan — field for field, in order — over a hand-written case table, 60
+generated fixtures and a real server. The list's p50 is **flat from 20 to 20 020 stored sessions**
+where it was linear before.
+
+## The design the previous cycle predicted, and what changed it
+
+The plan above predicted `{ status: { $in: ["active","locked"] }, updatedAt: { $gte: cutoff } }`
+with an index on `{ status: 1, updatedAt: -1 }`, and migration `0005` rewriting `updatedAt` from
+`createdAt` where it was missing. Three of those predictions were wrong, and the measurements that
+corrected them are the substance of this cycle:
+
+| Predicted | What the evidence showed |
+| --- | --- |
+| "monitored is `$ne: "terminated"` — not an index-friendly predicate" | It **is** index-friendly: with a `status` prefix MongoDB turns `$ne` into the bounds `[MinKey, "terminated") ∪ ("terminated", MaxKey]`, skipping the terminated bucket and including the `null` bucket where a status-less document is indexed. It is also *complete* where an enumeration of the live values is not. |
+| Migration rewrites `updatedAt` into a `Date` | **It must not.** The reconciler evaluates expiry through two branches, and the local-row branch consults only a *non-empty string* `updatedAt`. Rewriting the field flips the verdict for a document with no usable `updatedAt`, a recent `deployedAt` and a stale local instant — a session that was dropped becomes live. The normalised instant goes in its own field instead. |
+| One index | Two, because the predicate ranges over two different fields and the branches are alternatives rather than a conjunction. |
+
+## Exit criteria
+
+| | Criterion | Where it is met |
+| --- | --- | --- |
+| A | Current unbounded-list semantics fully specified | [live-list-equivalence-model.md](live-list-equivalence-model.md) §1–§8, pinned by `live-list-current-semantics.test.ts` |
+| B | Every status normalisation rule explicit | Model §3; the truth table, including that only the exact string `terminated` is terminal |
+| C | Every `updatedAt` fallback rule explicit | Model §5 and §5.1, including the values `Date.parse` accepts that a hand-written predicate would reject |
+| D | Migration 0005 deterministically normalises legacy rows | `0005-normalise-session-list-fields`, decision in `session-list-normalisation.ts` |
+| E | Migration is idempotent | `modifiedRows === 0` on a re-run, asserted at the storage layer |
+| F | Migration is dry-run safe | `Migration.inspect`; the dry run's accounting equals the applied run's, field for field |
+| G | Migration is concurrent-runner safe | Guarded compare-and-set writes plus the ledger's unique index |
+| H | Supporting index exists | `live_list_status_updated_at`, `live_list_status_liveness` |
+| I | Critical-index guard checks the index exactly | `critical-indexes.json` `queryIndexes`, both directions, by name |
+| J | Bounded query is index-usable | `live-list-query-plan.test.ts` — no `COLLSCAN`, named index, bounded examination |
+| K | Same live set as the old unbounded+reconcile path | `live-list-bounded-query.test.ts`, one reconciler over two document sets |
+| L | Equivalence proven on generated/adversarial fixtures | `live-list-equivalence-generated.test.ts` — 60 seeded fixtures |
+| M | Pagination semantics deterministic | There is no pagination; the page is the whole live set, and the order is now total (`deployedAt` descending, then `sessionId`) |
+| N | Terminated sessions never leak | Model §6; asserted on the wire and through two processes |
+| O | Expired sessions never leak | The cutoff is the reconciler's own boundary, asserted on both sides of it |
+| P | Malformed legacy documents do not silently disappear | The normal form covers them; the one shape it does not is stated and tested rather than implied |
+| Q | Multi-process terminal safety intact | `multi-process-live-list.test.ts` |
+| R | One bounded durable query per page | One `list_sessions` call; `mcp/req` stays 1.00 |
+| S | No N+1 introduced | Same measurement |
+| T | Latency re-measured at 20/520/5 020/20 020 | [read-path-performance.md](read-path-performance.md) §4.3 |
+| U | Query-plan/index evidence captured | `live-list-query-plan.test.ts`, and the benchmark's cost table |
+| V | Detail/review/idempotency unchanged | No change to either read path or the paid routes |
+| W | Backup/restore preserves migrated data and indexes | `verify:backup` — 14 checks |
+| X | No P0/P1 correctness or security defect | No open P0/P1 |
+| Y | CI/release harness/`workflow_dispatch` green | CI green on every PR; the harness gained two steps |
+| Z | Published tags immutable | `v0.1.0`–`v0.6.1` untouched |
+| AA | A coherent next release candidate can be described | [bounded-live-list-checkpoint.md](bounded-live-list-checkpoint.md) |
+
+## What this cycle did not do
+
+- **No cache.** Every read surface is still `DURABLE_CURRENT` with 0 ms maximum staleness, and the
+  bound preserves that: it changes which documents are *fetched*, never which are *returned*.
+- **No console fix.** The polling defects remain accepted residuals.
+- **No endpoint agent, accounts, RBAC, tenancy, incident identity, notification outbox, distributed
+  rate limiter or new AI provider.**
+- **Nothing published.** No release, no tag, no package, no image, no deployment.
+
+## What the next cycle inherits
+
+1. **The one document shape the bounded query does not cover**: a document the migration has not
+   classified whose `updatedAt` is not a `Date`. No version of the store can produce it, and the
+   way to reach it is to hand-edit a document after the migration. Writing the document closes it.
+2. **`liveListUpdatedAt` is derived storage.** A direct database edit that changes `status` or
+   `updatedAt` must keep the document in the normal form; the API does.
+3. **The console's polling model**, unchanged from the previous cycle.
+4. **The `updatedAt` reader asymmetry**, now with the proof that closing it would change an answer.
+5. **The unbounded read is still reachable**: a process started with `migrate: false` against a
+   database with pending migrations reads the collection as the previous build did, and warns once.

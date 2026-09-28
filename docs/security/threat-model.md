@@ -350,6 +350,30 @@ consequences are in [operations/multi-replica.md](../operations/multi-replica.md
   reviewer, never a finding of intent.
 - **No compliance claim.** The session model is an engineering property, not a control.
 
+## 8c. What the bounded live-list cycle changed here
+
+**Nothing about the trust boundary, the key model, authorization, rate limiting or what is
+monitored.** The change is a storage normalisation and a query bound on one read path, and the
+security-relevant statements are about what it does *not* do.
+
+| Claim | Why it holds |
+| --- | --- |
+| The migration reads no new data | It projects `sessionId`, `status`, `updatedAt`, `deployedAt`, `createdAt` and `liveListUpdatedAt` from `monitored_sessions`, and nothing from `micro_events` or `risk_assessments`. |
+| The migration logs no session content | Its report is counts by category. No session id, status, timestamp or payload is printed or written to the ledger. |
+| No identifier is exposed | `liveListUpdatedAt` is a derived instant, not an identity, and it is not projected by the live list. The MCP argument the route sends carries this process's own session ids, which it already held. |
+| Authorization is unchanged | The bounded query is reached through the same authenticated `list_sessions` call on the same route. A caller that could not read the list before cannot read it now. |
+| The freshness contract is unchanged | Still `DURABLE_CURRENT` with **0 ms** maximum staleness and no cache. The bound changes which documents are *fetched*, never which are *returned*; the reconciler is untouched. |
+| An outage still cannot become a `404` | The store's three answers — documents, absent, unavailable — are unchanged, and an unavailable store still serves a labelled process-local page rather than an empty one. |
+| The unbounded read is still reachable | A process started with `migrate: false` against a database with pending migrations reads the collection as the previous build did and warns once. A performance property, not a security one, and stated so it cannot surprise an operator. |
+
+**The one thing worth stating as a residual.** The bounded query reads `status` and
+`liveListUpdatedAt`, so a direct database edit that writes a status outside
+`active | locked | terminated`, or that leaves a document with no `liveListUpdatedAt` and no `Date`
+`updatedAt`, can make a session invisible to the live list until it is written again. That is a
+data-integrity hazard for an operator editing documents by hand, not an attack: writing through the
+API — the only supported path — always produces the normal form, and
+[operations/upgrade.md](../operations/upgrade.md) states the rule.
+
 ## 9. Logging threat model
 
 Cerberus writes to `stdout` and `stderr` and nothing else. It does not ship logs,
